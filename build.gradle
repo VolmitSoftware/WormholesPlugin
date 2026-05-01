@@ -1,0 +1,187 @@
+import org.gradle.api.tasks.Copy
+import org.gradle.api.tasks.compile.JavaCompile
+import org.gradle.jvm.toolchain.JavaLanguageVersion
+
+plugins {
+    id 'java-library'
+    alias(libs.plugins.shadow)
+}
+
+group = 'art.arcane'
+version = '1.0.0-1.21.11'
+def apiVersion = '1.21'
+def main = 'art.arcane.wormholes.Wormholes'
+def lib = 'art.arcane.wormholes.libs'
+String volmLibCoordinate = providers.gradleProperty('volmLibCoordinate')
+    .orElse('com.github.VolmitSoftware:VolmLib:master-SNAPSHOT')
+    .get()
+String authTokenProperty = providers.gradleProperty('authToken').orNull
+String jitpackAuthToken = authTokenProperty ?: providers.gradleProperty('jitpackAuthToken').orNull
+
+def shadowJarTask = tasks.named('shadowJar', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar)
+
+// ADD YOURSELF AS A NEW LINE IF YOU WANT YOUR OWN BUILD TASK GENERATED
+// ======================== WINDOWS =============================
+registerCustomOutputTask(
+    'Cyberpwn',
+    'C://Users/cyberpwn/Documents/development/server/plugins'
+)
+registerCustomOutputTask(
+    'Psycho',
+    'C://Dan/MinecraftDevelopment/Server/plugins'
+)
+registerCustomOutputTask(
+    'ArcaneArts',
+    'C://Users/arcane/Documents/development/server/plugins'
+)
+registerCustomOutputTask('Vatuu', 'D://Minecraft/Servers/1.20/plugins')
+registerCustomOutputTask('Nowhere', 'E://Desktop/server/plugins')
+registerCustomOutputTask(
+    'CrazyDev22',
+    'C://Users/Julian/Desktop/server/plugins'
+)
+registerCustomOutputTask(
+    'Pixel',
+    'D://Iris Dimension Engine//1.20.4 - Development//plugins'
+)
+// ========================== UNIX ==============================
+registerCustomOutputTaskUnix(
+    'CyberpwnLT',
+    '/Users/danielmills/development/server/plugins'
+)
+registerCustomOutputTaskUnix(
+    'PsychoLT',
+    '/Users/brianfopiano/Developer/RemoteGit/[Minecraft Server]/consumers/plugin-consumers/dropins/plugins'
+)
+registerCustomOutputTaskUnix(
+    'the456gamer',
+    '/home/the456gamer/projects/minecraft/adapt-testserver/plugins/update/',
+    false
+)
+// ==============================================================
+
+tasks.named('jar').configure {
+    enabled = false
+}
+
+tasks.named('build').configure {
+    dependsOn(shadowJarTask)
+}
+
+shadowJarTask.configure {
+    archiveClassifier.set('')
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    relocate('org.bstats', "${lib}.bstats")
+    relocate('com.github.retrooper.packetevents', "${lib}.packetevents.api")
+    relocate('io.github.retrooper.packetevents', "${lib}.packetevents.impl")
+}
+
+tasks.named('processResources').configure {
+    def pluginProperties = [
+        name      : rootProject.name,
+        version   : project.version,
+        main      : main,
+        apiVersion: apiVersion,
+    ]
+
+    inputs.properties(pluginProperties)
+    filesMatching('**/plugin.yml') {
+        expand(pluginProperties)
+    }
+}
+
+tasks.named('compileJava', JavaCompile).configure {
+    options.compilerArgs.add('-parameters')
+    options.encoding = 'UTF-8'
+    options.debugOptions.debugLevel = 'none'
+    options.release.set(25)
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        url = uri('https://repo.papermc.io/repository/maven-public/')
+    }
+    maven {
+        url = uri('https://repo.codemc.io/repository/maven-releases/')
+    }
+    maven {
+        url = uri('https://jitpack.io')
+        if (jitpackAuthToken != null) {
+            credentials {
+                username = jitpackAuthToken
+                password = '.'
+            }
+        }
+    }
+}
+
+dependencies {
+    compileOnly(libs.paper)
+    implementation(volmLibCoordinate) {
+        changing = true
+        transitive = false
+    }
+    implementation(libs.bstats)
+    implementation(libs.packetevents)
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+configurations.configureEach {
+    resolutionStrategy.cacheChangingModulesFor(0, 'seconds')
+    resolutionStrategy.cacheDynamicVersionsFor(0, 'seconds')
+}
+
+if (!JavaVersion.current().isCompatibleWith(JavaVersion.VERSION_25)) {
+    System.err.println()
+    System.err.println('=========================================================================================================')
+    System.err.println('You must run gradle on Java 25 or newer. You are using ' + JavaVersion.current())
+    System.err.println()
+    System.err.println('=== For IDEs ===')
+    System.err.println('1. Configure the project for Java 25')
+    System.err.println('2. Configure the bundled gradle to use Java 25 in settings')
+    System.err.println()
+    System.err.println('=== For Command Line (gradlew) ===')
+    System.err.println('1. Install JDK 25 from https://adoptium.net/temurin/releases/?version=25')
+    System.err.println('2. Set JAVA_HOME environment variable to the new jdk installation folder')
+    System.err.println('3. Open a new command prompt window to get the new environment variables if need be.')
+    System.err.println('=========================================================================================================')
+    System.err.println()
+    System.exit(69)
+}
+
+void registerCustomOutputTask(String name, String path, boolean doRename = true) {
+    if (!System.getProperty('os.name').toLowerCase().contains('windows')) {
+        return
+    }
+
+    createOutputTask(name, path, doRename)
+}
+
+void registerCustomOutputTaskUnix(String name, String path, boolean doRename = true) {
+    if (System.getProperty('os.name').toLowerCase().contains('windows')) {
+        return
+    }
+
+    createOutputTask(name, path, doRename)
+}
+
+void createOutputTask(String name, String path, boolean doRename = true) {
+    def shadowJarTask = tasks.named('shadowJar', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar)
+    tasks.register("build${name}", Copy) {
+        group = 'development'
+        outputs.upToDateWhen { false }
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+        dependsOn(shadowJarTask)
+        from(shadowJarTask.flatMap { it.archiveFile })
+        into(file(path))
+        if (doRename) {
+            rename { String ignored -> 'Wormholes.jar' }
+        }
+    }
+}

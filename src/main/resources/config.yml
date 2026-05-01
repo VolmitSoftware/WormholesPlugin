@@ -1,0 +1,17 @@
+portal:
+  enable-particles: true
+  max-portal-size-cubed: 24
+  construct-speed: 0.975
+  collapse-speed: 0.91
+  open-speed: 1.0
+  close-speed: 1.0
+projection:
+  frustum-culling-ratio: 0.2
+  capture-zone-radius: 8.0
+  range: 16.0
+  flush-time-millis: 750.0
+debug:
+  rendering: false
+  viewport: false
+  traversables: true
+  verbose-logging: false

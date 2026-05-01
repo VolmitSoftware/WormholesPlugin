@@ -1,4 +1,0 @@
-name: ${project.name}
-version: ${project.version}
-main: com.volmit.wormholes.WormholesProxy
-author: Volmit Software

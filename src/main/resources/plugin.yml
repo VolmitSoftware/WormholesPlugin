@@ -1,42 +1,51 @@
-name: ${project.name}
-version: ${project.version}
-main: com.volmit.wormholes.Wormholes
-description: Wormholes is a portal plugin which allows servers to show the other side of the portal while looking through them. Blocks and entities will show up as they are on the other side.
-depend: [Mortar]
-author: Volmit Software
-prefix: Wormholes
+name: ${name}
+version: ${version}
+main: ${main}
+folia-supported: true
+api-version: ${apiVersion}
+load: STARTUP
+description: Through-portal projection. See what is on the other side without crossing.
+authors: [ VolmitSoftware ]
+softdepend:
+  - PlaceholderAPI
 commands:
   wormholes:
-    aliases: [wh, wormhole, worm, whole, portal, w]
+    aliases: [ wh, wormhole, worm, whole, portal, w ]
+    description: Wormholes base command.
+    usage: /wormholes [wand|rune|info|reload]
+    permission: wormholes.admin
 permissions:
   wormholes.*:
-    description: Gives access to all Wormholes permissions
+    description: Gives access to all Wormholes permissions.
     default: op
     children:
       wormholes.admin: true
+      wormholes.portals: true
+      wormholes.gateway: true
   wormholes.admin:
-    description: Gives access to all admin Wormholes permissions
+    description: Gives access to all Wormholes admin permissions.
     default: op
     children:
       wormholes.admin.reload: true
+      wormholes.admin.items: true
   wormholes.admin.reload:
-    description: Gives access to reload wormholes.
+    description: Allows reloading Wormholes configuration.
     default: op
   wormholes.admin.items:
-    description: Gives access to spawn in wormholes items.
+    description: Allows spawning in Wormholes items (wand, runes).
     default: op
   wormholes.gateway:
-    description: Gives access to create, and modify gateway portals (server portals)
+    description: Allows creating and modifying gateway portals.
     default: op
   wormholes.portals:
-    description: Gives access to all portal permissions intended for player use
+    description: Allows creating and using normal portal types.
     default: true
     children:
       wormholes.portals.wormhole: true
       wormholes.portals.portal: true
   wormholes.portals.wormhole:
-    description: Gives access to craft, create and edit personal wormholes (projecting portals)
+    description: Allows creating and using wormhole portals (projecting).
     default: true
   wormholes.portals.portal:
-    description: Gives access to craft, create and edit personal portals (normal portals)
+    description: Allows creating and using normal portals (non-projecting).
     default: true

@@ -1,0 +1,15 @@
+[versions]
+shadow = "9.0.0-rc3"
+runTask = "2.3.1"
+paper = "1.21.11-R0.1-SNAPSHOT"
+packetevents = "2.12.1"
+bstats = "3.0.2"
+
+[libraries]
+paper = { module = "io.papermc.paper:paper-api", version.ref = "paper" }
+packetevents = { module = "com.github.retrooper:packetevents-spigot", version.ref = "packetevents" }
+bstats = { module = "org.bstats:bstats-bukkit", version.ref = "bstats" }
+
+[plugins]
+shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }
+runPaper = { id = "xyz.jpenilla.run-paper", version.ref = "runTask" }
