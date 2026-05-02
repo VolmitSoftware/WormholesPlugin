@@ -15,6 +15,11 @@ public class GeoPolygonProc {
 	// Polygon face planes
 	private ArrayList<GeoPlane> FacePlanes;
 
+	private double[] planeA;
+	private double[] planeB;
+	private double[] planeC;
+	private double[] planeD;
+
 	// Number of faces
 	private int NumberOfFaces;
 
@@ -49,23 +54,18 @@ public class GeoPolygonProc {
 
 	public boolean PointInside3DPolygon(double x, double y, double z)
 	{
-		GeoPoint P = new GeoPoint(x, y, z);
-
-		for (int i = 0; i < this.NumberOfFaces; i++)
+		double[] a = this.planeA;
+		double[] b = this.planeB;
+		double[] c = this.planeC;
+		double[] d = this.planeD;
+		int n = this.NumberOfFaces;
+		for (int i = 0; i < n; i++)
 		{
-
-			double dis = GeoPlane.Multiple(P, this.FacePlanes.get(i));
-
-			// If the point is in the same half space with normal vector for any face of the cube,
-			// then it is outside of the 3D polygon
-			if (dis > 0)
+			if (a[i] * x + b[i] * y + c[i] * z + d[i] > 0)
 			{
 				return false;
 			}
 		}
-
-		// If the point is in the opposite half space with normal vector for all 6 faces,
-		// then it is inside of the 3D polygon
 		return true;
 	}
 
@@ -258,5 +258,17 @@ public class GeoPolygonProc {
 		this.Faces = faces;
 		this.FacePlanes = facePlanes;
 		this.NumberOfFaces = numberOfFaces;
+		this.planeA = new double[numberOfFaces];
+		this.planeB = new double[numberOfFaces];
+		this.planeC = new double[numberOfFaces];
+		this.planeD = new double[numberOfFaces];
+		for (int i = 0; i < numberOfFaces; i++)
+		{
+			GeoPlane plane = facePlanes.get(i);
+			this.planeA[i] = plane.getA();
+			this.planeB[i] = plane.getB();
+			this.planeC[i] = plane.getC();
+			this.planeD[i] = plane.getD();
+		}
 	}
 }

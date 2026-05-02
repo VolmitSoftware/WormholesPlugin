@@ -76,6 +76,20 @@ public class CommandWormholes {
         sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Wormholes configuration reloaded.");
     }
 
+    @Director(name = "reset", aliases = {"deleteall", "delete-all", "clear"}, description = "Delete every saved portal and clear active projections")
+    public void reset(@Param(name = "sender", contextual = true) CommandSender sender) {
+        if (!sender.hasPermission("wormholes.admin.reset")) {
+            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
+            return;
+        }
+        if (Wormholes.portalManager == null) {
+            sender.sendMessage(Wormholes.tag + ChatColor.RED + "PortalManager is not ready.");
+            return;
+        }
+        int removed = Wormholes.portalManager.deleteAllPortals();
+        sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Deleted " + ChatColor.AQUA + removed + ChatColor.GREEN + " portals and cleared projection state.");
+    }
+
     @Director(name = "debug", description = "Dump live projection diagnostics")
     public void debug(@Param(name = "sender", contextual = true) CommandSender sender) {
         if (!sender.hasPermission("wormholes.admin.reload")) {
@@ -106,5 +120,6 @@ public class CommandWormholes {
         sender.sendMessage(ChatColor.GRAY + "   Choose " + ChatColor.WHITE + "Set Focus" + ChatColor.GRAY + " then click the other portal in the list. Repeat from the other side.");
         sender.sendMessage(ChatColor.YELLOW + "6. " + ChatColor.GRAY + "Stand within 16 blocks of either portal — the destination world will project through the frame and walking in teleports you.");
         sender.sendMessage(ChatColor.GRAY + "Need more runes? " + ChatColor.WHITE + "/wormholes rune <portal|wormhole|gateway> [count]");
+        sender.sendMessage(ChatColor.GRAY + "Admin reset: " + ChatColor.WHITE + "/wormholes reset" + ChatColor.GRAY + " deletes all saved portals.");
     }
 }

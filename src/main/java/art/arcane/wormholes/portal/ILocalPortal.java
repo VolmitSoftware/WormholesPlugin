@@ -35,6 +35,8 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 
 	public void setDirection(Direction d);
 
+	public void setFrame(PortalFrame frame);
+
 	public ITunnel getTunnel();
 
 	public boolean hasTunnel();

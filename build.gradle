@@ -74,6 +74,7 @@ shadowJarTask.configure {
     relocate('org.bstats', "${lib}.bstats")
     relocate('com.github.retrooper.packetevents', "${lib}.packetevents.api")
     relocate('io.github.retrooper.packetevents', "${lib}.packetevents.impl")
+    relocate('com.moandjiezana.toml', "${lib}.toml4j")
 }
 
 tasks.named('processResources').configure {
@@ -97,6 +98,10 @@ tasks.named('compileJava', JavaCompile).configure {
     options.release.set(25)
 }
 
+tasks.named('test').configure {
+    useJUnitPlatform()
+}
+
 repositories {
     mavenCentral()
     maven {
@@ -118,12 +123,16 @@ repositories {
 
 dependencies {
     compileOnly(libs.paper)
+    testImplementation(libs.paper)
+    testImplementation(libs.junitJupiter)
+    testRuntimeOnly(libs.junitPlatformLauncher)
     implementation(volmLibCoordinate) {
         changing = true
         transitive = false
     }
     implementation(libs.bstats)
     implementation(libs.packetevents)
+    implementation(libs.toml4j)
 }
 
 java {

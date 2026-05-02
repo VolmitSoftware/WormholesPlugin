@@ -7,6 +7,7 @@ import art.arcane.volmlib.util.scheduling.SchedulerRuntime;
 import art.arcane.wormholes.config.WormholesSettings;
 import art.arcane.wormholes.service.WormholesCommandService;
 import art.arcane.wormholes.util.common.SplashScreen;
+import art.arcane.wormholes.util.project.config.HotloadManager;
 import com.github.retrooper.packetevents.PacketEvents;
 import com.github.retrooper.packetevents.settings.PacketEventsSettings;
 import io.github.retrooper.packetevents.factory.spigot.SpigotPacketEventsBuilder;
@@ -49,6 +50,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     private SchedulerRuntime schedulerRuntime;
     private Metrics metrics;
     private WormholesCommandService commandService;
+    private HotloadManager hotloadManager;
     private boolean packetEventsLoaded = false;
 
     @Override
@@ -69,8 +71,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         String errorMessage = "";
 
         try {
-            saveDefaultConfig();
-            settings = WormholesSettings.load(this);
+            settings = WormholesSettings.loadAll(getDataFolder().toPath());
             Settings.refresh(settings);
             this.schedulerRuntime = installSchedulerBridge();
 
@@ -94,6 +95,9 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
 
             commandService = new WormholesCommandService(this);
             commandService.register();
+
+            hotloadManager = new HotloadManager(getDataFolder().toPath(), getLogger(), this::onConfigHotReload);
+            hotloadManager.start();
 
             this.metrics = new Metrics(this, BSTATS_PLUGIN_ID);
         } catch (Exception ex) {
@@ -125,9 +129,23 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     }
 
     public void reloadAll() {
-        reloadConfig();
-        settings = WormholesSettings.load(this);
+        settings = WormholesSettings.loadAll(getDataFolder().toPath());
         Settings.refresh(settings);
+        if (projectionManager != null) {
+            projectionManager.onSettingsReloaded();
+        }
+    }
+
+    private void onConfigHotReload(WormholesSettings reloaded) {
+        settings = reloaded;
+        Settings.refresh(reloaded);
+        if (projectionManager != null) {
+            projectionManager.onSettingsReloaded();
+        }
+        if (commandService != null) {
+            commandService.invalidateCache();
+        }
+        getLogger().info("Configuration hot-reloaded.");
     }
 
     public WormholesSettings getSettings() {
@@ -172,6 +190,9 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
 
     public static void v(String message) {
         if (instance == null) {
+            return;
+        }
+        if (!Settings.DEBUG) {
             return;
         }
         instance.getLogger().info(message);
@@ -236,6 +257,15 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     private void drain() {
         if (!alreadyDrained.compareAndSet(false, true)) {
             return;
+        }
+
+        try {
+            if (hotloadManager != null) {
+                hotloadManager.stop();
+                hotloadManager = null;
+            }
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "Error during HotloadManager stop", ex);
         }
 
         try {

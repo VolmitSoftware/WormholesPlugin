@@ -1,6 +1,10 @@
 package art.arcane.wormholes;
 
 import art.arcane.wormholes.config.WormholesSettings;
+import art.arcane.wormholes.config.toml.AdvancedConfig;
+import art.arcane.wormholes.config.toml.MainConfig;
+import art.arcane.wormholes.config.toml.ProjectionConfig;
+import art.arcane.wormholes.config.toml.RenderConfig;
 
 public final class Settings {
     public static boolean ENABLE_PARTICLES = true;
@@ -14,8 +18,20 @@ public final class Settings {
     public static boolean DEBUG_TRAVERSABLES = true;
     public static double FRUSTUM_CULLING_RATIO = 0.2D;
     public static double CAPTURE_ZONE_RADIUS = 8.0D;
-    public static double PROJECTION_RANGE = 16.0D;
+    public static double PROJECTION_RANGE = 32.0D;
     public static double PROJECTION_FLUSH_TIME = 750.0D;
+    public static double NEAR_PLANE_PADDING = 2.0D;
+    public static boolean LIGHTING_FIDELITY = true;
+    public static boolean ENTITY_SPOOFING = true;
+    public static double ENTITY_SPOOF_RANGE = 48.0D;
+    public static int MAX_SPOOFED_ENTITIES = 24;
+    public static int PROJECTION_REFRESH_INTERVAL_TICKS = 2;
+    public static int PROJECTION_DEPTH_BLOCKS = 64;
+    public static boolean PROJECTION_CLIENT_VIEW_DISTANCE_CAP = true;
+    public static int OCTREE_LEAF_SIZE = 4;
+    public static int PARALLEL_CHUNK_READS = 4;
+    public static long OCTREE_REBUILD_INTERVAL_MS = 5000L;
+    public static int CHUNK_SNAPSHOT_RADIUS = 6;
     public static boolean DEBUG = false;
 
     private Settings() {
@@ -25,19 +41,51 @@ public final class Settings {
         if (src == null) {
             return;
         }
-        ENABLE_PARTICLES = src.isEnableParticles();
-        MAX_PORTAL_SIZE_CUBED = src.getMaxPortalSizeCubed();
-        PORTAL_CONSTRUCT_SPEED = src.getPortalConstructSpeed();
-        PORTAL_COLAPSE_SPEED = src.getPortalCollapseSpeed();
-        PORTAL_OPEN_SPEED = src.getPortalOpenSpeed();
-        PORTAL_CLOSE_SPEED = src.getPortalCloseSpeed();
-        DEBUG_RENDERING = src.isDebugRendering();
-        DEBUG_VIEWPORT = src.isDebugViewport();
-        DEBUG_TRAVERSABLES = src.isDebugTraversables();
-        FRUSTUM_CULLING_RATIO = src.getFrustumCullingRatio();
-        CAPTURE_ZONE_RADIUS = src.getCaptureZoneRadius();
-        PROJECTION_RANGE = src.getProjectionRange();
-        PROJECTION_FLUSH_TIME = src.getProjectionFlushTimeMillis();
-        DEBUG = src.isDebug();
+        MainConfig main = src.getMain();
+        ProjectionConfig projection = src.getProjection();
+        RenderConfig render = src.getRender();
+        AdvancedConfig advanced = src.getAdvanced();
+
+        ENABLE_PARTICLES = main.enableParticles;
+        MAX_PORTAL_SIZE_CUBED = clampInt(main.maxPortalSizeCubed, 1, 256);
+        PORTAL_CONSTRUCT_SPEED = clampDouble(main.portalConstructSpeed, 0.0D, 1.0D);
+        PORTAL_COLAPSE_SPEED = clampDouble(main.portalCollapseSpeed, 0.0D, 1.0D);
+        PORTAL_OPEN_SPEED = clampDouble(main.portalOpenSpeed, 0.0D, 1.0D);
+        PORTAL_CLOSE_SPEED = clampDouble(main.portalCloseSpeed, 0.0D, 1.0D);
+        DEBUG_RENDERING = main.debugRendering;
+        DEBUG_VIEWPORT = main.debugViewport;
+        DEBUG_TRAVERSABLES = main.debugTraversables;
+        DEBUG = main.verboseLogging;
+
+        FRUSTUM_CULLING_RATIO = clampDouble(projection.frustumCullingRatio, 0.0D, 1.0D);
+        PROJECTION_RANGE = clampDouble(projection.range, 1.0D, 256.0D);
+        PROJECTION_FLUSH_TIME = clampDouble(projection.flushTimeMillis, 50.0D, 5000.0D);
+        NEAR_PLANE_PADDING = clampDouble(projection.nearPlanePadding, 0.0D, 16.0D);
+        PROJECTION_REFRESH_INTERVAL_TICKS = clampInt(projection.refreshIntervalTicks, 1, 20);
+        PROJECTION_DEPTH_BLOCKS = clampInt(projection.depthBlocks, 1, 256);
+        PROJECTION_CLIENT_VIEW_DISTANCE_CAP = projection.clientViewDistanceCap;
+
+        LIGHTING_FIDELITY = render.lightingFidelity;
+        ENTITY_SPOOFING = render.entitySpoofing;
+        ENTITY_SPOOF_RANGE = clampDouble(render.entitySpoofRange, 1.0D, 256.0D);
+        MAX_SPOOFED_ENTITIES = clampInt(render.maxSpoofedEntities, 0, 256);
+        CAPTURE_ZONE_RADIUS = clampDouble(render.captureZoneRadius, 1.0D, 64.0D);
+
+        OCTREE_LEAF_SIZE = clampInt(advanced.octreeLeafSize, 1, 32);
+        PARALLEL_CHUNK_READS = clampInt(advanced.parallelChunkReads, 1, 32);
+        OCTREE_REBUILD_INTERVAL_MS = clampLong(advanced.octreeRebuildIntervalMillis, 500L, 600_000L);
+        CHUNK_SNAPSHOT_RADIUS = clampInt(advanced.chunkSnapshotRadius, 1, 32);
+    }
+
+    private static int clampInt(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private static long clampLong(long value, long min, long max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private static double clampDouble(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
     }
 }

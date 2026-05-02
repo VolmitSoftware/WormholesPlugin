@@ -27,6 +27,7 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.Recipe;
 import org.bukkit.inventory.ShapedRecipe;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.util.Vector;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -166,6 +167,7 @@ public class BlockManager implements Listener
 		PortalType type = init.getType();
 		search.addAll(findBlocks(blocks, clickedBlock, type));
 		Direction d = Direction.closest(player.getLocation().getDirection());
+		Vector look = player.getLocation().getDirection();
 		Location anchor = clickedBlock.getLocation();
 
 		Runnable[] tickHolder = new Runnable[1];
@@ -187,7 +189,7 @@ public class BlockManager implements Listener
 				return;
 			}
 
-			Wormholes.constructionManager.constructPortal(player, blocks, type, d);
+			Wormholes.constructionManager.constructPortal(player, blocks, type, d, look);
 		};
 
 		FoliaScheduler.runRegion(Wormholes.instance, anchor, tickHolder[0], 1L);

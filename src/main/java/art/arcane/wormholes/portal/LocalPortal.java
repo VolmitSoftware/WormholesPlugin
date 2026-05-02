@@ -14,7 +14,9 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.util.Vector;
+import io.papermc.paper.entity.TeleportFlag;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.title.Title;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
@@ -63,9 +65,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private String progress;
 	private Player directionChanger;
 	private Direction chosenDirection;
+	private Vector chosenLook;
 	private boolean needsSaving;
 	private boolean projecting;
 	private AxisAlignedBB view;
+	private double viewRange;
 
 	public LocalPortal(UUID id, PortalType type, PortalStructure structure)
 	{
@@ -80,6 +84,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		tunnel = null;
 		directionChanger = null;
 		chosenDirection = null;
+		chosenLook = null;
 		setName(F.capitalize(getType().name().toLowerCase()) + " " + id.toString().substring(0, 4));
 		needsSaving = false;
 		projecting = true;
@@ -107,6 +112,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		super.loadJSON(j);
 		structure = new PortalStructure();
 		structure.loadJSON(j.getJSONObject("structure"));
+		if(!hasFrameLoadedFromJson())
+		{
+			applyFrame(PortalFrame.derive(structure.getArea(), direction));
+		}
 		type = PortalType.valueOf(j.getString("type"));
 		owner = UUID.fromString(j.getString("owner"));
 		projecting = !j.has("projecting") || j.getBoolean("projecting");
@@ -199,7 +208,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				if(getStructure().getArea().contains(l))
 				{
 					playEffect(PortalEffect.PUSH, l);
-					f[0] = new Traversive(i, getDirection(), velocity, i.getLocation().getDirection(), VectorMath.directionNoNormal(getStructure().getArea().getFace(inFace).center().toLocation(getStructure().getWorld()), l));
+					f[0] = new Traversive(i, getFrame(), velocity, i.getLocation().getDirection(), VectorMath.directionNoNormal(getStructure().getArea().getFace(inFace).center().toLocation(getStructure().getWorld()), l));
 					return false;
 				}
 
@@ -463,7 +472,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void setDirection(Direction d)
 	{
-		this.direction = d;
+		applyFrame(PortalFrame.derive(getStructure().getArea(), d));
+		save();
+	}
+
+	@Override
+	public void setFrame(PortalFrame frame)
+	{
+		applyFrame(frame);
 		save();
 	}
 
@@ -473,14 +489,26 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		if(t.getType().equals(TraversableType.PLAYER) || t.getType().equals(TraversableType.ENTITY))
 		{
 			Entity p = (Entity) t.getObject();
-			Vector outVelocity = t.getOutVelocity(getDirection());
-			Vector outLook = t.getOutLook(getDirection());
-			Vector outPlane = t.getOutPlane(getDirection());
+			Vector outVelocity = t.getOutVelocity(getFrame());
+			Vector outLook = t.getOutLook(getFrame());
+			Vector outPlane = t.getOutPlane(getFrame());
 			Direction dx = Direction.closest(outVelocity);
 			AxisAlignedBB face = getStructure().getFace(dx);
 			Location exit = face.center().toLocation(getStructure().getWorld()).subtract(outPlane);
-			exit.setDirection(outLook);
-			p.teleport(exit.clone().add(dx.toVector().normalize().multiply(1.25)));
+
+			Location target = exit.clone().add(dx.toVector().normalize().multiply(1.25));
+			target.setDirection(outLook);
+			if(p instanceof Player)
+			{
+				p.teleport(target, PlayerTeleportEvent.TeleportCause.PLUGIN,
+					TeleportFlag.Relative.VELOCITY_X,
+					TeleportFlag.Relative.VELOCITY_Y,
+					TeleportFlag.Relative.VELOCITY_Z);
+			}
+			else
+			{
+				p.teleport(target, PlayerTeleportEvent.TeleportCause.PLUGIN);
+			}
 			p.setVelocity(outVelocity);
 			playEffect(PortalEffect.PUSH, exit);
 
@@ -767,6 +795,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					}
 
 					chosenDirection = Direction.getDirection(p.getLocation().getDirection());
+					chosenLook = p.getLocation().getDirection();
 					sendShortTitle(p, ChatColor.GRAY + "" + ChatColor.BOLD + chosenDirection.toString());
 				});
 			}
@@ -790,12 +819,13 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				boolean cancelled = e.getPlayer().isSneaking();
 				if(!cancelled)
 				{
-					setDirection(chosenDirection);
+					setFrame(PortalFrame.fromDirectionAndLook(chosenDirection, chosenLook));
 					Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s direction changed to " + getDirection().toString() + ".", getStructure().getCenter());
 				}
 
 				directionChanger = null;
 				chosenDirection = null;
+				chosenLook = null;
 				e.getPlayer().sendMessage(Wormholes.tag + (cancelled ? "Cancelled" : "Direction set"));
 			}
 		}
@@ -829,7 +859,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public AxisAlignedBB getView()
 	{
-		if(view == null)
+		if(view == null || viewRange != Settings.PROJECTION_RANGE)
 		{
 			view = computeView();
 		}
@@ -839,6 +869,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private AxisAlignedBB computeView()
 	{
 		double range = Settings.PROJECTION_RANGE;
+		viewRange = range;
 		Vector pad = new Vector(-range, -range, -range);
 		Vector padPositive = new Vector(range, range, range);
 		return new AxisAlignedBB(getStructure().getArea().min().add(pad), getStructure().getArea().max().add(padPositive));

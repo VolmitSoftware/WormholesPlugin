@@ -9,6 +9,8 @@ import art.arcane.wormholes.util.Direction;
 public interface IPortal extends IWritable {
     public Direction getDirection();
 
+    public PortalFrame getFrame();
+
     public UUID getId();
 
     public String getName();

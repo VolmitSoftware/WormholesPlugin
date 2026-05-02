@@ -10,6 +10,8 @@ import art.arcane.wormholes.util.JSONObject;
 public abstract class Portal implements IPortal
 {
 	protected Direction direction;
+	private PortalFrame frame;
+	private boolean frameLoadedFromJson;
 	private UUID id;
 	private Vector origin;
 	private String name;
@@ -18,14 +20,17 @@ public abstract class Portal implements IPortal
 	{
 		this.id = id;
 		this.origin = origin;
-		direction = Direction.N;
+		frame = PortalFrame.canonical(Direction.N);
+		direction = frame.getNormal();
+		frameLoadedFromJson = false;
 		name = "Portal " + id.toString().substring(0, 4);
 	}
 
 	@Override
 	public void saveJSON(JSONObject j)
 	{
-		j.put("direction", direction.name());
+		j.put("direction", frame.getNormal().name());
+		j.put("frame", frame.toJSON());
 		j.put("id", getId().toString());
 		JSONObject origin = new JSONObject();
 		origin.put("x", getOrigin().getX());
@@ -39,6 +44,9 @@ public abstract class Portal implements IPortal
 	public void loadJSON(JSONObject j)
 	{
 		direction = Direction.valueOf(j.getString("direction"));
+		frameLoadedFromJson = j.has("frame");
+		frame = frameLoadedFromJson ? PortalFrame.fromJSON(direction, j.getJSONObject("frame")) : PortalFrame.canonical(direction);
+		direction = frame.getNormal();
 		id = UUID.fromString(j.getString("id"));
 		JSONObject origin = j.getJSONObject("origin");
 		this.origin = new Vector(origin.getDouble("x"), origin.getDouble("y"), origin.getDouble("z"));
@@ -81,6 +89,23 @@ public abstract class Portal implements IPortal
 	@Override
 	public Direction getDirection()
 	{
-		return direction;
+		return frame.getNormal();
+	}
+
+	@Override
+	public PortalFrame getFrame()
+	{
+		return frame;
+	}
+
+	protected boolean hasFrameLoadedFromJson()
+	{
+		return frameLoadedFromJson;
+	}
+
+	protected void applyFrame(PortalFrame frame)
+	{
+		this.frame = frame;
+		this.direction = frame.getNormal();
 	}
 }

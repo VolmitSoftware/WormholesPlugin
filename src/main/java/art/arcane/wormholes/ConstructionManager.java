@@ -9,10 +9,12 @@ import org.bukkit.Location;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 import org.bukkit.event.Listener;
+import org.bukkit.util.Vector;
 
 import art.arcane.wormholes.portal.GatewayPortal;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.LocalPortal;
+import art.arcane.wormholes.portal.PortalFrame;
 import art.arcane.wormholes.portal.PortalStructure;
 import art.arcane.wormholes.portal.PortalType;
 import art.arcane.wormholes.portal.WormholePortal;
@@ -31,6 +33,11 @@ public class ConstructionManager implements Listener
 
 	public void constructPortal(Player player, Set<Block> blocks, PortalType type, Direction d)
 	{
+		constructPortal(player, blocks, type, d, player == null ? null : player.getLocation().getDirection());
+	}
+
+	public void constructPortal(Player player, Set<Block> blocks, PortalType type, Direction d, Vector look)
+	{
 		if(blocks == null || blocks.isEmpty())
 		{
 			return;
@@ -39,10 +46,10 @@ public class ConstructionManager implements Listener
 		Block firstBlock = blocks.iterator().next();
 		Location anchor = firstBlock.getLocation();
 
-		FoliaScheduler.runRegion(Wormholes.instance, anchor, () -> performConstruct(blocks, type, d), 25L);
+		FoliaScheduler.runRegion(Wormholes.instance, anchor, () -> performConstruct(blocks, type, d, look), 25L);
 	}
 
-	private void performConstruct(Set<Block> blocks, PortalType type, Direction d)
+	private void performConstruct(Set<Block> blocks, PortalType type, Direction d, Vector look)
 	{
 		Cuboid c = null;
 
@@ -83,7 +90,7 @@ public class ConstructionManager implements Listener
 			s.setWorld(c.getWorld());
 			s.setArea(c);
 			ILocalPortal portal = createPortal(s, type);
-			portal.setDirection(d);
+			portal.setFrame(PortalFrame.fromDirectionAndLook(d, look));
 			portal.open();
 			portal.save();
 			Wormholes.portalManager.addLocalPortal(portal);

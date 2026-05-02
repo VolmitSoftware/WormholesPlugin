@@ -128,7 +128,23 @@ public class AxisAlignedBB implements IWritable
 
 	public void encapsulate(AxisAlignedBB b)
 	{
-		encapsulate(new KList<Vector>().qadd(b.min()).qadd(b.max()));
+		encapsulate(b.xa, b.ya, b.za, b.xb, b.yb, b.zb);
+	}
+
+	public void encapsulate(double x0, double y0, double z0, double x1, double y1, double z1)
+	{
+		double xMin = x0 < x1 ? x0 : x1;
+		double yMin = y0 < y1 ? y0 : y1;
+		double zMin = z0 < z1 ? z0 : z1;
+		double xMax = x0 > x1 ? x0 : x1;
+		double yMax = y0 > y1 ? y0 : y1;
+		double zMax = z0 > z1 ? z0 : z1;
+		if (xMin < xa) xa = xMin;
+		if (yMin < ya) ya = yMin;
+		if (zMin < za) za = zMin;
+		if (xMax > xb) xb = xMax;
+		if (yMax > yb) yb = yMax;
+		if (zMax > zb) zb = zMax;
 	}
 
 	public Collection<Entity> getEntities(World w)
@@ -148,6 +164,13 @@ public class AxisAlignedBB implements IWritable
 			zb = i.getZ() > zb ? i.getZ() : zb;
 		}
 	}
+
+	public double getXa() { return xa; }
+	public double getXb() { return xb; }
+	public double getYa() { return ya; }
+	public double getYb() { return yb; }
+	public double getZa() { return za; }
+	public double getZb() { return zb; }
 
 	public Vector getCornerVector(Direction x, Direction y, Direction z)
 	{
@@ -215,6 +238,11 @@ public class AxisAlignedBB implements IWritable
 	public boolean contains(AlignedPoint p)
 	{
 		return p.getX() >= xa && p.getX() <= xb && p.getY() >= ya && p.getY() <= yb && p.getZ() >= za && p.getZ() <= zb;
+	}
+
+	public boolean containsPrimitive(double x, double y, double z)
+	{
+		return x >= xa && x <= xb && y >= ya && y <= yb && z >= za && z <= zb;
 	}
 
 	public boolean intersects(AxisAlignedBB s)

@@ -2,11 +2,8 @@ package art.arcane.wormholes.util;
 
 import org.bukkit.util.Vector;
 
-import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.util.Cuboid.CuboidDirection;
-import art.arcane.volmlib.util.collection.GBiset;
 import art.arcane.volmlib.util.collection.KList;
-import art.arcane.volmlib.util.collection.KMap;
 
 /**
  * Directions
@@ -22,12 +19,35 @@ public enum Direction
 	E(1, 0, 0, CuboidDirection.East),
 	W(-1, 0, 0, CuboidDirection.West);
 
-	private static KMap<GBiset<Direction, Direction>, DOP> permute = null;
-
 	private int x;
 	private int y;
 	private int z;
 	private CuboidDirection f;
+
+	public float toYaw()
+	{
+		switch(this)
+		{
+			case S:
+				return 0f;
+			case W:
+				return 90f;
+			case N:
+				return 180f;
+			case E:
+				return -90f;
+			default:
+				return 0f;
+		}
+	}
+
+	public float yawDeltaTo(Direction other)
+	{
+		float delta = other.toYaw() - this.toYaw();
+		while (delta > 180f) delta -= 360f;
+		while (delta < -180f) delta += 360f;
+		return delta;
+	}
 
 	@Override
 	public String toString()
@@ -57,6 +77,30 @@ public enum Direction
 	}
 
 	public static Direction closest(Vector v)
+	{
+		return closest(v.getX(), v.getY(), v.getZ());
+	}
+
+	public static Direction closest(double x, double y, double z)
+	{
+		double ax = Math.abs(x);
+		double ay = Math.abs(y);
+		double az = Math.abs(z);
+
+		if(ay >= ax && ay >= az)
+		{
+			return y >= 0.0D ? U : D;
+		}
+
+		if(ax >= az)
+		{
+			return x >= 0.0D ? E : W;
+		}
+
+		return z >= 0.0D ? S : N;
+	}
+
+	public static Direction closestSlow(Vector v)
 	{
 		double m = Double.MAX_VALUE;
 		Direction s = null;
@@ -146,17 +190,9 @@ public enum Direction
 
 	public Vector angle(Vector initial, Direction d)
 	{
-		calculatePermutations();
-
-		for(GBiset<Direction, Direction> i : permute.keySet())
-		{
-			if(i.getA().equals(this) && i.getB().equals(d))
-			{
-				return permute.get(i).op(initial);
-			}
-		}
-
-		return initial;
+		double[] out = new double[3];
+		rotateInto(initial.getX(), initial.getY(), initial.getZ(), d, out);
+		return new Vector(out[0], out[1], out[2]);
 	}
 
 	public Direction reverse()
@@ -302,152 +338,6 @@ public enum Direction
 		return -1;
 	}
 
-	public static void calculatePermutations()
-	{
-		Profiler px = new Profiler();
-		px.begin();
-		if(permute != null)
-		{
-			return;
-		}
-
-		permute = new KMap<GBiset<Direction, Direction>, DOP>();
-
-		for(Direction i : udnews())
-		{
-			for(Direction j : udnews())
-			{
-				GBiset<Direction, Direction> b = new GBiset<Direction, Direction>(i, j);
-
-				if(i.equals(j))
-				{
-					permute.put(b, new DOP("DIRECT")
-					{
-						@Override
-						public Vector op(Vector v)
-						{
-							return v;
-						}
-					});
-				}
-
-				else if(i.reverse().equals(j))
-				{
-					if(i.isVertical())
-					{
-						permute.put(b, new DOP("R180CCZ")
-						{
-							@Override
-							public Vector op(Vector v)
-							{
-								return VectorMath.rotate90CCZ(VectorMath.rotate90CCZ(v));
-							}
-						});
-					}
-
-					else
-					{
-						permute.put(b, new DOP("R180CCY")
-						{
-							@Override
-							public Vector op(Vector v)
-							{
-								return VectorMath.rotate90CCY(VectorMath.rotate90CCY(v));
-							}
-						});
-					}
-				}
-
-				else if(getDirection(VectorMath.rotate90CX(i.toVector())).equals(j))
-				{
-					permute.put(b, new DOP("R90CX")
-					{
-						@Override
-						public Vector op(Vector v)
-						{
-							return VectorMath.rotate90CX(v);
-						}
-					});
-				}
-
-				else if(getDirection(VectorMath.rotate90CCX(i.toVector())).equals(j))
-				{
-					permute.put(b, new DOP("R90CCX")
-					{
-						@Override
-						public Vector op(Vector v)
-						{
-							return VectorMath.rotate90CCX(v);
-						}
-					});
-				}
-
-				else if(getDirection(VectorMath.rotate90CY(i.toVector())).equals(j))
-				{
-					permute.put(b, new DOP("R90CY")
-					{
-						@Override
-						public Vector op(Vector v)
-						{
-							return VectorMath.rotate90CY(v);
-						}
-					});
-				}
-
-				else if(getDirection(VectorMath.rotate90CCY(i.toVector())).equals(j))
-				{
-					permute.put(b, new DOP("R90CCY")
-					{
-						@Override
-						public Vector op(Vector v)
-						{
-							return VectorMath.rotate90CCY(v);
-						}
-					});
-				}
-
-				else if(getDirection(VectorMath.rotate90CZ(i.toVector())).equals(j))
-				{
-					permute.put(b, new DOP("R90CZ")
-					{
-						@Override
-						public Vector op(Vector v)
-						{
-							return VectorMath.rotate90CZ(v);
-						}
-					});
-				}
-
-				else if(getDirection(VectorMath.rotate90CCZ(i.toVector())).equals(j))
-				{
-					permute.put(b, new DOP("R90CCZ")
-					{
-						@Override
-						public Vector op(Vector v)
-						{
-							return VectorMath.rotate90CCZ(v);
-						}
-					});
-				}
-
-				else
-				{
-					permute.put(b, new DOP("FAIL")
-					{
-						@Override
-						public Vector op(Vector v)
-						{
-							return v;
-						}
-					});
-				}
-			}
-		}
-
-		px.end();
-		Wormholes.v("Precalculated " + F.f(permute.size()) + " permutations in " + F.time(px.getMilliseconds(), 1));
-	}
-
 	public Axis getAxis()
 	{
 		switch(this)
@@ -467,5 +357,71 @@ public enum Direction
 		}
 
 		return null;
+	}
+
+	public void rotateInto(double x, double y, double z, Direction to, double[] out3)
+	{
+		double right = x * rightX() + y * rightY() + z * rightZ();
+		double up = x * upX() + y * upY() + z * upZ();
+		double forward = x * this.x + y * this.y + z * this.z;
+		out3[0] = (right * to.rightX()) + (up * to.upX()) + (forward * to.x);
+		out3[1] = (right * to.rightY()) + (up * to.upY()) + (forward * to.y);
+		out3[2] = (right * to.rightZ()) + (up * to.upZ()) + (forward * to.z);
+	}
+
+	private int rightX()
+	{
+		switch(this)
+		{
+			case N:
+				return 1;
+			case S:
+			case U:
+			case D:
+				return -1;
+			default:
+				return 0;
+		}
+	}
+
+	private int rightY()
+	{
+		return 0;
+	}
+
+	private int rightZ()
+	{
+		switch(this)
+		{
+			case E:
+				return 1;
+			case W:
+				return -1;
+			default:
+				return 0;
+		}
+	}
+
+	private int upX()
+	{
+		return 0;
+	}
+
+	private int upY()
+	{
+		return isVertical() ? 0 : 1;
+	}
+
+	private int upZ()
+	{
+		switch(this)
+		{
+			case U:
+				return -1;
+			case D:
+				return 1;
+			default:
+				return 0;
+		}
 	}
 }

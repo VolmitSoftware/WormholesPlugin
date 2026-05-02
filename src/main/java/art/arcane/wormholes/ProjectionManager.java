@@ -25,22 +25,23 @@ import art.arcane.wormholes.util.AxisAlignedBB;
 import art.arcane.wormholes.util.J;
 
 public class ProjectionManager implements Listener {
-    private static final int TICK_INTERVAL = 4;
     private static final long DIAGNOSTIC_INTERVAL_MS = 5_000L;
 
     private final Map<UUID, Map<UUID, PortalProjector>> projectors;
     private long lastDiagnostic;
     private long tickCount;
     private boolean firstTickLogged;
+    private int taskId;
+    private int currentInterval;
 
     public ProjectionManager() {
-        Wormholes.v("[ProjectionManager] starting (sync interval " + TICK_INTERVAL + "t, range " + Settings.PROJECTION_RANGE + ")");
         this.projectors = new HashMap<UUID, Map<UUID, PortalProjector>>();
         this.lastDiagnostic = 0L;
         this.tickCount = 0L;
         this.firstTickLogged = false;
-        int taskId = J.sr(() -> tick(), TICK_INTERVAL);
-        Wormholes.v("[ProjectionManager] tick scheduled (taskId=" + taskId + ")");
+        this.taskId = -1;
+        this.currentInterval = -1;
+        scheduleTick();
     }
 
     @EventHandler
@@ -296,6 +297,10 @@ public class ProjectionManager implements Listener {
     }
 
     public void shutdown() {
+        if (taskId >= 0) {
+            J.csr(taskId);
+            taskId = -1;
+        }
         for (Map<UUID, PortalProjector> portalProjectors : projectors.values()) {
             for (PortalProjector projector : portalProjectors.values()) {
                 try {
@@ -306,6 +311,23 @@ public class ProjectionManager implements Listener {
             }
         }
         projectors.clear();
+    }
+
+    public void onSettingsReloaded() {
+        scheduleTick();
+    }
+
+    private void scheduleTick() {
+        int interval = Math.max(1, Settings.PROJECTION_REFRESH_INTERVAL_TICKS);
+        if (taskId >= 0 && currentInterval == interval) {
+            return;
+        }
+        if (taskId >= 0) {
+            J.csr(taskId);
+        }
+        currentInterval = interval;
+        taskId = J.sr(() -> tick(), interval);
+        Wormholes.v("[ProjectionManager] tick scheduled (taskId=" + taskId + ", interval=" + interval + "t, range=" + Settings.PROJECTION_RANGE + ")");
     }
 
     private void closeOnRegion(PortalProjector projector, Location center) {

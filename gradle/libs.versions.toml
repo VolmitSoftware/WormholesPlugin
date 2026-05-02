@@ -4,11 +4,17 @@ runTask = "2.3.1"
 paper = "1.21.11-R0.1-SNAPSHOT"
 packetevents = "2.12.1"
 bstats = "3.0.2"
+toml4j = "0.7.2"
+junit = "5.10.2"
+junitPlatform = "1.10.2"
 
 [libraries]
 paper = { module = "io.papermc.paper:paper-api", version.ref = "paper" }
 packetevents = { module = "com.github.retrooper:packetevents-spigot", version.ref = "packetevents" }
 bstats = { module = "org.bstats:bstats-bukkit", version.ref = "bstats" }
+toml4j = { module = "com.moandjiezana.toml:toml4j", version.ref = "toml4j" }
+junitJupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+junitPlatformLauncher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junitPlatform" }
 
 [plugins]
 shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }

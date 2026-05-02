@@ -11,108 +11,92 @@ import art.arcane.wormholes.util.Direction;
 import art.arcane.wormholes.util.VectorMath;
 
 public final class Frustum4D {
-    private final KList<Frustum> frustums;
+    private final Frustum[] frustums;
     private final AxisAlignedBB region;
-    private final Location iris;
-    private final Direction direction;
 
     public Frustum4D(Location iris, PortalStructure structure, double range) {
-        this.iris = iris;
-        this.frustums = new KList<Frustum>();
-
         double distanceToPortal = iris.distance(structure.getCenter());
-        double effectiveRange = range + (range / (distanceToPortal + 1.0D));
-        Vector eyeToPortal = VectorMath.reverse(VectorMath.direction(iris, structure.getCenter()));
-        this.direction = Direction.closest(eyeToPortal);
+        double effectiveRange = range;
+        Vector portalToEye = VectorMath.reverse(VectorMath.direction(iris, structure.getCenter()));
+
+        double padding = Settings.NEAR_PLANE_PADDING;
+        Location apex;
+        if (padding > 0.0001D && distanceToPortal > 0.0001D) {
+            Vector backOffset = portalToEye.clone().normalize().multiply(padding);
+            apex = iris.clone().add(backOffset);
+        } else {
+            apex = iris;
+        }
 
         double cullRatio = Settings.FRUSTUM_CULLING_RATIO;
+        KList<Frustum> built = new KList<Frustum>();
         for (Direction face : Direction.values()) {
-            if (face.x() == 1 && eyeToPortal.getX() > cullRatio) {
-                frustums.add(new Frustum(iris, structure, face, effectiveRange));
+            if (face.x() == 1 && portalToEye.getX() > cullRatio) {
+                built.add(new Frustum(apex, structure, face, effectiveRange));
                 continue;
             }
-            if (face.x() == -1 && eyeToPortal.getX() < cullRatio) {
-                frustums.add(new Frustum(iris, structure, face, effectiveRange));
+            if (face.x() == -1 && portalToEye.getX() < cullRatio) {
+                built.add(new Frustum(apex, structure, face, effectiveRange));
                 continue;
             }
-            if (face.y() == 1 && eyeToPortal.getY() > cullRatio) {
-                frustums.add(new Frustum(iris, structure, face, effectiveRange));
+            if (face.y() == 1 && portalToEye.getY() > cullRatio) {
+                built.add(new Frustum(apex, structure, face, effectiveRange));
                 continue;
             }
-            if (face.y() == -1 && eyeToPortal.getY() < cullRatio) {
-                frustums.add(new Frustum(iris, structure, face, effectiveRange));
+            if (face.y() == -1 && portalToEye.getY() < cullRatio) {
+                built.add(new Frustum(apex, structure, face, effectiveRange));
                 continue;
             }
-            if (face.z() == 1 && eyeToPortal.getZ() > cullRatio) {
-                frustums.add(new Frustum(iris, structure, face, effectiveRange));
+            if (face.z() == 1 && portalToEye.getZ() > cullRatio) {
+                built.add(new Frustum(apex, structure, face, effectiveRange));
                 continue;
             }
-            if (face.z() == -1 && eyeToPortal.getZ() < cullRatio) {
-                frustums.add(new Frustum(iris, structure, face, effectiveRange));
+            if (face.z() == -1 && portalToEye.getZ() < cullRatio) {
+                built.add(new Frustum(apex, structure, face, effectiveRange));
             }
         }
 
-        if (frustums.isEmpty()) {
-            Direction fallback = Direction.closest(VectorMath.reverse(eyeToPortal.clone()));
-            frustums.add(new Frustum(iris, structure, fallback, effectiveRange));
+        if (built.isEmpty()) {
+            Direction fallback = Direction.closest(VectorMath.reverse(portalToEye.clone()));
+            built.add(new Frustum(apex, structure, fallback, effectiveRange));
         }
 
-        AxisAlignedBB acc = new AxisAlignedBB(frustums.get(0).getRegion());
-        int count = frustums.size();
-        for (int i = 1; i < count; i++) {
-            acc.encapsulate(frustums.get(i).getRegion());
+        this.frustums = built.toArray(new Frustum[built.size()]);
+
+        AxisAlignedBB acc = new AxisAlignedBB(this.frustums[0].getRegion());
+        for (int i = 1; i < this.frustums.length; i++) {
+            acc.encapsulate(this.frustums[i].getRegion());
         }
         this.region = acc;
     }
 
     public boolean contains(Vector p) {
-        if (!region.contains(p)) {
-            return false;
-        }
-        int count = frustums.size();
-        for (int i = 0; i < count; i++) {
-            if (frustums.get(i).contains(p)) {
-                return true;
-            }
-        }
-        return false;
+        return containsPrimitive(p.getX(), p.getY(), p.getZ());
     }
 
     public boolean contains(Location p) {
-        if (!region.contains(p)) {
+        return containsPrimitive(p.getX(), p.getY(), p.getZ());
+    }
+
+    public boolean containsPrimitive(double x, double y, double z) {
+        if (!region.containsPrimitive(x, y, z)) {
             return false;
         }
-        int count = frustums.size();
+        Frustum[] arr = frustums;
+        int count = arr.length;
         for (int i = 0; i < count; i++) {
-            if (frustums.get(i).contains(p)) {
+            if (arr[i].containsPrimitive(x, y, z)) {
                 return true;
             }
         }
         return false;
-    }
-
-    public boolean sameIrisBlock(Frustum4D other) {
-        if (other == null) {
-            return false;
-        }
-        return iris.getBlockX() == other.iris.getBlockX()
-            && iris.getBlockY() == other.iris.getBlockY()
-            && iris.getBlockZ() == other.iris.getBlockZ();
     }
 
     public AxisAlignedBB getRegion() {
         return region;
     }
 
-    public Direction getDirection() {
-        return direction;
-    }
-
-    public Location getIris() {
-        return iris;
-    }
-
     public int getFaceCount() {
-        return frustums.size();
+        return frustums.length;
     }
 }

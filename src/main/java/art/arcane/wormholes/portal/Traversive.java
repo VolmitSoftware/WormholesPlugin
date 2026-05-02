@@ -11,16 +11,21 @@ public class Traversive
 {
 	private final Object object;
 	private final TraversableType type;
-	private final Direction inDirection;
+	private final PortalFrame inFrame;
 	private final Vector inVelocity;
 	private final Vector inLook;
 	private final Vector inPlane;
 
 	public Traversive(Object o, TraversableType type, Direction inDirection, Vector inVelocity, Vector inLook, Vector inPlane)
 	{
+		this(o, type, PortalFrame.canonical(inDirection), inVelocity, inLook, inPlane);
+	}
+
+	public Traversive(Object o, TraversableType type, PortalFrame inFrame, Vector inVelocity, Vector inLook, Vector inPlane)
+	{
 		this.object = o;
 		this.type = type;
-		this.inDirection = inDirection;
+		this.inFrame = inFrame;
 		this.inVelocity = inVelocity;
 		this.inLook = inLook;
 		this.inPlane = inPlane;
@@ -31,29 +36,59 @@ public class Traversive
 		this(player, TraversableType.PLAYER, inDirection, inVelocity, inLook, inPlane);
 	}
 
+	public Traversive(Player player, PortalFrame inFrame, Vector inVelocity, Vector inLook, Vector inPlane)
+	{
+		this(player, TraversableType.PLAYER, inFrame, inVelocity, inLook, inPlane);
+	}
+
 	public Traversive(Entity entity, Direction inDirection, Vector inVelocity, Vector inLook, Vector inPlane)
 	{
 		this(entity, TraversableType.ENTITY, inDirection, inVelocity, inLook, inPlane);
 	}
 
+	public Traversive(Entity entity, PortalFrame inFrame, Vector inVelocity, Vector inLook, Vector inPlane)
+	{
+		this(entity, TraversableType.ENTITY, inFrame, inVelocity, inLook, inPlane);
+	}
+
 	public Vector getOutVelocity(Direction outDirection)
 	{
-		return getInDirection().angle(getInVelocity(), outDirection);
+		return getOutVelocity(PortalFrame.canonical(outDirection));
+	}
+
+	public Vector getOutVelocity(PortalFrame outFrame)
+	{
+		return inFrame.transformVector(getInVelocity(), outFrame);
 	}
 
 	public Vector getOutLook(Direction outDirection)
 	{
-		return getInDirection().angle(getInLook(), outDirection);
+		return getOutLook(PortalFrame.canonical(outDirection));
+	}
+
+	public Vector getOutLook(PortalFrame outFrame)
+	{
+		return inFrame.transformVector(getInLook(), outFrame);
 	}
 
 	public Vector getOutPlane(Direction outDirection)
 	{
-		return getInDirection().angle(getInPlane(), outDirection);
+		return getOutPlane(PortalFrame.canonical(outDirection));
+	}
+
+	public Vector getOutPlane(PortalFrame outFrame)
+	{
+		return inFrame.transformVector(getInPlane(), outFrame);
 	}
 
 	public Direction getInDirection()
 	{
-		return inDirection;
+		return inFrame.getNormal();
+	}
+
+	public PortalFrame getInFrame()
+	{
+		return inFrame;
 	}
 
 	public Vector getInVelocity()
