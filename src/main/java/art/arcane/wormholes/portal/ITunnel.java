@@ -19,7 +19,7 @@ public interface ITunnel extends IWritable
 		switch(t)
 		{
 			case DIMENSIONAL:
-				LocalTunnel tux = new LocalTunnel(null);
+				DimensionalTunnel tux = new DimensionalTunnel(null);
 				tux.loadJSON(j);
 				return tux;
 			case LOCAL:

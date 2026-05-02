@@ -98,6 +98,43 @@ public final class PortalFrameTest {
 		assertEquals(Direction.D, remoteDown.transformDirection(Direction.S, localNorth, scratch));
 	}
 
+	@Test
+	public void flipNormalPreservesScreenUpAndReversesScreenRight() {
+		PortalFrame northFrame = PortalFrame.canonical(Direction.N);
+		PortalFrame flipped = northFrame.flipNormal();
+
+		assertEquals(Direction.S, flipped.getNormal());
+		assertEquals(Direction.U, flipped.getUp());
+		assertEquals(Direction.W, flipped.getRight());
+	}
+
+	@Test
+	public void rollRotatesScreenAxesAroundNormal() {
+		PortalFrame northFrame = PortalFrame.canonical(Direction.N);
+		PortalFrame clockwise = northFrame.rotateClockwise();
+		PortalFrame counterClockwise = northFrame.rotateCounterClockwise();
+
+		assertEquals(Direction.N, clockwise.getNormal());
+		assertEquals(Direction.E, clockwise.getUp());
+		assertEquals(Direction.D, clockwise.getRight());
+
+		assertEquals(Direction.N, counterClockwise.getNormal());
+		assertEquals(Direction.W, counterClockwise.getUp());
+		assertEquals(Direction.U, counterClockwise.getRight());
+	}
+
+	@Test
+	public void changingNormalPreservesRollWhenPossible() {
+		PortalFrame rolledNorth = PortalFrame.canonical(Direction.N).rotateClockwise();
+		PortalFrame flipped = rolledNorth.withNormal(Direction.S);
+		PortalFrame upFacing = rolledNorth.withNormal(Direction.U);
+
+		assertEquals(Direction.S, flipped.getNormal());
+		assertEquals(Direction.E, flipped.getUp());
+		assertEquals(Direction.U, upFacing.getNormal());
+		assertEquals(Direction.E, upFacing.getUp());
+	}
+
 	private static void assertVector(Vector expected, Vector actual) {
 		assertEquals(expected.getX(), actual.getX(), EPSILON);
 		assertEquals(expected.getY(), actual.getY(), EPSILON);

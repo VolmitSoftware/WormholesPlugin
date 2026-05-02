@@ -2,7 +2,10 @@ package art.arcane.wormholes.portal;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Iterator;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -49,12 +52,15 @@ import art.arcane.wormholes.util.ParticleEffect;
 import art.arcane.wormholes.util.PhantomSpinner;
 import art.arcane.wormholes.util.RString;
 import art.arcane.wormholes.util.VIO;
-import art.arcane.wormholes.util.VectorMath;
 
 import net.md_5.bungee.api.ChatColor;
 
 public class LocalPortal extends Portal implements ILocalPortal, IProgressivePortal, IFXPortal, IOwnablePortal, Listener
 {
+	private static final long TELEPORT_COOLDOWN_MILLIS = 1000L;
+	private static final ParticleEffect.OrdinaryColor OUTLINE_PARTICLE_COLOR = new ParticleEffect.OrdinaryColor(150, 80, 255);
+	private static final ConcurrentHashMap<UUID, Long> TELEPORT_COOLDOWNS = new ConcurrentHashMap<UUID, Long>();
+
 	private PhantomSpinner spinner;
 	private PortalStructure structure;
 	private PortalType type;
@@ -186,9 +192,23 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			return;
 		}
 
+		long now = System.currentTimeMillis();
+		pruneTeleportCooldowns(now);
 		for(Entity i : getStructure().getCaptureZone().getEntities(getStructure().getWorld()))
 		{
-			getTunnel().push(rayTeleport(i));
+			if(isTeleportCoolingDown(i.getUniqueId(), now))
+			{
+				continue;
+			}
+
+			Traversive traversive = rayTeleport(i);
+			if(traversive == null)
+			{
+				continue;
+			}
+
+			markTeleportCooldown(i.getUniqueId(), now);
+			getTunnel().push(traversive);
 		}
 	}
 
@@ -197,7 +217,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		Vector velocity = Wormholes.traversableManager.getVelocity(i);
 		Location start = i.getLocation();
 		Location end = start.clone().add(velocity);
-		Direction inFace = Direction.getDirection(velocity);
 		Traversive[] f = new Traversive[1];
 
 		new Raycast(start, end, 0.09)
@@ -205,10 +224,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			@Override
 			public boolean shouldContinue(Location l)
 			{
-				if(getStructure().getArea().contains(l))
+				if(getStructure().contains(l))
 				{
 					playEffect(PortalEffect.PUSH, l);
-					f[0] = new Traversive(i, getFrame(), velocity, i.getLocation().getDirection(), VectorMath.directionNoNormal(getStructure().getArea().getFace(inFace).center().toLocation(getStructure().getWorld()), l));
+					f[0] = new Traversive(i, getFrame(), getOrigin(), l.toVector(), velocity, i.getLocation().getDirection());
 					return false;
 				}
 
@@ -314,6 +333,94 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 	}
 
+	private void playStructureOutline()
+	{
+		if(!M.r(0.45))
+		{
+			return;
+		}
+
+		Axis normalAxis = getFrame().getNormal().getAxis();
+		for(Vector block : getStructure().getBlockPositions())
+		{
+			int x = block.getBlockX();
+			int y = block.getBlockY();
+			int z = block.getBlockZ();
+
+			for(Direction direction : Direction.values())
+			{
+				if(direction.getAxis().equals(normalAxis))
+				{
+					continue;
+				}
+
+				if(!getStructure().containsBlock(x + direction.x(), y + direction.y(), z + direction.z()))
+				{
+					playBoundaryEdge(x, y, z, normalAxis, direction);
+				}
+			}
+		}
+	}
+
+	private void playBoundaryEdge(int x, int y, int z, Axis normalAxis, Direction edgeDirection)
+	{
+		double normalX = x + 0.5D + (getFrame().getNormal().x() * 0.06D);
+		double normalY = y + 0.5D + (getFrame().getNormal().y() * 0.06D);
+		double normalZ = z + 0.5D + (getFrame().getNormal().z() * 0.06D);
+
+		switch(normalAxis)
+		{
+			case X:
+				if(edgeDirection.getAxis().equals(Axis.Y))
+				{
+					double edgeY = y + (edgeDirection.y() > 0 ? 1.0D : 0.0D);
+					playOutlineLine(normalX, edgeY, z, normalX, edgeY, z + 1.0D);
+				}
+				else
+				{
+					double edgeZ = z + (edgeDirection.z() > 0 ? 1.0D : 0.0D);
+					playOutlineLine(normalX, y, edgeZ, normalX, y + 1.0D, edgeZ);
+				}
+				break;
+			case Y:
+				if(edgeDirection.getAxis().equals(Axis.X))
+				{
+					double edgeX = x + (edgeDirection.x() > 0 ? 1.0D : 0.0D);
+					playOutlineLine(edgeX, normalY, z, edgeX, normalY, z + 1.0D);
+				}
+				else
+				{
+					double edgeZ = z + (edgeDirection.z() > 0 ? 1.0D : 0.0D);
+					playOutlineLine(x, normalY, edgeZ, x + 1.0D, normalY, edgeZ);
+				}
+				break;
+			case Z:
+				if(edgeDirection.getAxis().equals(Axis.X))
+				{
+					double edgeX = x + (edgeDirection.x() > 0 ? 1.0D : 0.0D);
+					playOutlineLine(edgeX, y, normalZ, edgeX, y + 1.0D, normalZ);
+				}
+				else
+				{
+					double edgeY = y + (edgeDirection.y() > 0 ? 1.0D : 0.0D);
+					playOutlineLine(x, edgeY, normalZ, x + 1.0D, edgeY, normalZ);
+				}
+				break;
+			default:
+				break;
+		}
+	}
+
+	private void playOutlineLine(double x0, double y0, double z0, double x1, double y1, double z1)
+	{
+		for(int i = 0; i <= 3; i++)
+		{
+			double t = i / 3.0D;
+			Location point = new Location(getWorld(), x0 + ((x1 - x0) * t), y0 + ((y1 - y0) * t), z0 + ((z1 - z0) * t));
+			ParticleEffect.REDSTONE.display(OUTLINE_PARTICLE_COLOR, point, 32);
+		}
+	}
+
 	@Override
 	public void playEffect(PortalEffect effect, Location location)
 	{
@@ -359,6 +466,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				getStructure().getCenter().getWorld().playSound(getStructure().getCenter(), MSound.FRAME_SPAWN.bukkitSound(), 2.25f, 1.6f);
 				break;
 			case AMBIENT_INSPECTING:
+				playStructureOutline();
 				if(M.r(0.325))
 				{
 					for(Location i : getStructure().getCorners())
@@ -452,7 +560,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					@Override
 					public boolean shouldContinue(Location l)
 					{
-						if(getStructure().getArea().contains(l))
+						if(getStructure().contains(l))
 						{
 							hit.set(true);
 							return false;
@@ -472,7 +580,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void setDirection(Direction d)
 	{
-		applyFrame(PortalFrame.derive(getStructure().getArea(), d));
+		applyFrame(getFrame().withNormal(d));
 		save();
 	}
 
@@ -491,10 +599,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			Entity p = (Entity) t.getObject();
 			Vector outVelocity = t.getOutVelocity(getFrame());
 			Vector outLook = t.getOutLook(getFrame());
-			Vector outPlane = t.getOutPlane(getFrame());
+			Vector outOffset = t.getOutOffset(getFrame());
 			Direction dx = Direction.closest(outVelocity);
-			AxisAlignedBB face = getStructure().getFace(dx);
-			Location exit = face.center().toLocation(getStructure().getWorld()).subtract(outPlane);
+			Location exit = t.getOutPoint(getFrame(), getOrigin()).toLocation(getStructure().getWorld());
 
 			Location target = exit.clone().add(dx.toVector().normalize().multiply(1.25));
 			target.setDirection(outLook);
@@ -510,6 +617,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				p.teleport(target, PlayerTeleportEvent.TeleportCause.PLUGIN);
 			}
 			p.setVelocity(outVelocity);
+			markTeleportCooldown(p.getUniqueId(), System.currentTimeMillis());
 			playEffect(PortalEffect.PUSH, exit);
 
 			if(Settings.DEBUG_TRAVERSABLES)
@@ -520,8 +628,46 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				p.sendMessage("FCE: " + Direction.getDirection(t.getInVelocity()).reverse().toString() + " -> " + Direction.closest(outVelocity).toString());
 				p.sendMessage("MOV: " + Direction.getDirection(t.getInVelocity()).toString() + " -> " + Direction.getDirection(outVelocity).toString());
 				p.sendMessage("LOK: " + Direction.getDirection(t.getInLook()).toString() + " -> " + Direction.getDirection(outLook).toString());
-				p.sendMessage("PFL: " + "(" + F.f(t.getInPlane().getX(), 1) + ", " + F.f(t.getInPlane().getY(), 1) + ", " + F.f(t.getInPlane().getZ(), 1) + ") -> (" + F.f(outPlane.getX(), 1) + ", " + F.f(outPlane.getY(), 1) + ", " + F.f(outPlane.getZ(), 1) + ")");
+				p.sendMessage("POS: " + "(" + F.f(t.getInOffset().getX(), 1) + ", " + F.f(t.getInOffset().getY(), 1) + ", " + F.f(t.getInOffset().getZ(), 1) + ") -> (" + F.f(outOffset.getX(), 1) + ", " + F.f(outOffset.getY(), 1) + ", " + F.f(outOffset.getZ(), 1) + ")");
 				p.sendMessage("MOT: " + "(" + F.f(t.getInVelocity().getX(), 1) + ", " + F.f(t.getInVelocity().getY(), 1) + ", " + F.f(t.getInVelocity().getZ(), 1) + ") -> (" + F.f(outVelocity.getX(), 1) + ", " + F.f(outVelocity.getY(), 1) + ", " + F.f(outVelocity.getZ(), 1) + ")");
+			}
+		}
+	}
+
+	static boolean isTeleportCoolingDown(UUID entityId, long now)
+	{
+		Long until = TELEPORT_COOLDOWNS.get(entityId);
+		if(until == null)
+		{
+			return false;
+		}
+		if(until.longValue() <= now)
+		{
+			TELEPORT_COOLDOWNS.remove(entityId, until);
+			return false;
+		}
+		return true;
+	}
+
+	static void markTeleportCooldown(UUID entityId, long now)
+	{
+		TELEPORT_COOLDOWNS.put(entityId, Long.valueOf(now + TELEPORT_COOLDOWN_MILLIS));
+	}
+
+	private static void pruneTeleportCooldowns(long now)
+	{
+		if(TELEPORT_COOLDOWNS.size() < 256)
+		{
+			return;
+		}
+
+		Iterator<Map.Entry<UUID, Long>> iterator = TELEPORT_COOLDOWNS.entrySet().iterator();
+		while(iterator.hasNext())
+		{
+			Map.Entry<UUID, Long> entry = iterator.next();
+			if(entry.getValue().longValue() <= now)
+			{
+				TELEPORT_COOLDOWNS.remove(entry.getKey(), entry.getValue());
 			}
 		}
 	}
@@ -597,7 +743,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public boolean hasTunnel()
 	{
-		return getTunnel() != null;
+		return getTunnel() != null && getTunnel().getDestination() != null;
 	}
 
 	@Override
@@ -637,6 +783,19 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					uiChangeDirection(p);
 					window.close();
 				}))
+		.setElement(2, 1, new UIElement("flip-face")
+				.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Flip Face")
+				.addLore(ChatColor.GRAY + "Reverse the portal face direction")
+				.addLore(ChatColor.GRAY + "Screen rotation stays aligned.")
+				.addLore(ChatColor.GRAY + "Current Roll Up " + ChatColor.AQUA + "" + ChatColor.BOLD + getFrame().getUp().toString())
+				.setMaterial(new MaterialBlock(Material.TARGET))
+				.onLeftClick((e) ->
+				{
+					setFrame(getFrame().flipNormal());
+					Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s face flipped to " + getDirection().toString() + ".", getStructure().getCenter());
+					window.close();
+					uiOpenPortalMenu(p);
+				}))
 		.setElement(1, 2, new UIElement("destroy")
 				.setName(ChatColor.RED + "" + ChatColor.BOLD + "Destroy Portal")
 				.addLore(ChatColor.GRAY + "Destroys the portal and ")
@@ -662,6 +821,32 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					e.setEnchanted(isProjecting());
 					e.setMaterial(new MaterialBlock(isProjecting() ? Material.REDSTONE_TORCH : Material.TORCH));
 					window.updateInventory();
+				}))
+		.setElement(0, 2, new UIElement("rotate-counter-clockwise")
+				.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Counterclockwise")
+				.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees")
+				.addLore(ChatColor.GRAY + "without changing the face.")
+				.addLore(ChatColor.GRAY + "Current Up " + ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + getFrame().getUp().toString())
+				.setMaterial(new MaterialBlock(Material.REPEATER))
+				.onLeftClick((e) ->
+				{
+					setFrame(getFrame().rotateCounterClockwise());
+					Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s roll rotated counterclockwise.", getStructure().getCenter());
+					window.close();
+					uiOpenPortalMenu(p);
+				}))
+		.setElement(2, 2, new UIElement("rotate-clockwise")
+				.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Clockwise")
+				.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees")
+				.addLore(ChatColor.GRAY + "without changing the face.")
+				.addLore(ChatColor.GRAY + "Current Up " + ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + getFrame().getUp().toString())
+				.setMaterial(new MaterialBlock(Material.COMPARATOR))
+				.onLeftClick((e) ->
+				{
+					setFrame(getFrame().rotateClockwise());
+					Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s roll rotated clockwise.", getStructure().getCenter());
+					window.close();
+					uiOpenPortalMenu(p);
 				}))
 		.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
 		//@done
@@ -774,6 +959,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	{
 		p.sendMessage(Wormholes.tag + "Look in a direction then left click to apply.");
 		p.sendMessage(Wormholes.tag + "Shift-Left click to cancel.");
+		chosenDirection = Direction.closest(p.getLocation().getDirection());
+		chosenLook = p.getLocation().getDirection();
 		directionChanger = p;
 
 		new AR()
@@ -794,7 +981,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 						return;
 					}
 
-					chosenDirection = Direction.getDirection(p.getLocation().getDirection());
+					chosenDirection = Direction.closest(p.getLocation().getDirection());
 					chosenLook = p.getLocation().getDirection();
 					sendShortTitle(p, ChatColor.GRAY + "" + ChatColor.BOLD + chosenDirection.toString());
 				});
@@ -819,6 +1006,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				boolean cancelled = e.getPlayer().isSneaking();
 				if(!cancelled)
 				{
+					if(chosenDirection == null)
+					{
+						chosenDirection = Direction.closest(e.getPlayer().getLocation().getDirection());
+						chosenLook = e.getPlayer().getLocation().getDirection();
+					}
 					setFrame(PortalFrame.fromDirectionAndLook(chosenDirection, chosenLook));
 					Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s direction changed to " + getDirection().toString() + ".", getStructure().getCenter());
 				}

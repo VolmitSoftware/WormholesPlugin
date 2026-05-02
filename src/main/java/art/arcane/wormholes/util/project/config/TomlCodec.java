@@ -108,8 +108,15 @@ public final class TomlCodec {
             throw new IllegalStateException("Cannot read config field", e);
         }
 
+        String next = out.toString();
         try {
-            Files.writeString(tomlFile.toPath(), out.toString(), StandardCharsets.UTF_8);
+            if (tomlFile.isFile()) {
+                String existing = Files.readString(tomlFile.toPath(), StandardCharsets.UTF_8);
+                if (existing.equals(next)) {
+                    return;
+                }
+            }
+            Files.writeString(tomlFile.toPath(), next, StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to write " + tomlFile, e);
         }

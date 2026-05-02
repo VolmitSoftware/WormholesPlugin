@@ -47,7 +47,7 @@ public class EffectManager implements Listener
 	private void scanLookingPortalsFor(Player player)
 	{
 		ItemStack handItem = player.getInventory().getItemInMainHand();
-		boolean holdingWand = Wormholes.blockManager.isSame(handItem, Wormholes.blockManager.getWand());
+		boolean holdingPortalTool = Wormholes.blockManager.isPortalTool(handItem);
 
 		for(ILocalPortal portal : Wormholes.portalManager.getLocalPortals())
 		{
@@ -59,7 +59,7 @@ public class EffectManager implements Listener
 					continue;
 				}
 
-				FoliaScheduler.runRegion(Wormholes.instance, portalCenter, () -> portal.onLooking(player, holdingWand));
+				FoliaScheduler.runRegion(Wormholes.instance, portalCenter, () -> portal.onLooking(player, holdingPortalTool));
 			}
 		}
 	}

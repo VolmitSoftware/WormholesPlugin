@@ -110,11 +110,11 @@ public class CommandWormholes {
     public void info(@Param(name = "sender", contextual = true) CommandSender sender) {
         sender.sendMessage(Wormholes.tag + ChatColor.GOLD + "How to build a Wormhole");
         sender.sendMessage(ChatColor.YELLOW + "1. " + ChatColor.GRAY + "Run " + ChatColor.WHITE + "/wormholes wand" + ChatColor.GRAY + " to receive the wand and 32 wormhole runes.");
-        sender.sendMessage(ChatColor.YELLOW + "2. " + ChatColor.GRAY + "Place the runes in a SOLID rectangle (no gaps, no inner air).");
-        sender.sendMessage(ChatColor.GRAY + "   Examples that work: 2x2, 2x3, 3x3, 3x4, 4x4");
-        sender.sendMessage(ChatColor.GRAY + "   The frame must be flat (one axis-aligned wall).");
+        sender.sendMessage(ChatColor.YELLOW + "2. " + ChatColor.GRAY + "Place the runes as one connected flat plane.");
+        sender.sendMessage(ChatColor.GRAY + "   Rectangles, L-shapes, crosses, and other connected non-rectangular planes work.");
+        sender.sendMessage(ChatColor.GRAY + "   The frame must be flat on one axis-aligned wall, floor, or ceiling.");
         sender.sendMessage(ChatColor.YELLOW + "3. " + ChatColor.GRAY + "Hold the Portal Wand and " + ChatColor.WHITE + "left-click any rune block" + ChatColor.GRAY + " to form the portal.");
-        sender.sendMessage(ChatColor.GRAY + "   Hollow or non-rectangular shapes are refunded automatically.");
+        sender.sendMessage(ChatColor.GRAY + "   Shapes spanning more than one plane are refunded automatically.");
         sender.sendMessage(ChatColor.YELLOW + "4. " + ChatColor.GRAY + "Build a SECOND portal somewhere else (any distance, any world).");
         sender.sendMessage(ChatColor.YELLOW + "5. " + ChatColor.GRAY + "Right-click the open portal with the wand to open the menu.");
         sender.sendMessage(ChatColor.GRAY + "   Choose " + ChatColor.WHITE + "Set Focus" + ChatColor.GRAY + " then click the other portal in the list. Repeat from the other side.");

@@ -1,6 +1,6 @@
 package art.arcane.wormholes.portal;
 
-import java.util.Iterator;
+import java.util.HashSet;
 import java.util.Set;
 
 import org.bukkit.Bukkit;
@@ -13,6 +13,7 @@ import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.util.AxisAlignedBB;
 import art.arcane.wormholes.util.Cuboid;
 import art.arcane.wormholes.util.Direction;
+import art.arcane.wormholes.util.JSONArray;
 import art.arcane.volmlib.util.collection.KList;
 import art.arcane.volmlib.util.collection.KMap;
 import art.arcane.volmlib.util.collection.KSet;
@@ -26,12 +27,24 @@ public class PortalStructure implements IWritable
 	private World world;
 	private KMap<Direction, AxisAlignedBB> faceCache = new KMap<>();
 	private KSet<Location> cornerCache;
+	private final HashSet<Long> blockKeys = new HashSet<Long>();
+	private final KList<Vector> blockPositions = new KList<Vector>();
 
 	@Override
 	public void saveJSON(JSONObject j)
 	{
 		j.put("world", world.getName());
 		j.put("area", area.toJSON());
+		JSONArray blocks = new JSONArray();
+		for(Vector block : blockPositions)
+		{
+			JSONObject blockJson = new JSONObject();
+			blockJson.put("x", block.getBlockX());
+			blockJson.put("y", block.getBlockY());
+			blockJson.put("z", block.getBlockZ());
+			blocks.put(blockJson);
+		}
+		j.put("blocks", blocks);
 	}
 
 	@Override
@@ -40,7 +53,16 @@ public class PortalStructure implements IWritable
 		area = new AxisAlignedBB(0, 0, 0, 0, 0, 0);
 		area.loadJSON(j.getJSONObject("area"));
 		setWorld(Bukkit.getWorld(j.getString("world")));
-		captureZone = new AxisAlignedBB(getArea().min().add(new Vector(-Settings.CAPTURE_ZONE_RADIUS, -Settings.CAPTURE_ZONE_RADIUS, -Settings.CAPTURE_ZONE_RADIUS)), getArea().max().add(new Vector(Settings.CAPTURE_ZONE_RADIUS, Settings.CAPTURE_ZONE_RADIUS, Settings.CAPTURE_ZONE_RADIUS)));
+		clearBlockCells();
+		if(j.has("blocks"))
+		{
+			loadBlockCells(j.getJSONArray("blocks"));
+		}
+		else
+		{
+			setBlockCellsFromAreaBounds();
+		}
+		rebuildCaptureZone();
 		invalidateCache();
 	}
 
@@ -61,10 +83,16 @@ public class PortalStructure implements IWritable
 	public KSet<Block> toBlocks()
 	{
 		KList<Block> list = new KList<Block>();
-		Iterator<Block> it = getArea().toCuboid(getWorld()).iterator();
-		while (it.hasNext()) {
-			list.add(it.next());
+		if(getWorld() == null)
+		{
+			return new KSet<Block>(list);
 		}
+
+		for(Vector block : blockPositions)
+		{
+			list.add(getWorld().getBlockAt(block.getBlockX(), block.getBlockY(), block.getBlockZ()));
+		}
+
 		return new KSet<Block>(list);
 	}
 
@@ -89,6 +117,12 @@ public class PortalStructure implements IWritable
 
 	public Location randomLocation()
 	{
+		if(!blockPositions.isEmpty())
+		{
+			Vector block = blockPositions.getRandom();
+			return new Location(getWorld(), block.getBlockX() + Math.random(), block.getBlockY() + Math.random(), block.getBlockZ() + Math.random());
+		}
+
 		return getArea().random().toLocation(getWorld());
 	}
 
@@ -139,14 +173,108 @@ public class PortalStructure implements IWritable
 	public void setArea(Cuboid area)
 	{
 		this.area = new AxisAlignedBB(area);
-		captureZone = new AxisAlignedBB(getArea().min().add(new Vector(-Settings.CAPTURE_ZONE_RADIUS, -Settings.CAPTURE_ZONE_RADIUS, -Settings.CAPTURE_ZONE_RADIUS)), getArea().max().add(new Vector(Settings.CAPTURE_ZONE_RADIUS, Settings.CAPTURE_ZONE_RADIUS, Settings.CAPTURE_ZONE_RADIUS)));
+		setBlockCellsFromAreaBounds();
+		rebuildCaptureZone();
 		invalidateCache();
+	}
+
+	public void setBlocks(Set<Block> blocks)
+	{
+		if(blocks == null || blocks.isEmpty())
+		{
+			return;
+		}
+
+		Cuboid bounds = null;
+		World blockWorld = null;
+		clearBlockCells();
+
+		for(Block block : blocks)
+		{
+			if(block == null || block.getWorld() == null)
+			{
+				continue;
+			}
+
+			blockWorld = block.getWorld();
+			addBlockCell(block.getX(), block.getY(), block.getZ());
+			Cuboid cell = new Cuboid(block.getLocation());
+			bounds = bounds == null ? cell : bounds.getBoundingCuboid(cell);
+		}
+
+		if(bounds == null)
+		{
+			return;
+		}
+
+		setWorld(blockWorld);
+		this.area = new AxisAlignedBB(bounds);
+		rebuildCaptureZone();
+		invalidateCache();
+	}
+
+	public boolean contains(Location location)
+	{
+		if(location == null || getArea() == null || !getArea().contains(location))
+		{
+			return false;
+		}
+
+		if(getWorld() != null && location.getWorld() != null && !getWorld().equals(location.getWorld()))
+		{
+			return false;
+		}
+
+		return containsBlock(location.getBlockX(), location.getBlockY(), location.getBlockZ());
+	}
+
+	public boolean containsBlock(int x, int y, int z)
+	{
+		if(blockKeys.isEmpty())
+		{
+			return getArea() != null && getArea().containsPrimitive(x + 0.5D, y + 0.5D, z + 0.5D);
+		}
+
+		return blockKeys.contains(Long.valueOf(packBlockKey(x, y, z)));
+	}
+
+	public KList<Vector> getBlockPositions()
+	{
+		KList<Vector> copy = new KList<Vector>();
+		for(Vector block : blockPositions)
+		{
+			copy.add(block.clone());
+		}
+		return copy;
+	}
+
+	public KList<AxisAlignedBB> getApertureFaces(Direction face)
+	{
+		KList<AxisAlignedBB> faces = new KList<AxisAlignedBB>();
+		if(blockPositions.isEmpty() || isFullCuboid())
+		{
+			faces.add(getArea().getFace(face));
+			return faces;
+		}
+
+		for(Vector block : blockPositions)
+		{
+			faces.add(getBlockBox(block.getBlockX(), block.getBlockY(), block.getBlockZ()).getFace(face));
+		}
+
+		return faces;
+	}
+
+	public boolean isFullCuboid()
+	{
+		return !blockKeys.isEmpty() && blockKeys.size() == getBoundingBlockVolume();
 	}
 
 	private void invalidateCache()
 	{
 		faceCache.clear();
 		cornerCache = null;
+		box = null;
 	}
 
 	public double getSize()
@@ -157,5 +285,95 @@ public class PortalStructure implements IWritable
 	public AxisAlignedBB getCaptureZone()
 	{
 		return captureZone;
+	}
+
+	private void rebuildCaptureZone()
+	{
+		captureZone = new AxisAlignedBB(getArea().min().add(new Vector(-Settings.CAPTURE_ZONE_RADIUS, -Settings.CAPTURE_ZONE_RADIUS, -Settings.CAPTURE_ZONE_RADIUS)), getArea().max().add(new Vector(Settings.CAPTURE_ZONE_RADIUS, Settings.CAPTURE_ZONE_RADIUS, Settings.CAPTURE_ZONE_RADIUS)));
+	}
+
+	private void clearBlockCells()
+	{
+		blockKeys.clear();
+		blockPositions.clear();
+	}
+
+	private void loadBlockCells(JSONArray blocks)
+	{
+		for(int i = 0; i < blocks.length(); i++)
+		{
+			JSONObject block = blocks.getJSONObject(i);
+			addBlockCell(block.getInt("x"), block.getInt("y"), block.getInt("z"));
+		}
+	}
+
+	private void setBlockCellsFromAreaBounds()
+	{
+		clearBlockCells();
+		int xa = (int) Math.floor(getArea().getXa());
+		int ya = (int) Math.floor(getArea().getYa());
+		int za = (int) Math.floor(getArea().getZa());
+		int xb = (int) Math.floor(getArea().getXb());
+		int yb = (int) Math.floor(getArea().getYb());
+		int zb = (int) Math.floor(getArea().getZb());
+
+		for(int x = xa; x <= xb; x++)
+		{
+			for(int y = ya; y <= yb; y++)
+			{
+				for(int z = za; z <= zb; z++)
+				{
+					addBlockCell(x, y, z);
+				}
+			}
+		}
+	}
+
+	private void addBlockCell(int x, int y, int z)
+	{
+		Long key = Long.valueOf(packBlockKey(x, y, z));
+		if(blockKeys.add(key))
+		{
+			blockPositions.add(new Vector(x, y, z));
+		}
+	}
+
+	private int getBoundingBlockVolume()
+	{
+		int xa = (int) Math.floor(getArea().getXa());
+		int ya = (int) Math.floor(getArea().getYa());
+		int za = (int) Math.floor(getArea().getZa());
+		int xb = (int) Math.floor(getArea().getXb());
+		int yb = (int) Math.floor(getArea().getYb());
+		int zb = (int) Math.floor(getArea().getZb());
+		return Math.max(0, (xb - xa + 1) * (yb - ya + 1) * (zb - za + 1));
+	}
+
+	private AxisAlignedBB getBlockBox(int x, int y, int z)
+	{
+		return new AxisAlignedBB(x, x + 0.999D, y, y + 0.999D, z, z + 0.999D);
+	}
+
+	static long packBlockKey(int x, int y, int z)
+	{
+		return (((long) x & 0x3FFFFFFL) << 38) | ((((long) y) & 0xFFFL) << 26) | (((long) z) & 0x3FFFFFFL);
+	}
+
+	static int unpackBlockX(long key)
+	{
+		long raw = (key >> 38) & 0x3FFFFFFL;
+		return (int) ((raw << 38) >> 38);
+	}
+
+	static int unpackBlockY(long key)
+	{
+		long raw = (key >> 26) & 0xFFFL;
+		return (int) ((raw << 52) >> 52);
+	}
+
+	static int unpackBlockZ(long key)
+	{
+		long raw = key & 0x3FFFFFFL;
+		return (int) ((raw << 38) >> 38);
 	}
 }

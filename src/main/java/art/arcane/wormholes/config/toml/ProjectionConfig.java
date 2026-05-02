@@ -36,6 +36,14 @@ public class ProjectionConfig {
     public double nearPlanePadding = 2.0;
 
     @ConfigDescription({
+        "Extra projection aperture padding in blocks along the two screen axes of the portal face.",
+        "This does not enlarge the real portal, the traversal plane, or the protected portal slab.",
+        "It only widens fake-block culling so players one block above/below or beside the frame can still see floors, ceilings, and side walls through the viewport.",
+        "Higher values render more edge cells; 1.0 adds roughly one block of lateral and vertical visibility around the frame."
+    })
+    public double aperturePaddingBlocks = 1.0;
+
+    @ConfigDescription({
         "Cube-face culling ratio for portal-frame face selection.",
         "Higher values test fewer frame faces and cost less, but can miss edge cases when viewing portals from steep angles.",
         "Lower values are more accurate for odd axes/heights but increase cell tests."

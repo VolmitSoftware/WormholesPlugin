@@ -112,6 +112,8 @@ public final class HotloadManager {
             reloadCallback.accept(reloaded);
         } catch (Exception e) {
             logger.warning("[Hotload] Failed to reload configuration: " + e.getMessage());
+        } finally {
+            captureBaseline();
         }
     }
 }

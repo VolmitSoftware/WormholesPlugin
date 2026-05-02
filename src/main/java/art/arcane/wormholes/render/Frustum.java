@@ -1,54 +1,73 @@
 package art.arcane.wormholes.render;
 
-import java.util.ArrayList;
-
 import org.bukkit.Location;
 import org.bukkit.util.Vector;
 
 import art.arcane.volmlib.util.collection.KList;
-import art.arcane.wormholes.geometry.GeoPoint;
-import art.arcane.wormholes.geometry.GeoPolygon;
-import art.arcane.wormholes.geometry.GeoPolygonProc;
 import art.arcane.wormholes.portal.PortalStructure;
+import art.arcane.wormholes.util.Axis;
 import art.arcane.wormholes.util.AxisAlignedBB;
 import art.arcane.wormholes.util.Direction;
 import art.arcane.wormholes.util.VectorMath;
 
 public final class Frustum {
+    private static final double EPSILON = 1.0E-7D;
+
     private final Location origin;
     private final double originX;
     private final double originY;
     private final double originZ;
-    private final GeoPolygonProc poly;
     private final AxisAlignedBB region;
+    private final Axis normalAxis;
+    private final double planeCoordinate;
+    private final double faceXa;
+    private final double faceXb;
+    private final double faceYa;
+    private final double faceYb;
+    private final double faceZa;
+    private final double faceZb;
+    private final double rangeSquared;
 
-    public Frustum(Location apex, PortalStructure structure, Direction cubeFace, double range) {
+    public Frustum(Location apex, PortalStructure structure, Direction cubeFace, double range, double aperturePadding) {
+        this(apex, structure.getArea().getFace(cubeFace), cubeFace, range, aperturePadding);
+    }
+
+    public Frustum(Location apex, AxisAlignedBB apertureFace, Direction cubeFace, double range, double aperturePadding) {
         this.origin = apex;
         this.originX = apex.getX();
         this.originY = apex.getY();
         this.originZ = apex.getZ();
-        AxisAlignedBB face = structure.getArea().getFace(cubeFace);
+        AxisAlignedBB face = padAperture(apertureFace, cubeFace, aperturePadding);
+        this.normalAxis = cubeFace.getAxis();
+        this.planeCoordinate = axisValue(face.center(), normalAxis);
+        this.faceXa = face.getXa();
+        this.faceXb = face.getXb();
+        this.faceYa = face.getYa();
+        this.faceYb = face.getYb();
+        this.faceZa = face.getZa();
+        this.faceZb = face.getZb();
+        this.rangeSquared = range * range;
         KList<Location> nearPoints = new KList<Location>();
         KList<Location> farPoints = new KList<Location>();
 
         switch (face.getThinAxis()) {
             case X:
-                nearPoints.add(face.getCornerVector(cubeFace, Direction.U, Direction.S).toLocation(apex.getWorld()));
-                nearPoints.add(face.getCornerVector(cubeFace, Direction.U, Direction.N).toLocation(apex.getWorld()));
-                nearPoints.add(face.getCornerVector(cubeFace, Direction.D, Direction.S).toLocation(apex.getWorld()));
-                nearPoints.add(face.getCornerVector(cubeFace, Direction.D, Direction.N).toLocation(apex.getWorld()));
+                nearPoints.add(new Location(apex.getWorld(), planeCoordinate, faceYb, faceZb));
+                nearPoints.add(new Location(apex.getWorld(), planeCoordinate, faceYb, faceZa));
+                nearPoints.add(new Location(apex.getWorld(), planeCoordinate, faceYa, faceZb));
+                nearPoints.add(new Location(apex.getWorld(), planeCoordinate, faceYa, faceZa));
                 break;
             case Y:
-                nearPoints.add(face.getCornerVector(Direction.E, cubeFace, Direction.S).toLocation(apex.getWorld()));
-                nearPoints.add(face.getCornerVector(Direction.E, cubeFace, Direction.N).toLocation(apex.getWorld()));
-                nearPoints.add(face.getCornerVector(Direction.W, cubeFace, Direction.S).toLocation(apex.getWorld()));
-                nearPoints.add(face.getCornerVector(Direction.W, cubeFace, Direction.N).toLocation(apex.getWorld()));
+                nearPoints.add(new Location(apex.getWorld(), faceXb, planeCoordinate, faceZb));
+                nearPoints.add(new Location(apex.getWorld(), faceXb, planeCoordinate, faceZa));
+                nearPoints.add(new Location(apex.getWorld(), faceXa, planeCoordinate, faceZb));
+                nearPoints.add(new Location(apex.getWorld(), faceXa, planeCoordinate, faceZa));
                 break;
             case Z:
-                nearPoints.add(face.getCornerVector(Direction.E, Direction.U, cubeFace).toLocation(apex.getWorld()));
-                nearPoints.add(face.getCornerVector(Direction.E, Direction.D, cubeFace).toLocation(apex.getWorld()));
-                nearPoints.add(face.getCornerVector(Direction.W, Direction.U, cubeFace).toLocation(apex.getWorld()));
-                nearPoints.add(face.getCornerVector(Direction.W, Direction.D, cubeFace).toLocation(apex.getWorld()));
+                nearPoints.add(new Location(apex.getWorld(), faceXb, faceYb, planeCoordinate));
+                nearPoints.add(new Location(apex.getWorld(), faceXb, faceYa, planeCoordinate));
+                nearPoints.add(new Location(apex.getWorld(), faceXa, faceYb, planeCoordinate));
+                nearPoints.add(new Location(apex.getWorld(), faceXa, faceYa, planeCoordinate));
                 break;
             default:
                 break;
@@ -64,12 +83,6 @@ public final class Frustum {
         all.addAll(farPoints);
 
         this.region = new AxisAlignedBB(all);
-
-        ArrayList<GeoPoint> geoPoints = new ArrayList<GeoPoint>(all.size());
-        for (Location l : all) {
-            geoPoints.add(toLocalGeoPoint(l));
-        }
-        this.poly = new GeoPolygonProc(new GeoPolygon(geoPoints));
     }
 
     public boolean contains(Location l) {
@@ -84,7 +97,28 @@ public final class Frustum {
         if (!region.containsPrimitive(x, y, z)) {
             return false;
         }
-        return poly.PointInside3DPolygon(x - originX, y - originY, z - originZ);
+
+        double axisDelta = axisValue(x, y, z, normalAxis) - axisValue(originX, originY, originZ, normalAxis);
+        if (Math.abs(axisDelta) <= EPSILON) {
+            return false;
+        }
+
+        double t = (planeCoordinate - axisValue(originX, originY, originZ, normalAxis)) / axisDelta;
+        if (t < -EPSILON || t > 1.0D + EPSILON) {
+            return false;
+        }
+
+        double hitX = originX + ((x - originX) * t);
+        double hitY = originY + ((y - originY) * t);
+        double hitZ = originZ + ((z - originZ) * t);
+        if (!containsFacePoint(hitX, hitY, hitZ)) {
+            return false;
+        }
+
+        double dx = x - hitX;
+        double dy = y - hitY;
+        double dz = z - hitZ;
+        return ((dx * dx) + (dy * dy) + (dz * dz)) <= rangeSquared + EPSILON;
     }
 
     public AxisAlignedBB getRegion() {
@@ -95,7 +129,64 @@ public final class Frustum {
         return origin;
     }
 
-    private GeoPoint toLocalGeoPoint(Location l) {
-        return new GeoPoint(l.getX() - origin.getX(), l.getY() - origin.getY(), l.getZ() - origin.getZ());
+    private boolean containsFacePoint(double x, double y, double z) {
+        return x >= faceXa - EPSILON && x <= faceXb + EPSILON
+            && y >= faceYa - EPSILON && y <= faceYb + EPSILON
+            && z >= faceZa - EPSILON && z <= faceZb + EPSILON;
+    }
+
+    private static double axisValue(Vector vector, Axis axis) {
+        return axisValue(vector.getX(), vector.getY(), vector.getZ(), axis);
+    }
+
+    private static double axisValue(double x, double y, double z, Axis axis) {
+        switch (axis) {
+            case X:
+                return x;
+            case Y:
+                return y;
+            case Z:
+                return z;
+            default:
+                return 0.0D;
+        }
+    }
+
+    static AxisAlignedBB padAperture(AxisAlignedBB face, Direction cubeFace, double aperturePadding) {
+        if (aperturePadding <= 0.0D) {
+            return face;
+        }
+
+        double xa = face.getXa();
+        double xb = face.getXb();
+        double ya = face.getYa();
+        double yb = face.getYb();
+        double za = face.getZa();
+        double zb = face.getZb();
+
+        switch (cubeFace.getAxis()) {
+            case X:
+                ya -= aperturePadding;
+                yb += aperturePadding;
+                za -= aperturePadding;
+                zb += aperturePadding;
+                break;
+            case Y:
+                xa -= aperturePadding;
+                xb += aperturePadding;
+                za -= aperturePadding;
+                zb += aperturePadding;
+                break;
+            case Z:
+                xa -= aperturePadding;
+                xb += aperturePadding;
+                ya -= aperturePadding;
+                yb += aperturePadding;
+                break;
+            default:
+                break;
+        }
+
+        return new AxisAlignedBB(xa, xb, ya, yb, za, zb);
     }
 }

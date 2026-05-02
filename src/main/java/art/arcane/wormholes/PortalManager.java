@@ -121,8 +121,8 @@ public class PortalManager implements Listener
 			}
 
 			portal.loadJSON(j);
-			portal.save();
 			addLocalPortal(portal);
+			portal.save();
 			Wormholes.v("Loaded portal " + portal.getId() + " (" + portal.getName() + ") in " + savedWorldName);
 			return true;
 		}
@@ -213,6 +213,11 @@ public class PortalManager implements Listener
 	public boolean hasLocalPortal(UUID id)
 	{
 		return portals.containsKey(id);
+	}
+
+	public ILocalPortal getLocalPortal(UUID id)
+	{
+		return portals.get(id);
 	}
 
 	public boolean hasLocalPortal(IPortal portal)

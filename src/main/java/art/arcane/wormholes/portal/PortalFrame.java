@@ -94,6 +94,29 @@ public final class PortalFrame {
 		return up;
 	}
 
+	public PortalFrame flipNormal() {
+		return fromNormalUp(normal.reverse(), up);
+	}
+
+	public PortalFrame rotateClockwise() {
+		return fromNormalUp(normal, right);
+	}
+
+	public PortalFrame rotateCounterClockwise() {
+		return fromNormalUp(normal, right.reverse());
+	}
+
+	public PortalFrame withNormal(Direction newNormal) {
+		Direction nextNormal = requireDirection(newNormal);
+		if (isPerpendicular(nextNormal, up)) {
+			return fromNormalUp(nextNormal, up);
+		}
+		if (isPerpendicular(nextNormal, normal)) {
+			return fromNormalUp(nextNormal, normal);
+		}
+		return canonical(nextNormal);
+	}
+
 	public Vector transformPoint(Vector point, Vector fromOrigin, Vector toOrigin, PortalFrame to) {
 		double[] out = new double[3];
 		transformPointInto(point.getX(), point.getY(), point.getZ(),

@@ -27,6 +27,13 @@ public final class ProjectedBlockDataTransformer {
         return copy;
     }
 
+    public static boolean requiresTransform(BlockData source) {
+        return source instanceof Directional
+            || source instanceof Rotatable
+            || source instanceof Orientable
+            || source instanceof MultipleFacing;
+    }
+
     private static void transformDirectional(BlockData data, PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {
         if (!(data instanceof Directional)) {
             return;

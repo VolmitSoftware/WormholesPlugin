@@ -151,11 +151,11 @@ public class BlockManager implements Listener
 
 		if(b == null)
 		{
-			e.getPlayer().sendActionBar(Component.text("That is not a placed rune. Place runes (Portal/Wormhole/Gateway) to form a solid rectangle, then left-click one with the wand.", NamedTextColor.GOLD));
+			e.getPlayer().sendActionBar(Component.text("That is not a placed rune. Place runes (Portal/Wormhole/Gateway) as one connected flat plane, then left-click one with the wand.", NamedTextColor.GOLD));
 			return;
 		}
 
-		e.getPlayer().sendActionBar(Component.text("Forming portal... shape must be a SOLID rectangle of " + b.getType().name().toLowerCase() + " runes.", NamedTextColor.AQUA));
+		e.getPlayer().sendActionBar(Component.text("Forming portal... shape must be one connected flat plane of " + b.getType().name().toLowerCase() + " runes.", NamedTextColor.AQUA));
 		construct(e.getPlayer(), e.getClickedBlock());
 	}
 
@@ -243,7 +243,7 @@ public class BlockManager implements Listener
 		}
 
 		placeBlock(new PortalBlock(placedType, e.getBlock().getLocation()));
-		e.getPlayer().sendActionBar(Component.text("Rune placed. Build a solid rectangle, then left-click any rune with the Portal Wand.", NamedTextColor.AQUA));
+		e.getPlayer().sendActionBar(Component.text("Rune placed. Build one connected flat plane, then left-click any rune with the Portal Wand.", NamedTextColor.AQUA));
 	}
 
 	@EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -429,6 +429,16 @@ public class BlockManager implements Listener
 		b.setAmount(1);
 
 		return a.equals(b);
+	}
+
+	public boolean isPortalTool(ItemStack item)
+	{
+		return isSame(item, getWand()) || isPortalRune(item);
+	}
+
+	public boolean isPortalRune(ItemStack item)
+	{
+		return isSame(item, getPortalRune(1)) || isSame(item, getWormholeRune(1)) || isSame(item, getGatewayRune(1));
 	}
 
 	public ItemStack getWand()

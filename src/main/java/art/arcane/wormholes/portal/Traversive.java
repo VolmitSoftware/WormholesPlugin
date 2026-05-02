@@ -1,54 +1,44 @@
 package art.arcane.wormholes.portal;
 
 import org.bukkit.entity.Entity;
-import org.bukkit.entity.Player;
 import org.bukkit.util.Vector;
 
 import art.arcane.wormholes.util.Direction;
-import art.arcane.wormholes.util.VectorMath;
 
 public class Traversive
 {
 	private final Object object;
 	private final TraversableType type;
 	private final PortalFrame inFrame;
+	private final Vector inOrigin;
+	private final Vector inPoint;
 	private final Vector inVelocity;
 	private final Vector inLook;
-	private final Vector inPlane;
 
-	public Traversive(Object o, TraversableType type, Direction inDirection, Vector inVelocity, Vector inLook, Vector inPlane)
+	public Traversive(Object o, TraversableType type, Direction inDirection, Vector inOrigin, Vector inPoint, Vector inVelocity, Vector inLook)
 	{
-		this(o, type, PortalFrame.canonical(inDirection), inVelocity, inLook, inPlane);
+		this(o, type, PortalFrame.canonical(inDirection), inOrigin, inPoint, inVelocity, inLook);
 	}
 
-	public Traversive(Object o, TraversableType type, PortalFrame inFrame, Vector inVelocity, Vector inLook, Vector inPlane)
+	public Traversive(Object o, TraversableType type, PortalFrame inFrame, Vector inOrigin, Vector inPoint, Vector inVelocity, Vector inLook)
 	{
 		this.object = o;
 		this.type = type;
 		this.inFrame = inFrame;
-		this.inVelocity = inVelocity;
-		this.inLook = inLook;
-		this.inPlane = inPlane;
+		this.inOrigin = inOrigin.clone();
+		this.inPoint = inPoint.clone();
+		this.inVelocity = inVelocity.clone();
+		this.inLook = inLook.clone();
 	}
 
-	public Traversive(Player player, Direction inDirection, Vector inVelocity, Vector inLook, Vector inPlane)
+	public Traversive(Entity entity, Direction inDirection, Vector inOrigin, Vector inPoint, Vector inVelocity, Vector inLook)
 	{
-		this(player, TraversableType.PLAYER, inDirection, inVelocity, inLook, inPlane);
+		this(entity, TraversableType.ENTITY, inDirection, inOrigin, inPoint, inVelocity, inLook);
 	}
 
-	public Traversive(Player player, PortalFrame inFrame, Vector inVelocity, Vector inLook, Vector inPlane)
+	public Traversive(Entity entity, PortalFrame inFrame, Vector inOrigin, Vector inPoint, Vector inVelocity, Vector inLook)
 	{
-		this(player, TraversableType.PLAYER, inFrame, inVelocity, inLook, inPlane);
-	}
-
-	public Traversive(Entity entity, Direction inDirection, Vector inVelocity, Vector inLook, Vector inPlane)
-	{
-		this(entity, TraversableType.ENTITY, inDirection, inVelocity, inLook, inPlane);
-	}
-
-	public Traversive(Entity entity, PortalFrame inFrame, Vector inVelocity, Vector inLook, Vector inPlane)
-	{
-		this(entity, TraversableType.ENTITY, inFrame, inVelocity, inLook, inPlane);
+		this(entity, TraversableType.ENTITY, inFrame, inOrigin, inPoint, inVelocity, inLook);
 	}
 
 	public Vector getOutVelocity(Direction outDirection)
@@ -71,14 +61,19 @@ public class Traversive
 		return inFrame.transformVector(getInLook(), outFrame);
 	}
 
-	public Vector getOutPlane(Direction outDirection)
+	public Vector getOutOffset(Direction outDirection)
 	{
-		return getOutPlane(PortalFrame.canonical(outDirection));
+		return getOutOffset(PortalFrame.canonical(outDirection));
 	}
 
-	public Vector getOutPlane(PortalFrame outFrame)
+	public Vector getOutOffset(PortalFrame outFrame)
 	{
-		return inFrame.transformVector(getInPlane(), outFrame);
+		return inFrame.transformVector(getInOffset(), outFrame);
+	}
+
+	public Vector getOutPoint(PortalFrame outFrame, Vector outOrigin)
+	{
+		return inFrame.transformPoint(inPoint, inOrigin, outOrigin, outFrame);
 	}
 
 	public Direction getInDirection()
@@ -101,9 +96,9 @@ public class Traversive
 		return inLook;
 	}
 
-	public Vector getInPlane()
+	public Vector getInOffset()
 	{
-		return VectorMath.reverse(inPlane);
+		return inPoint.clone().subtract(inOrigin);
 	}
 
 	public Object getObject()

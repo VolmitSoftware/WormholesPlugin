@@ -3,9 +3,11 @@ package art.arcane.wormholes.render;
 import io.papermc.paper.math.Position;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.data.BlockData;
@@ -27,6 +29,9 @@ public final class PortalProjector {
     private Map<Long, Long> nextProjectedRemote;
     private final Map<Position, BlockData> sendBuffer;
     private final Map<Position, BlockData> revertBuffer;
+    private final HashSet<Long> lightingDirtyKeys;
+    private final HashSet<Long> nextProjectedChunkKeys;
+    private final HashMap<BlockData, BlockData> transformedBlockCache;
     private final double[] scratchRot = new double[3];
     private final double[] scratchRemotePoint = new double[3];
 
@@ -38,6 +43,7 @@ public final class PortalProjector {
     private boolean closed;
     private long projectCallCount;
     private long lastDiagLogCall;
+    private String transformedBlockCacheFrameKey;
 
     public PortalProjector(ILocalPortal portal, Player observer) {
         this.portal = portal;
@@ -48,10 +54,14 @@ public final class PortalProjector {
         this.nextProjectedRemote = new HashMap<Long, Long>(256);
         this.sendBuffer = new HashMap<Position, BlockData>(64);
         this.revertBuffer = new HashMap<Position, BlockData>(64);
+        this.lightingDirtyKeys = new HashSet<Long>(64);
+        this.nextProjectedChunkKeys = new HashSet<Long>(8);
+        this.transformedBlockCache = new HashMap<BlockData, BlockData>(128);
         this.firstProjectionDone = false;
         this.closed = false;
         this.projectCallCount = 0L;
         this.lastDiagLogCall = 0L;
+        this.transformedBlockCacheFrameKey = "";
     }
 
     public ILocalPortal getPortal() {
@@ -125,7 +135,8 @@ public final class PortalProjector {
         if (!firstProjectionDone) {
             Wormholes.v("[Projector] portal=" + portal.getName() + " observer=" + observer.getName()
                 + " first frustum: faceCount=" + next.getFaceCount() + " region=" + formatBox(next.getRegion())
-                + " range=" + range + " depth=" + depthBlocks);
+                + " range=" + range + " depth=" + depthBlocks
+                + " aperturePadding=" + Settings.PROJECTION_APERTURE_PADDING_BLOCKS);
         }
 
         AxisAlignedBB area = new AxisAlignedBB(next.getRegion());
@@ -135,6 +146,8 @@ public final class PortalProjector {
 
         sendBuffer.clear();
         revertBuffer.clear();
+        lightingDirtyKeys.clear();
+        nextProjectedChunkKeys.clear();
         nextProjected.clear();
         nextProjectedRemote.clear();
 
@@ -148,9 +161,12 @@ public final class PortalProjector {
         int xb = (int) Math.floor(area.getXb());
         int yb = (int) Math.floor(area.getYb());
         int zb = (int) Math.floor(area.getZb());
+        int localMinY = localWorld.getMinHeight();
+        int localMaxY = localWorld.getMaxHeight() - 1;
 
         PortalFrame localFrame = portal.getFrame();
         PortalFrame remoteFrame = dest.getFrame();
+        prepareTransformCache(remoteFrame, localFrame);
         double localOriginX = portal.getOrigin().getX();
         double localOriginY = portal.getOrigin().getY();
         double localOriginZ = portal.getOrigin().getZ();
@@ -177,12 +193,21 @@ public final class PortalProjector {
                 for (int z = za; z <= zb; z++) {
                     double cz = z + 0.5D;
 
-                    boolean inNext = next.containsPrimitive(cx, cy, cz);
-                    boolean inLast = previousFrustum != null && previousFrustum.containsPrimitive(cx, cy, cz);
                     long key = packKey(x, y, z);
-                    BlockData previousData = projected.get(key);
+                    Long boxedKey = Long.valueOf(key);
+                    BlockData previousData = projected.get(boxedKey);
                     boolean wasProjected = previousData != null;
 
+                    if (y < localMinY || y > localMaxY) {
+                         if (wasProjected) {
+                            revertBuffer.put(Position.block(x, y, z), Material.AIR.createBlockData());
+                            markLightingDirty(key);
+                            exitCount++;
+                        }
+                        continue;
+                    }
+
+                    boolean inNext = next.containsPrimitive(cx, cy, cz);
                     if (inNext) {
                         double cellRelX = cx - localOriginX;
                         double cellRelY = cy - localOriginY;
@@ -192,6 +217,7 @@ public final class PortalProjector {
                             Block localBlock = localWorld.getBlockAt(x, y, z);
                             if (wasProjected) {
                                 revertBuffer.put(Position.block(x, y, z), localBlock.getBlockData());
+                                markLightingDirty(key);
                                 exitCount++;
                             }
                             continue;
@@ -201,6 +227,7 @@ public final class PortalProjector {
                             if (wasProjected) {
                                 Block localBlock = localWorld.getBlockAt(x, y, z);
                                 revertBuffer.put(Position.block(x, y, z), localBlock.getBlockData());
+                                markLightingDirty(key);
                                 exitCount++;
                             }
                             continue;
@@ -219,6 +246,7 @@ public final class PortalProjector {
                             if (wasProjected) {
                                 Block localBlock = localWorld.getBlockAt(x, y, z);
                                 revertBuffer.put(Position.block(x, y, z), localBlock.getBlockData());
+                                markLightingDirty(key);
                                 exitCount++;
                             }
                             continue;
@@ -230,29 +258,38 @@ public final class PortalProjector {
                             if (localBlock.getType().isAir()) {
                                 if (wasProjected) {
                                     revertBuffer.put(Position.block(x, y, z), localBlock.getBlockData());
+                                    markLightingDirty(key);
                                     exitCount++;
                                 }
                                 continue;
                             }
                             projectedHit = remoteData;
                         } else {
-                            projectedHit = ProjectedBlockDataTransformer.transform(remoteData, remoteFrame, localFrame, scratchRot);
+                            projectedHit = transformProjectedBlockData(remoteData, remoteFrame, localFrame);
                         }
+                        long remoteKey = packKey(rx, ry, rz);
+                        Long previousRemoteKey = projectedRemote.get(boxedKey);
                         if (!projectedHit.equals(previousData)) {
                             sendBuffer.put(Position.block(x, y, z), projectedHit);
+                            markLightingDirty(key);
                             enterCount++;
+                        } else if (previousRemoteKey == null || previousRemoteKey.longValue() != remoteKey) {
+                            markLightingDirty(key);
+                            keptCount++;
                         } else {
                             keptCount++;
                         }
-                        nextProjected.put(key, projectedHit);
-                        nextProjectedRemote.put(key, packKey(rx, ry, rz));
+                        nextProjected.put(boxedKey, projectedHit);
+                        nextProjectedRemote.put(boxedKey, Long.valueOf(remoteKey));
+                        nextProjectedChunkKeys.add(Long.valueOf(chunkKey(x, z)));
                         continue;
                     }
 
-                    if (inLast && wasProjected) {
+                    if (wasProjected && previousFrustum != null && previousFrustum.containsPrimitive(cx, cy, cz)) {
                         Block localBlock = localWorld.getBlockAt(x, y, z);
                         BlockData realData = localBlock.getBlockData();
                         revertBuffer.put(Position.block(x, y, z), realData);
+                        markLightingDirty(key);
                         exitCount++;
                     }
                 }
@@ -270,7 +307,7 @@ public final class PortalProjector {
             if (nextProjected.isEmpty()) {
                 lighting.revert(observer, localWorld);
             } else {
-                lighting.apply(observer, localWorld, destWorld, nextProjected, nextProjectedRemote);
+                lighting.apply(observer, localWorld, destWorld, nextProjected, nextProjectedRemote, lightingDirtyKeys, nextProjectedChunkKeys);
             }
         }
 
@@ -331,6 +368,41 @@ public final class PortalProjector {
             return;
         }
         entityRenderer.apply(observer, portal, dest, frustum, depthBlocks);
+    }
+
+    private void markLightingDirty(long key) {
+        lightingDirtyKeys.add(Long.valueOf(key));
+    }
+
+    private void prepareTransformCache(PortalFrame fromFrame, PortalFrame toFrame) {
+        String frameKey = frameCacheKey(fromFrame) + ">" + frameCacheKey(toFrame);
+        if (frameKey.equals(transformedBlockCacheFrameKey)) {
+            return;
+        }
+        transformedBlockCacheFrameKey = frameKey;
+        transformedBlockCache.clear();
+    }
+
+    private BlockData transformProjectedBlockData(BlockData source, PortalFrame fromFrame, PortalFrame toFrame) {
+        if (!ProjectedBlockDataTransformer.requiresTransform(source)) {
+            return source;
+        }
+
+        BlockData cached = transformedBlockCache.get(source);
+        if (cached != null) {
+            return cached;
+        }
+
+        BlockData transformed = ProjectedBlockDataTransformer.transform(source, fromFrame, toFrame, scratchRot);
+        if (transformedBlockCache.size() >= 4096) {
+            transformedBlockCache.clear();
+        }
+        transformedBlockCache.put(source, transformed);
+        return transformed;
+    }
+
+    private static String frameCacheKey(PortalFrame frame) {
+        return frame.getNormal().name() + "/" + frame.getRight().name() + "/" + frame.getUp().name();
     }
 
     public void close() {
@@ -402,6 +474,10 @@ public final class PortalProjector {
 
     private static long packKey(int x, int y, int z) {
         return (((long) x & 0x3FFFFFFL) << 38) | ((((long) y) & 0xFFFL) << 26) | (((long) z) & 0x3FFFFFFL);
+    }
+
+    private static long chunkKey(int x, int z) {
+        return (((long) (x >> 4)) << 32) | (((long) (z >> 4)) & 0xFFFFFFFFL);
     }
 
     private static int unpackX(long key) {

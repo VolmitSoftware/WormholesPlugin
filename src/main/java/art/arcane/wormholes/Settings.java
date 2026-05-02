@@ -21,6 +21,7 @@ public final class Settings {
     public static double PROJECTION_RANGE = 32.0D;
     public static double PROJECTION_FLUSH_TIME = 750.0D;
     public static double NEAR_PLANE_PADDING = 2.0D;
+    public static double PROJECTION_APERTURE_PADDING_BLOCKS = 1.0D;
     public static boolean LIGHTING_FIDELITY = true;
     public static boolean ENTITY_SPOOFING = true;
     public static double ENTITY_SPOOF_RANGE = 48.0D;
@@ -61,6 +62,7 @@ public final class Settings {
         PROJECTION_RANGE = clampDouble(projection.range, 1.0D, 256.0D);
         PROJECTION_FLUSH_TIME = clampDouble(projection.flushTimeMillis, 50.0D, 5000.0D);
         NEAR_PLANE_PADDING = clampDouble(projection.nearPlanePadding, 0.0D, 16.0D);
+        PROJECTION_APERTURE_PADDING_BLOCKS = clampDouble(projection.aperturePaddingBlocks, 0.0D, 8.0D);
         PROJECTION_REFRESH_INTERVAL_TICKS = clampInt(projection.refreshIntervalTicks, 1, 20);
         PROJECTION_DEPTH_BLOCKS = clampInt(projection.depthBlocks, 1, 256);
         PROJECTION_CLIENT_VIEW_DISTANCE_CAP = projection.clientViewDistanceCap;

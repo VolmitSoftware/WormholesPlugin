@@ -1,6 +1,5 @@
 package art.arcane.wormholes;
 
-import java.util.Iterator;
 import java.util.Set;
 import java.util.UUID;
 
@@ -18,6 +17,7 @@ import art.arcane.wormholes.portal.PortalFrame;
 import art.arcane.wormholes.portal.PortalStructure;
 import art.arcane.wormholes.portal.PortalType;
 import art.arcane.wormholes.portal.WormholePortal;
+import art.arcane.wormholes.util.Axis;
 import art.arcane.wormholes.util.Cuboid;
 import art.arcane.wormholes.util.Direction;
 import art.arcane.volmlib.util.collection.KList;
@@ -70,25 +70,14 @@ public class ConstructionManager implements Listener
 			return;
 		}
 
-		boolean success = true;
-		Iterator<Block> it = c.iterator();
-
-		while(it.hasNext())
-		{
-			if(!blocks.contains(it.next()))
-			{
-				success = false;
-				break;
-			}
-		}
+		boolean success = isFlatPortalArea(c.depth(Axis.X), c.depth(Axis.Y), c.depth(Axis.Z));
 
 		if(success)
 		{
 			Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + "Portal opened. Hold the wand and LEFT-CLICK the portal to configure.", c.getCenter());
 			Wormholes.effectManager.playPortalOpen(blocks);
 			PortalStructure s = new PortalStructure();
-			s.setWorld(c.getWorld());
-			s.setArea(c);
+			s.setBlocks(blocks);
 			ILocalPortal portal = createPortal(s, type);
 			portal.setFrame(PortalFrame.fromDirectionAndLook(d, look));
 			portal.open();
@@ -97,9 +86,28 @@ public class ConstructionManager implements Listener
 			return;
 		}
 
-		Wormholes.effectManager.playNotificationFail(ChatColor.RED + "Portal shape must be rectangular or square.", new KList<Block>(blocks).getRandom().getLocation());
+		Wormholes.effectManager.playNotificationFail(ChatColor.RED + "Portal shape must be one connected flat plane.", new KList<Block>(blocks).getRandom().getLocation());
 		Wormholes.effectManager.playPortalFailOpen(blocks);
 		Wormholes.blockManager.refund(blocks, type);
+	}
+
+	static boolean isFlatPortalArea(int xDepth, int yDepth, int zDepth)
+	{
+		int flatAxes = 0;
+		if(xDepth == 0)
+		{
+			flatAxes++;
+		}
+		if(yDepth == 0)
+		{
+			flatAxes++;
+		}
+		if(zDepth == 0)
+		{
+			flatAxes++;
+		}
+
+		return flatAxes == 1;
 	}
 
 	private ILocalPortal createPortal(PortalStructure s, PortalType type)
