@@ -7,6 +7,7 @@ bstats = "3.0.2"
 toml4j = "0.7.2"
 junit = "5.10.2"
 junitPlatform = "1.10.2"
+fastutil = "8.5.15"
 
 [libraries]
 paper = { module = "io.papermc.paper:paper-api", version.ref = "paper" }
@@ -15,6 +16,7 @@ bstats = { module = "org.bstats:bstats-bukkit", version.ref = "bstats" }
 toml4j = { module = "com.moandjiezana.toml:toml4j", version.ref = "toml4j" }
 junitJupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junitPlatformLauncher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junitPlatform" }
+fastutil = { module = "it.unimi.dsi:fastutil", version.ref = "fastutil" }
 
 [plugins]
 shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }

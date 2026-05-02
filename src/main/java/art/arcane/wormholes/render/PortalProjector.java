@@ -1,9 +1,12 @@
 package art.arcane.wormholes.render;
 
 import io.papermc.paper.math.Position;
+import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
 
 import org.bukkit.Location;
@@ -21,24 +24,24 @@ import art.arcane.wormholes.portal.PortalFrame;
 import art.arcane.wormholes.util.AxisAlignedBB;
 
 public final class PortalProjector {
+    private static final long NO_REMOTE_KEY = Long.MIN_VALUE;
+
     private final ILocalPortal portal;
     private final Player observer;
-    private Map<Long, BlockData> projected;
-    private Map<Long, BlockData> nextProjected;
-    private Map<Long, Long> projectedRemote;
-    private Map<Long, Long> nextProjectedRemote;
-    private final Map<Position, BlockData> sendBuffer;
-    private final Map<Position, BlockData> revertBuffer;
-    private final HashSet<Long> lightingDirtyKeys;
-    private final HashSet<Long> nextProjectedChunkKeys;
+    private Long2ObjectOpenHashMap<ProjectedCell> projected;
+    private Long2ObjectOpenHashMap<ProjectedCell> nextProjected;
+    private final Long2LongOpenHashMap nextProjectedRemote;
+    private final Map<Position, BlockData> blockChangeBuffer;
+    private final LongOpenHashSet pendingLightingDirtyKeys;
+    private final LongOpenHashSet nextProjectedChunkKeys;
     private final HashMap<BlockData, BlockData> transformedBlockCache;
+    private final BlockData airBlockData;
     private final double[] scratchRot = new double[3];
     private final double[] scratchRemotePoint = new double[3];
 
     private final ProjectorLighting lighting = new ProjectorLighting();
     private final ProjectedEntityRenderer entityRenderer = new ProjectedEntityRenderer();
 
-    private Frustum4D previousFrustum;
     private boolean firstProjectionDone;
     private boolean closed;
     private long projectCallCount;
@@ -48,15 +51,15 @@ public final class PortalProjector {
     public PortalProjector(ILocalPortal portal, Player observer) {
         this.portal = portal;
         this.observer = observer;
-        this.projected = new HashMap<Long, BlockData>(256);
-        this.nextProjected = new HashMap<Long, BlockData>(256);
-        this.projectedRemote = new HashMap<Long, Long>(256);
-        this.nextProjectedRemote = new HashMap<Long, Long>(256);
-        this.sendBuffer = new HashMap<Position, BlockData>(64);
-        this.revertBuffer = new HashMap<Position, BlockData>(64);
-        this.lightingDirtyKeys = new HashSet<Long>(64);
-        this.nextProjectedChunkKeys = new HashSet<Long>(8);
+        this.projected = new Long2ObjectOpenHashMap<ProjectedCell>(256);
+        this.nextProjected = new Long2ObjectOpenHashMap<ProjectedCell>(256);
+        this.nextProjectedRemote = new Long2LongOpenHashMap(256);
+        this.nextProjectedRemote.defaultReturnValue(NO_REMOTE_KEY);
+        this.blockChangeBuffer = new HashMap<Position, BlockData>(64);
+        this.pendingLightingDirtyKeys = new LongOpenHashSet(64);
+        this.nextProjectedChunkKeys = new LongOpenHashSet(8);
         this.transformedBlockCache = new HashMap<BlockData, BlockData>(128);
+        this.airBlockData = Material.AIR.createBlockData();
         this.firstProjectionDone = false;
         this.closed = false;
         this.projectCallCount = 0L;
@@ -139,14 +142,7 @@ public final class PortalProjector {
                 + " aperturePadding=" + Settings.PROJECTION_APERTURE_PADDING_BLOCKS);
         }
 
-        AxisAlignedBB area = new AxisAlignedBB(next.getRegion());
-        if (previousFrustum != null) {
-            area.encapsulate(previousFrustum.getRegion());
-        }
-
-        sendBuffer.clear();
-        revertBuffer.clear();
-        lightingDirtyKeys.clear();
+        blockChangeBuffer.clear();
         nextProjectedChunkKeys.clear();
         nextProjected.clear();
         nextProjectedRemote.clear();
@@ -155,14 +151,15 @@ public final class PortalProjector {
         int exitCount = 0;
         int keptCount = 0;
 
-        int xa = (int) Math.floor(area.getXa());
-        int ya = (int) Math.floor(area.getYa());
-        int za = (int) Math.floor(area.getZa());
-        int xb = (int) Math.floor(area.getXb());
-        int yb = (int) Math.floor(area.getYb());
-        int zb = (int) Math.floor(area.getZb());
         int localMinY = localWorld.getMinHeight();
         int localMaxY = localWorld.getMaxHeight() - 1;
+        AxisAlignedBB area = next.getRegion();
+        int xa = (int) Math.floor(area.getXa());
+        int ya = Math.max((int) Math.floor(area.getYa()), localMinY);
+        int za = (int) Math.floor(area.getZa());
+        int xb = (int) Math.floor(area.getXb());
+        int yb = Math.min((int) Math.floor(area.getYb()), localMaxY);
+        int zb = (int) Math.floor(area.getZb());
 
         PortalFrame localFrame = portal.getFrame();
         PortalFrame remoteFrame = dest.getFrame();
@@ -185,6 +182,28 @@ public final class PortalProjector {
         double eyeRelZ = eyeZ - localOriginZ;
         boolean eyeFrontSide = (eyeRelX * facingX + eyeRelY * facingY + eyeRelZ * facingZ) >= 0.0D;
         double portalPlaneClearance = portalPlaneClearance(portal.getStructure().getArea(), localFrame);
+        double maxProjectionDepth = depthBlocks + portalPlaneClearance;
+        double signedMinDistance = eyeFrontSide ? -maxProjectionDepth : portalPlaneClearance;
+        double signedMaxDistance = eyeFrontSide ? -portalPlaneClearance : maxProjectionDepth;
+        boolean forceStableCellResample = shouldResampleStableCells();
+        boolean collectLightingChunkKeys = Settings.LIGHTING_FIDELITY && isLightingUpdatePass();
+
+        if (facingX != 0.0D) {
+            double centerA = localOriginX + (signedMinDistance / facingX);
+            double centerB = localOriginX + (signedMaxDistance / facingX);
+            xa = Math.max(xa, minBlockForCenter(Math.min(centerA, centerB)));
+            xb = Math.min(xb, maxBlockForCenter(Math.max(centerA, centerB)));
+        } else if (facingY != 0.0D) {
+            double centerA = localOriginY + (signedMinDistance / facingY);
+            double centerB = localOriginY + (signedMaxDistance / facingY);
+            ya = Math.max(ya, minBlockForCenter(Math.min(centerA, centerB)));
+            yb = Math.min(yb, maxBlockForCenter(Math.max(centerA, centerB)));
+        } else {
+            double centerA = localOriginZ + (signedMinDistance / facingZ);
+            double centerB = localOriginZ + (signedMaxDistance / facingZ);
+            za = Math.max(za, minBlockForCenter(Math.min(centerA, centerB)));
+            zb = Math.min(zb, maxBlockForCenter(Math.max(centerA, centerB)));
+        }
 
         for (int x = xa; x <= xb; x++) {
             double cx = x + 0.5D;
@@ -193,122 +212,120 @@ public final class PortalProjector {
                 for (int z = za; z <= zb; z++) {
                     double cz = z + 0.5D;
 
+                    double cellRelX = cx - localOriginX;
+                    double cellRelY = cy - localOriginY;
+                    double cellRelZ = cz - localOriginZ;
+                    double cellDot = cellRelX * facingX + cellRelY * facingY + cellRelZ * facingZ;
+                    if (!projectsBehindPortalPlane(cellDot, eyeFrontSide, portalPlaneClearance)) {
+                        continue;
+                    }
+
+                    if (Math.abs(cellDot) > maxProjectionDepth) {
+                        continue;
+                    }
+
+                    if (!next.containsPrimitive(cx, cy, cz)) {
+                        continue;
+                    }
+
                     long key = packKey(x, y, z);
-                    Long boxedKey = Long.valueOf(key);
-                    BlockData previousData = projected.get(boxedKey);
-                    boolean wasProjected = previousData != null;
+                    localFrame.transformPointInto(cx, cy, cz,
+                        localOriginX, localOriginY, localOriginZ,
+                        remoteOriginX, remoteOriginY, remoteOriginZ,
+                        remoteFrame, scratchRemotePoint);
 
-                    if (y < localMinY || y > localMaxY) {
-                         if (wasProjected) {
-                            revertBuffer.put(Position.block(x, y, z), Material.AIR.createBlockData());
-                            markLightingDirty(key);
-                            exitCount++;
+                    int rx = (int) Math.floor(scratchRemotePoint[0]);
+                    int ry = (int) Math.floor(scratchRemotePoint[1]);
+                    int rz = (int) Math.floor(scratchRemotePoint[2]);
+                    long remoteKey = packKey(rx, ry, rz);
+                    ProjectedCell previousCell = projected.get(key);
+                    BlockData previousData = previousCell == null ? null : previousCell.data;
+                    long previousRemoteKey = previousCell == null ? NO_REMOTE_KEY : previousCell.remoteKey;
+                    if (previousCell != null && previousRemoteKey == remoteKey) {
+                        if (!forceStableCellResample) {
+                            nextProjected.put(key, previousCell);
+                            nextProjectedRemote.put(key, remoteKey);
+                            if (collectLightingChunkKeys) {
+                                nextProjectedChunkKeys.add(chunkKey(x, z));
+                            }
+                            keptCount++;
+                            continue;
                         }
+                    }
+
+                    Block remoteBlock = sampleRemoteBlock(destWorld, rx, ry, rz);
+                    if (remoteBlock == null) {
                         continue;
                     }
 
-                    boolean inNext = next.containsPrimitive(cx, cy, cz);
-                    if (inNext) {
-                        double cellRelX = cx - localOriginX;
-                        double cellRelY = cy - localOriginY;
-                        double cellRelZ = cz - localOriginZ;
-                        double cellDot = cellRelX * facingX + cellRelY * facingY + cellRelZ * facingZ;
-                        if (!projectsBehindPortalPlane(cellDot, eyeFrontSide, portalPlaneClearance)) {
-                            Block localBlock = localWorld.getBlockAt(x, y, z);
-                            if (wasProjected) {
-                                revertBuffer.put(Position.block(x, y, z), localBlock.getBlockData());
-                                markLightingDirty(key);
-                                exitCount++;
-                            }
-                            continue;
-                        }
-
-                        if (Math.abs(cellDot) > depthBlocks + portalPlaneClearance) {
-                            if (wasProjected) {
-                                Block localBlock = localWorld.getBlockAt(x, y, z);
-                                revertBuffer.put(Position.block(x, y, z), localBlock.getBlockData());
-                                markLightingDirty(key);
-                                exitCount++;
-                            }
-                            continue;
-                        }
-
-                        localFrame.transformPointInto(cx, cy, cz,
-                            localOriginX, localOriginY, localOriginZ,
-                            remoteOriginX, remoteOriginY, remoteOriginZ,
-                            remoteFrame, scratchRemotePoint);
-
-                        int rx = (int) Math.floor(scratchRemotePoint[0]);
-                        int ry = (int) Math.floor(scratchRemotePoint[1]);
-                        int rz = (int) Math.floor(scratchRemotePoint[2]);
-                        BlockData remoteData = sampleRemoteBlock(destWorld, rx, ry, rz);
-                        if (remoteData == null) {
-                            if (wasProjected) {
-                                Block localBlock = localWorld.getBlockAt(x, y, z);
-                                revertBuffer.put(Position.block(x, y, z), localBlock.getBlockData());
-                                markLightingDirty(key);
-                                exitCount++;
-                            }
-                            continue;
-                        }
-
-                        BlockData projectedHit;
-                        if (remoteData.getMaterial().isAir()) {
-                            Block localBlock = localWorld.getBlockAt(x, y, z);
-                            if (localBlock.getType().isAir()) {
-                                if (wasProjected) {
-                                    revertBuffer.put(Position.block(x, y, z), localBlock.getBlockData());
-                                    markLightingDirty(key);
-                                    exitCount++;
-                                }
-                                continue;
-                            }
-                            projectedHit = remoteData;
-                        } else {
-                            projectedHit = transformProjectedBlockData(remoteData, remoteFrame, localFrame);
-                        }
-                        long remoteKey = packKey(rx, ry, rz);
-                        Long previousRemoteKey = projectedRemote.get(boxedKey);
-                        if (!projectedHit.equals(previousData)) {
-                            sendBuffer.put(Position.block(x, y, z), projectedHit);
-                            markLightingDirty(key);
-                            enterCount++;
-                        } else if (previousRemoteKey == null || previousRemoteKey.longValue() != remoteKey) {
-                            markLightingDirty(key);
-                            keptCount++;
-                        } else {
-                            keptCount++;
-                        }
-                        nextProjected.put(boxedKey, projectedHit);
-                        nextProjectedRemote.put(boxedKey, Long.valueOf(remoteKey));
-                        nextProjectedChunkKeys.add(Long.valueOf(chunkKey(x, z)));
-                        continue;
-                    }
-
-                    if (wasProjected && previousFrustum != null && previousFrustum.containsPrimitive(cx, cy, cz)) {
+                    BlockData projectedHit;
+                    Material remoteType = remoteBlock.getType();
+                    if (isAir(remoteType)) {
                         Block localBlock = localWorld.getBlockAt(x, y, z);
-                        BlockData realData = localBlock.getBlockData();
-                        revertBuffer.put(Position.block(x, y, z), realData);
+                        if (isAir(localBlock.getType())) {
+                            continue;
+                        }
+                        projectedHit = airBlockData;
+                    } else {
+                        BlockData remoteData = remoteBlock.getBlockData();
+                        projectedHit = transformProjectedBlockData(remoteData, remoteFrame, localFrame);
+                    }
+
+                    if (!projectedHit.equals(previousData)) {
+                        blockChangeBuffer.put(Position.block(x, y, z), projectedHit);
                         markLightingDirty(key);
-                        exitCount++;
+                        enterCount++;
+                    } else if (previousRemoteKey == NO_REMOTE_KEY || previousRemoteKey != remoteKey) {
+                        markLightingDirty(key);
+                        keptCount++;
+                    } else {
+                        keptCount++;
+                    }
+                    ProjectedCell nextCell = previousCell;
+                    if (nextCell == null || nextCell.remoteKey != remoteKey || !nextCell.data.equals(projectedHit)) {
+                        nextCell = new ProjectedCell(projectedHit, remoteKey);
+                    }
+                    nextProjected.put(key, nextCell);
+                    nextProjectedRemote.put(key, remoteKey);
+                    if (collectLightingChunkKeys) {
+                        nextProjectedChunkKeys.add(chunkKey(x, z));
                     }
                 }
             }
         }
 
-        if (!revertBuffer.isEmpty()) {
-            observer.sendMultiBlockChange(revertBuffer);
+        for (Long2ObjectMap.Entry<ProjectedCell> entry : projected.long2ObjectEntrySet()) {
+            long key = entry.getLongKey();
+            if (nextProjected.containsKey(key)) {
+                continue;
+            }
+
+            int x = unpackX(key);
+            int y = unpackY(key);
+            int z = unpackZ(key);
+            Block localBlock = localWorld.getBlockAt(x, y, z);
+            blockChangeBuffer.put(Position.block(x, y, z), localBlock.getBlockData());
+            markLightingDirty(key);
+            exitCount++;
         }
-        if (!sendBuffer.isEmpty()) {
-            observer.sendMultiBlockChange(sendBuffer);
+
+        if (!blockChangeBuffer.isEmpty()) {
+            observer.sendMultiBlockChange(blockChangeBuffer);
         }
 
         if (Settings.LIGHTING_FIDELITY) {
             if (nextProjected.isEmpty()) {
                 lighting.revert(observer, localWorld);
+                pendingLightingDirtyKeys.clear();
             } else {
-                lighting.apply(observer, localWorld, destWorld, nextProjected, nextProjectedRemote, lightingDirtyKeys, nextProjectedChunkKeys);
+                if (shouldUpdateLighting()) {
+                    lighting.apply(observer, localWorld, destWorld, nextProjected.keySet(), nextProjectedRemote, pendingLightingDirtyKeys, nextProjectedChunkKeys);
+                    pendingLightingDirtyKeys.clear();
+                }
             }
+        } else {
+            lighting.revert(observer, localWorld);
+            pendingLightingDirtyKeys.clear();
         }
 
         updateProjectedEntities(dest, next, depthBlocks, !nextProjected.isEmpty());
@@ -321,25 +338,24 @@ public final class PortalProjector {
             lastDiagLogCall = projectCallCount;
         }
 
-        Map<Long, BlockData> swap = projected;
+        Long2ObjectOpenHashMap<ProjectedCell> swap = projected;
         projected = nextProjected;
         nextProjected = swap;
-        Map<Long, Long> remoteSwap = projectedRemote;
-        projectedRemote = nextProjectedRemote;
-        nextProjectedRemote = remoteSwap;
 
-        previousFrustum = next;
         firstProjectionDone = true;
     }
 
-    private static BlockData sampleRemoteBlock(World world, int x, int y, int z) {
+    private static Block sampleRemoteBlock(World world, int x, int y, int z) {
         int minY = world.getMinHeight();
         int maxY = world.getMaxHeight() - 1;
         if (y < minY || y > maxY) {
             return null;
         }
-        Block block = world.getBlockAt(x, y, z);
-        return block.getBlockData();
+        return world.getBlockAt(x, y, z);
+    }
+
+    private static boolean isAir(Material material) {
+        return material == Material.AIR || material == Material.CAVE_AIR || material == Material.VOID_AIR;
     }
 
     static boolean projectsBehindPortalPlane(double signedCellDistance, boolean eyeFrontSide, double portalPlaneClearance) {
@@ -371,7 +387,36 @@ public final class PortalProjector {
     }
 
     private void markLightingDirty(long key) {
-        lightingDirtyKeys.add(Long.valueOf(key));
+        pendingLightingDirtyKeys.add(key);
+    }
+
+    private boolean shouldUpdateLighting() {
+        if (pendingLightingDirtyKeys.isEmpty()) {
+            return false;
+        }
+        return isLightingUpdatePass();
+    }
+
+    private boolean isLightingUpdatePass() {
+        if (!firstProjectionDone) {
+            return true;
+        }
+
+        int projectionInterval = Math.max(1, Settings.PROJECTION_REFRESH_INTERVAL_TICKS);
+        int lightingInterval = Math.max(1, Settings.LIGHTING_REFRESH_INTERVAL_TICKS);
+        int projectPassInterval = Math.max(1, (lightingInterval + projectionInterval - 1) / projectionInterval);
+        return (projectCallCount % projectPassInterval) == 0L;
+    }
+
+    private boolean shouldResampleStableCells() {
+        if (!firstProjectionDone) {
+            return true;
+        }
+
+        int projectionInterval = Math.max(1, Settings.PROJECTION_REFRESH_INTERVAL_TICKS);
+        int resampleInterval = Math.max(1, Settings.PROJECTION_STABLE_CELL_RESAMPLE_INTERVAL_TICKS);
+        int projectPassInterval = Math.max(1, (resampleInterval + projectionInterval - 1) / projectionInterval);
+        return (projectCallCount % projectPassInterval) == 0L;
     }
 
     private void prepareTransformCache(PortalFrame fromFrame, PortalFrame toFrame) {
@@ -412,14 +457,16 @@ public final class PortalProjector {
         closed = true;
 
         if (projected.isEmpty()) {
-            projectedRemote.clear();
+            nextProjectedRemote.clear();
+            pendingLightingDirtyKeys.clear();
             entityRenderer.close(observer);
             return;
         }
 
         if (observer == null || !observer.isOnline()) {
             projected.clear();
-            projectedRemote.clear();
+            nextProjectedRemote.clear();
+            pendingLightingDirtyKeys.clear();
             entityRenderer.close(observer);
             return;
         }
@@ -427,25 +474,27 @@ public final class PortalProjector {
         World world = observer.getWorld();
         if (world == null) {
             projected.clear();
-            projectedRemote.clear();
+            nextProjectedRemote.clear();
+            pendingLightingDirtyKeys.clear();
             entityRenderer.close(observer);
             return;
         }
 
-        revertBuffer.clear();
-        for (Map.Entry<Long, BlockData> entry : projected.entrySet()) {
-            int x = unpackX(entry.getKey());
-            int y = unpackY(entry.getKey());
-            int z = unpackZ(entry.getKey());
+        blockChangeBuffer.clear();
+        for (Long2ObjectMap.Entry<ProjectedCell> entry : projected.long2ObjectEntrySet()) {
+            long key = entry.getLongKey();
+            int x = unpackX(key);
+            int y = unpackY(key);
+            int z = unpackZ(key);
             Block localBlock = world.getBlockAt(x, y, z);
             BlockData realData = localBlock.getBlockData();
-            revertBuffer.put(Position.block(x, y, z), realData);
+            blockChangeBuffer.put(Position.block(x, y, z), realData);
         }
 
-        if (!revertBuffer.isEmpty()) {
-            observer.sendMultiBlockChange(revertBuffer);
+        if (!blockChangeBuffer.isEmpty()) {
+            observer.sendMultiBlockChange(blockChangeBuffer);
             Wormholes.v("[Projector] portal=" + portal.getName() + " observer=" + observer.getName()
-                + " close: reverted=" + revertBuffer.size());
+                + " close: reverted=" + blockChangeBuffer.size());
         }
 
         if (Settings.LIGHTING_FIDELITY) {
@@ -454,8 +503,9 @@ public final class PortalProjector {
         entityRenderer.close(observer);
 
         projected.clear();
-        projectedRemote.clear();
-        revertBuffer.clear();
+        nextProjectedRemote.clear();
+        pendingLightingDirtyKeys.clear();
+        blockChangeBuffer.clear();
     }
 
     private static double capProjectionDistance(Player observer, double requestedBlocks) {
@@ -470,6 +520,14 @@ public final class PortalProjector {
         int chunks = Math.max(2, Math.min(serverChunks, clientChunks));
         double cap = chunks * 16.0D;
         return Math.max(1.0D, Math.min(requestedBlocks, cap));
+    }
+
+    static int minBlockForCenter(double centerMin) {
+        return (int) Math.ceil(centerMin - 0.500001D);
+    }
+
+    static int maxBlockForCenter(double centerMax) {
+        return (int) Math.floor(centerMax - 0.499999D);
     }
 
     private static long packKey(int x, int y, int z) {
@@ -501,5 +559,15 @@ public final class PortalProjector {
         }
         return "[" + box.getXa() + "," + box.getYa() + "," + box.getZa()
             + " -> " + box.getXb() + "," + box.getYb() + "," + box.getZb() + "]";
+    }
+
+    private static final class ProjectedCell {
+        private final BlockData data;
+        private final long remoteKey;
+
+        private ProjectedCell(BlockData data, long remoteKey) {
+            this.data = data;
+            this.remoteKey = remoteKey;
+        }
     }
 }

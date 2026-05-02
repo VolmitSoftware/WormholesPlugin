@@ -123,7 +123,9 @@ repositories {
 
 dependencies {
     compileOnly(libs.paper)
+    compileOnly(libs.fastutil)
     testImplementation(libs.paper)
+    testImplementation(libs.fastutil)
     testImplementation(libs.junitJupiter)
     testRuntimeOnly(libs.junitPlatformLauncher)
     implementation(volmLibCoordinate) {

@@ -23,11 +23,13 @@ public final class Settings {
     public static double NEAR_PLANE_PADDING = 2.0D;
     public static double PROJECTION_APERTURE_PADDING_BLOCKS = 1.0D;
     public static boolean LIGHTING_FIDELITY = true;
+    public static int LIGHTING_REFRESH_INTERVAL_TICKS = 4;
     public static boolean ENTITY_SPOOFING = true;
     public static double ENTITY_SPOOF_RANGE = 48.0D;
     public static int MAX_SPOOFED_ENTITIES = 24;
     public static int PROJECTION_REFRESH_INTERVAL_TICKS = 2;
     public static int PROJECTION_DEPTH_BLOCKS = 64;
+    public static int PROJECTION_STABLE_CELL_RESAMPLE_INTERVAL_TICKS = 10;
     public static boolean PROJECTION_CLIENT_VIEW_DISTANCE_CAP = true;
     public static int OCTREE_LEAF_SIZE = 4;
     public static int PARALLEL_CHUNK_READS = 4;
@@ -65,9 +67,11 @@ public final class Settings {
         PROJECTION_APERTURE_PADDING_BLOCKS = clampDouble(projection.aperturePaddingBlocks, 0.0D, 8.0D);
         PROJECTION_REFRESH_INTERVAL_TICKS = clampInt(projection.refreshIntervalTicks, 1, 20);
         PROJECTION_DEPTH_BLOCKS = clampInt(projection.depthBlocks, 1, 256);
+        PROJECTION_STABLE_CELL_RESAMPLE_INTERVAL_TICKS = clampInt(projection.stableCellResampleIntervalTicks, 1, 200);
         PROJECTION_CLIENT_VIEW_DISTANCE_CAP = projection.clientViewDistanceCap;
 
         LIGHTING_FIDELITY = render.lightingFidelity;
+        LIGHTING_REFRESH_INTERVAL_TICKS = clampInt(render.lightingRefreshIntervalTicks, 1, 40);
         ENTITY_SPOOFING = render.entitySpoofing;
         ENTITY_SPOOF_RANGE = clampDouble(render.entitySpoofRange, 1.0D, 256.0D);
         MAX_SPOOFED_ENTITIES = clampInt(render.maxSpoofedEntities, 0, 256);

@@ -1,5 +1,6 @@
 package art.arcane.wormholes.render;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -36,5 +37,15 @@ public final class PortalProjectorPlaneTest {
 		double downClearance = PortalProjector.portalPlaneClearance(thickDownPortal, PortalFrame.canonical(Direction.D));
 		assertTrue(downClearance > 0.999D);
 		assertTrue(downClearance < 1.002D);
+	}
+
+	@Test
+	public void scanBoundsIncludeBlockCentersAtTheProjectionEdges() {
+		assertEquals(4, PortalProjector.minBlockForCenter(4.5D));
+		assertEquals(8, PortalProjector.maxBlockForCenter(8.5D));
+		assertEquals(4, PortalProjector.minBlockForCenter(4.5000003D));
+		assertEquals(8, PortalProjector.maxBlockForCenter(8.4999997D));
+		assertEquals(5, PortalProjector.minBlockForCenter(4.500002D));
+		assertEquals(7, PortalProjector.maxBlockForCenter(8.499998D));
 	}
 }

@@ -16,6 +16,13 @@ public class RenderConfig {
     public boolean lightingFidelity = true;
 
     @ConfigDescription({
+        "Minimum server ticks between projected light packet refreshes.",
+        "Projected blocks still update on the normal projection refresh interval; this only coalesces expensive light-array rebuilds.",
+        "1 updates lighting every projection pass. 4 is smoother than disabling lighting while avoiding a large per-move packet cost."
+    })
+    public int lightingRefreshIntervalTicks = 4;
+
+    @ConfigDescription({
         "Enable fake entity spawn/teleport/destroy packets inside portal projections.",
         "When true, nearby non-player entities on the destination side are transformed into the local portal view for each observer.",
         "Disable if entity packets conflict with another disguise/NPC/entity-visibility plugin."

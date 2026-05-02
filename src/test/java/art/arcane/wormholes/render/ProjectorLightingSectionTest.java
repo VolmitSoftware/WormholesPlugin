@@ -4,7 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.HashSet;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 
 import org.junit.jupiter.api.Test;
 
@@ -22,16 +22,15 @@ public final class ProjectorLightingSectionTest {
     }
 
     @Test
-    public void validSectionCountIgnoresOutOfWorldAndNullSections() {
+    public void validSectionCountIgnoresOutOfWorldSections() {
         int minSection = -4;
         int maxSection = 19;
-        HashSet<Integer> dirtySections = new HashSet<Integer>();
-        dirtySections.add(Integer.valueOf(-6));
-        dirtySections.add(Integer.valueOf(-4));
-        dirtySections.add(Integer.valueOf(0));
-        dirtySections.add(Integer.valueOf(19));
-        dirtySections.add(Integer.valueOf(20));
-        dirtySections.add(null);
+        IntOpenHashSet dirtySections = new IntOpenHashSet();
+        dirtySections.add(-6);
+        dirtySections.add(-4);
+        dirtySections.add(0);
+        dirtySections.add(19);
+        dirtySections.add(20);
 
         assertEquals(3, ProjectorLighting.countValidSections(dirtySections, minSection, maxSection));
     }

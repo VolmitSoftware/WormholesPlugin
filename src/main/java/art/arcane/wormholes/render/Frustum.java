@@ -18,8 +18,15 @@ public final class Frustum {
     private final double originY;
     private final double originZ;
     private final AxisAlignedBB region;
+    private final double regionXa;
+    private final double regionXb;
+    private final double regionYa;
+    private final double regionYb;
+    private final double regionZa;
+    private final double regionZb;
     private final Axis normalAxis;
     private final double planeCoordinate;
+    private final double planeDelta;
     private final double faceXa;
     private final double faceXb;
     private final double faceYa;
@@ -83,6 +90,13 @@ public final class Frustum {
         all.addAll(farPoints);
 
         this.region = new AxisAlignedBB(all);
+        this.regionXa = region.getXa();
+        this.regionXb = region.getXb();
+        this.regionYa = region.getYa();
+        this.regionYb = region.getYb();
+        this.regionZa = region.getZa();
+        this.regionZb = region.getZb();
+        this.planeDelta = planeCoordinate - axisValue(originX, originY, originZ, normalAxis);
     }
 
     public boolean contains(Location l) {
@@ -94,16 +108,20 @@ public final class Frustum {
     }
 
     public boolean containsPrimitive(double x, double y, double z) {
-        if (!region.containsPrimitive(x, y, z)) {
+        if (x < regionXa || x > regionXb || y < regionYa || y > regionYb || z < regionZa || z > regionZb) {
             return false;
         }
 
-        double axisDelta = axisValue(x, y, z, normalAxis) - axisValue(originX, originY, originZ, normalAxis);
+        double axisDelta = switch (normalAxis) {
+            case X -> x - originX;
+            case Y -> y - originY;
+            case Z -> z - originZ;
+        };
         if (Math.abs(axisDelta) <= EPSILON) {
             return false;
         }
 
-        double t = (planeCoordinate - axisValue(originX, originY, originZ, normalAxis)) / axisDelta;
+        double t = planeDelta / axisDelta;
         if (t < -EPSILON || t > 1.0D + EPSILON) {
             return false;
         }

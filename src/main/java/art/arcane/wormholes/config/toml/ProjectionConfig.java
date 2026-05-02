@@ -58,6 +58,13 @@ public class ProjectionConfig {
     public int depthBlocks = 64;
 
     @ConfigDescription({
+        "Minimum server ticks between full remote block resamples for stable projected cells.",
+        "When a local projected cell maps to the same destination coordinate as the previous pass, Wormholes can reuse the last projected BlockData instead of re-reading the remote block every refresh.",
+        "1 resamples every projection pass for maximum live block-change accuracy. Higher values reduce CPU while still catching remote block edits on the next full resample."
+    })
+    public int stableCellResampleIntervalTicks = 10;
+
+    @ConfigDescription({
         "Cap projection range/depth by the player's client view distance and the server view distance.",
         "Leave enabled for public servers; disabling lets operators force larger projection distances for controlled tests."
     })

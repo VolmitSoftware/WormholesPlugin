@@ -14,6 +14,12 @@ public final class Frustum4D {
 
     private final Frustum[] frustums;
     private final AxisAlignedBB region;
+    private final double regionXa;
+    private final double regionXb;
+    private final double regionYa;
+    private final double regionYb;
+    private final double regionZa;
+    private final double regionZb;
 
     public Frustum4D(Location iris, PortalStructure structure, double range) {
         Location center = structure.getCenter();
@@ -79,6 +85,12 @@ public final class Frustum4D {
             acc.encapsulate(this.frustums[i].getRegion());
         }
         this.region = acc;
+        this.regionXa = acc.getXa();
+        this.regionXb = acc.getXb();
+        this.regionYa = acc.getYa();
+        this.regionYb = acc.getYb();
+        this.regionZa = acc.getZa();
+        this.regionZb = acc.getZb();
     }
 
     public boolean contains(Vector p) {
@@ -90,7 +102,7 @@ public final class Frustum4D {
     }
 
     public boolean containsPrimitive(double x, double y, double z) {
-        if (!region.containsPrimitive(x, y, z)) {
+        if (x < regionXa || x > regionXb || y < regionYa || y > regionYb || z < regionZa || z > regionZb) {
             return false;
         }
         Frustum[] arr = frustums;
