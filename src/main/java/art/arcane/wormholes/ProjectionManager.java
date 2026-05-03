@@ -227,10 +227,7 @@ public class ProjectionManager implements Listener {
             if (!view.contains(observerLocation)) {
                 continue;
             }
-            if (!hasStablePortalSide(observer.getEyeLocation(), portal, Settings.PROJECTION_SIDE_GRACE_DOT)) {
-                continue;
-            }
-            if (!isLookingTowardPortal(observer.getEyeLocation(), center, Settings.PROJECTION_OBSERVER_INTEREST_DOT)) {
+            if (!isObserverProjectionInterested(observer.getEyeLocation(), center, portal, Settings.PROJECTION_FOVEATED_UNRENDERING)) {
                 continue;
             }
             interestedObservers.add(observer.getUniqueId());
@@ -339,6 +336,14 @@ public class ProjectionManager implements Listener {
         return dot >= minimumDot;
     }
 
+    static boolean isObserverProjectionInterested(Location eye, Location center, ILocalPortal portal, boolean foveatedUnrendering) {
+        if (!foveatedUnrendering) {
+            return true;
+        }
+        return hasStablePortalSide(eye, portal, Settings.PROJECTION_SIDE_GRACE_DOT)
+                && isLookingTowardPortal(eye, center, Settings.PROJECTION_OBSERVER_INTEREST_DOT);
+    }
+
     static boolean hasStablePortalSide(Location eye, ILocalPortal portal, double minimumAbsoluteDot) {
         if (eye == null || portal == null || portal.getOrigin() == null || portal.getFrame() == null) {
             return false;
@@ -396,6 +401,8 @@ public class ProjectionManager implements Listener {
         sb.append("  tickCount=").append(tickCount).append('\n');
         sb.append("  firstTickLogged=").append(firstTickLogged).append('\n');
         sb.append("  PROJECTION_RANGE=").append(Settings.PROJECTION_RANGE).append('\n');
+        sb.append("  foveatedUnrendering=").append(Settings.PROJECTION_FOVEATED_UNRENDERING).append('\n');
+        sb.append("  recursivePortalDepth=").append(Settings.PROJECTION_RECURSIVE_PORTAL_DEPTH).append('\n');
         sb.append("  maxProjectorsPerTick=").append(Settings.PROJECTION_MAX_PROJECTORS_PER_TICK).append('\n');
         sb.append("  interestedObservers=").append(lastInterestedObservers).append('\n');
         sb.append("  scheduledProjectors=").append(lastScheduledProjectors).append('\n');

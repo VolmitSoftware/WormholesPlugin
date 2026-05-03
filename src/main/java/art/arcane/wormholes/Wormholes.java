@@ -34,7 +34,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
 
     public static Wormholes INSTANCE;
     public static Wormholes instance;
-    public static String tag = ChatColor.DARK_AQUA + "[" + ChatColor.AQUA + "Wormholes" + ChatColor.DARK_AQUA + "] " + ChatColor.GRAY;
+    public static String tag = ChatColor.DARK_GRAY + "[" + ChatColor.GRAY + "Wormholes" + ChatColor.DARK_GRAY + "] " + ChatColor.GRAY;
 
     public static WormholesSettings settings;
     public static BlockManager blockManager;

@@ -10,6 +10,7 @@ import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.Vector;
@@ -67,18 +68,44 @@ public class EffectManager implements Listener
 	@EventHandler
 	public void on(PlayerInteractEvent e)
 	{
-		ItemStack handItem = e.getPlayer().getInventory().getItemInMainHand();
+		Action action = e.getAction();
+		boolean isLeft = action == Action.LEFT_CLICK_AIR || action == Action.LEFT_CLICK_BLOCK;
+		boolean isRight = action == Action.RIGHT_CLICK_AIR || action == Action.RIGHT_CLICK_BLOCK;
+		if(!isLeft && !isRight)
+		{
+			return;
+		}
+
+		Player player = e.getPlayer();
+		ItemStack handItem = player.getInventory().getItemInMainHand();
 		if(!Wormholes.blockManager.isSame(handItem, Wormholes.blockManager.getWand()))
 		{
 			return;
 		}
 
-		for(ILocalPortal j : Wormholes.portalManager.getLocalPortals())
+		if(action == Action.LEFT_CLICK_BLOCK && e.getClickedBlock() != null && Wormholes.blockManager.getBlock(e.getClickedBlock()) != null)
 		{
-			if(j.isLookingAt(e.getPlayer()))
+			return;
+		}
+
+		boolean openConfigs = player.isSneaking();
+		for(ILocalPortal portal : Wormholes.portalManager.getLocalPortals())
+		{
+			if(!portal.isLookingAt(player))
 			{
-				j.onWanded(e.getPlayer());
+				continue;
 			}
+
+			e.setCancelled(true);
+			if(openConfigs)
+			{
+				portal.uiOpenConfigMenu(player);
+			}
+			else
+			{
+				portal.onWanded(player);
+			}
+			return;
 		}
 	}
 

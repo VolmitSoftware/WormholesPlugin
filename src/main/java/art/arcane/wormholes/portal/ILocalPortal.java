@@ -15,6 +15,8 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 
 	public PortalType getType();
 
+	public void setType(PortalType type);
+
 	public void update();
 
 	public void close();
@@ -52,6 +54,12 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 	public void uiOpenPortalMenu(Player p);
 
 	public Window uiCreatePortalMenu(Player p);
+
+	public void uiOpenConfigMenu(Player p);
+
+	public Window uiCreateConfigMenu(Player p);
+
+	public void uiChooseMode(Player p);
 
 	public void uiChooseDestination(Player p);
 

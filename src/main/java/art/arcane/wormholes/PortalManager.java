@@ -8,13 +8,11 @@ import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.event.Listener;
 
-import art.arcane.wormholes.portal.GatewayPortal;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.IPortal;
 import art.arcane.wormholes.portal.LocalPortal;
 import art.arcane.wormholes.portal.PortalStructure;
 import art.arcane.wormholes.portal.PortalType;
-import art.arcane.wormholes.portal.WormholePortal;
 import art.arcane.volmlib.util.collection.KList;
 import art.arcane.volmlib.util.collection.KMap;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
@@ -89,7 +87,6 @@ public class PortalManager implements Listener
 			}
 
 			PortalType type = PortalType.valueOf(j.getString("type"));
-			ILocalPortal portal = null;
 			PortalStructure structure = new PortalStructure();
 			structure.loadJSON(j.getJSONObject("structure"));
 
@@ -99,26 +96,7 @@ public class PortalManager implements Listener
 				return false;
 			}
 
-			switch(type)
-			{
-				case GATEWAY:
-					portal = new GatewayPortal(UUID.fromString(j.getString("id")), structure);
-					break;
-				case PORTAL:
-					portal = new LocalPortal(UUID.fromString(j.getString("id")), type, structure);
-					break;
-				case WORMHOLE:
-					portal = new WormholePortal(UUID.fromString(j.getString("id")), type, structure);
-					break;
-				default:
-					break;
-			}
-
-			if(portal == null)
-			{
-				Wormholes.f("Failed to load portal via type " + type);
-				return false;
-			}
+			ILocalPortal portal = new LocalPortal(UUID.fromString(j.getString("id")), type, structure);
 
 			portal.loadJSON(j);
 			addLocalPortal(portal);

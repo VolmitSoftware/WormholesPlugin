@@ -10,13 +10,11 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.Listener;
 import org.bukkit.util.Vector;
 
-import art.arcane.wormholes.portal.GatewayPortal;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.LocalPortal;
 import art.arcane.wormholes.portal.PortalFrame;
 import art.arcane.wormholes.portal.PortalStructure;
 import art.arcane.wormholes.portal.PortalType;
-import art.arcane.wormholes.portal.WormholePortal;
 import art.arcane.wormholes.util.Axis;
 import art.arcane.wormholes.util.Cuboid;
 import art.arcane.wormholes.util.Direction;
@@ -74,7 +72,7 @@ public class ConstructionManager implements Listener
 
 		if(success)
 		{
-			Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + "Portal opened. Hold the wand and LEFT-CLICK the portal to configure.", c.getCenter());
+			Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + "Portal opened. Hold the wand and CLICK the portal to configure.", c.getCenter());
 			Wormholes.effectManager.playPortalOpen(blocks);
 			PortalStructure s = new PortalStructure();
 			s.setBlocks(blocks);
@@ -112,19 +110,7 @@ public class ConstructionManager implements Listener
 
 	private ILocalPortal createPortal(PortalStructure s, PortalType type)
 	{
-		switch(type)
-		{
-			case GATEWAY:
-				return new GatewayPortal(UUID.randomUUID(), s);
-			case PORTAL:
-				return new LocalPortal(UUID.randomUUID(), type, s);
-			case WORMHOLE:
-				return new WormholePortal(UUID.randomUUID(), type, s);
-			default:
-				break;
-		}
-
-		return null;
+		return new LocalPortal(UUID.randomUUID(), type, s);
 	}
 
 	public void destroy(ILocalPortal localPortal)

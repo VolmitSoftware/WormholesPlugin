@@ -58,6 +58,13 @@ public class ProjectionConfig {
     public int depthBlocks = 64;
 
     @ConfigDescription({
+        "Maximum number of portal-through-portal block projection hops.",
+        "When a projected destination view contains another linked local portal, Wormholes can continue sampling through that portal so nested portal contents render.",
+        "The value is clamped from 3 to 64 to keep recursive portal chains bounded."
+    })
+    public int recursivePortalDepth = 3;
+
+    @ConfigDescription({
         "Minimum server ticks between full remote block resamples for stable projected cells.",
         "When a local projected cell maps to the same destination coordinate as the previous pass, Wormholes can reuse the last projected BlockData instead of re-reading the remote block every refresh.",
         "1 resamples every projection pass for maximum live block-change accuracy. Higher values reduce CPU while still catching remote block edits on the next full resample."
@@ -71,16 +78,24 @@ public class ProjectionConfig {
     public boolean clientViewDistanceCap = true;
 
     @ConfigDescription({
+        "Only keep portal projectors active when the observer has a live viewport into the portal.",
+        "When false, players inside the portal view volume keep projection state even while looking away or edge-on.",
+        "Enable for foveated unrendering on servers where projector count matters more than instant turn-back visibility."
+    })
+    public boolean foveatedUnrendering = false;
+
+    @ConfigDescription({
         "Minimum dot product between the player's view direction and the vector from their eye to the portal center before a projector is kept active.",
         "1.0 means only looking exactly at the portal, 0.0 means the portal must be somewhere in front of the player, and negative values allow wide peripheral views.",
-        "The default keeps projections visible while turning near a portal, but stops doing projection work for players clearly looking away."
+        "Only used when foveated-unrendering is true."
     })
     public double observerInterestDot = -0.2;
 
     @ConfigDescription({
         "Minimum absolute dot product between the portal face normal and the vector from the portal center to the player's eye.",
         "When the value is greater than 0, players almost perfectly side-on to a portal get no projection instead of a front/back side flip-flop.",
-        "0 disables this grace band. 0.12 suppresses roughly the last 7 degrees on either side of an edge-on view."
+        "0 disables this grace band. 0.12 suppresses roughly the last 7 degrees on either side of an edge-on view.",
+        "Only used when foveated-unrendering is true."
     })
     public double sideGraceDot = 0.12;
 

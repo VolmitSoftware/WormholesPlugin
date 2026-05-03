@@ -31,6 +31,7 @@ import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.geometry.Raycast;
 import art.arcane.volmlib.util.scheduling.AR;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
+import art.arcane.volmlib.util.inventorygui.Element;
 import art.arcane.volmlib.util.inventorygui.UIElement;
 import art.arcane.volmlib.util.inventorygui.UIPaneDecorator;
 import art.arcane.volmlib.util.inventorygui.UIWindow;
@@ -152,6 +153,25 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	public PortalType getType()
 	{
 		return type;
+	}
+
+	@Override
+	public void setType(PortalType type)
+	{
+		if(this.type == type)
+		{
+			return;
+		}
+
+		boolean wasGateway = isGateway();
+		this.type = type;
+
+		if(wasGateway != isGateway())
+		{
+			tunnel = null;
+		}
+
+		save();
 	}
 
 	@Override
@@ -764,55 +784,21 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		Window window = new UIWindow(Wormholes.instance, p)
 				.setTitle(getRouter(true))
 				.setResolution(WindowResolution.W3_H3)
-				.setViewportHeight(3);
+				.setViewportHeight(3)
+				.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
 		window.setElement(-1, 1, new UIElement("set-destination")
-				.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Set Focus")
+				.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Link")
 				.addLore(ChatColor.GRAY + "Choose a portal destination for")
 				.addLore(ChatColor.GRAY + "this portal.")
 				.setMaterial(new MaterialBlock(Material.ENDER_EYE))
 				.setCount(Math.max(1, Wormholes.portalManager.getAccessableCount(getType()) - 1))
 				.onLeftClick((e) -> uiChooseDestination(p)))
-		.setElement(-1, 0, new UIElement("set-name")
-				.setName(ChatColor.GREEN + "" + ChatColor.BOLD + "Set Name")
-				.addLore(ChatColor.GRAY + "Change the portal name ")
+		.setElement(0, 1, new UIElement("set-name")
+				.setName(ChatColor.GREEN + "" + ChatColor.BOLD + "Name")
+				.addLore(ChatColor.GRAY + "Change the portal name.")
 				.setMaterial(new MaterialBlock(Material.NAME_TAG))
 				.onLeftClick((e) -> uiChangeName(p)))
-		.setElement(0, 1, new UIElement("set-direction")
-				.setName(ChatColor.BLUE + "" + ChatColor.BOLD + "Change Direction")
-				.addLore(ChatColor.GRAY + "Change the portal facing direction")
-				.addLore(ChatColor.GRAY + "Currently Facing " + ChatColor.BLUE + "" + ChatColor.BOLD + getDirection().toString())
-				.setMaterial(new MaterialBlock(Material.COMPASS))
-				.onLeftClick((e) ->
-				{
-					uiChangeDirection(p);
-					window.close();
-				}))
-		.setElement(1, 1, new UIElement("flip-face")
-				.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Flip Face")
-				.addLore(ChatColor.GRAY + "Reverse the portal face direction")
-				.addLore(ChatColor.GRAY + "Screen rotation stays aligned.")
-				.addLore(ChatColor.GRAY + "Current Roll Up " + ChatColor.AQUA + "" + ChatColor.BOLD + getFrame().getUp().toString())
-				.setMaterial(new MaterialBlock(Material.TARGET))
-				.onLeftClick((e) ->
-				{
-					setFrame(getFrame().flipNormal());
-					Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s face flipped to " + getDirection().toString() + ".", getStructure().getCenter());
-					window.close();
-					uiOpenPortalMenu(p);
-				}))
-		.setElement(0, 2, new UIElement("destroy")
-				.setName(ChatColor.RED + "" + ChatColor.BOLD + "Destroy Portal")
-				.addLore(ChatColor.GRAY + "Destroys the portal and ")
-				.addLore(ChatColor.GRAY + "drops its portal blocks.")
-				.addLore(ChatColor.GRAY + " ")
-				.addLore(ChatColor.RED + "" + ChatColor.UNDERLINE + "Shift + Left Click")
-				.setMaterial(new MaterialBlock(Material.GUNPOWDER))
-				.onShiftLeftClick((e) ->
-				{
-					window.close();
-					destroy();
-				}))
-		.setElement(0, 0, new UIElement("toggle-projections")
+		.setElement(1, 1, new UIElement("toggle-projections")
 				.setName(isProjecting() ? ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Projections Enabled" : ChatColor.DARK_PURPLE + "" + ChatColor.BOLD + "Projections Disabled")
 				.setEnchanted(isProjecting())
 				.setMaterial(new MaterialBlock(isProjecting() ? Material.REDSTONE_TORCH : Material.TORCH))
@@ -826,6 +812,68 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					e.setMaterial(new MaterialBlock(isProjecting() ? Material.REDSTONE_TORCH : Material.TORCH));
 					window.updateInventory();
 				}))
+		.setElement(0, 2, new UIElement("destroy")
+				.setName(ChatColor.RED + "" + ChatColor.BOLD + "Delete Portal")
+				.addLore(ChatColor.GRAY + "Destroys the portal and")
+				.addLore(ChatColor.GRAY + "drops its portal blocks.")
+				.addLore(ChatColor.GRAY + " ")
+				.addLore(ChatColor.RED + "" + ChatColor.UNDERLINE + "Shift + Left Click")
+				.setMaterial(new MaterialBlock(Material.GUNPOWDER))
+				.onShiftLeftClick((e) ->
+				{
+					window.close();
+					destroy();
+				}));
+		//@done
+
+		return window;
+	}
+
+	@Override
+	public void uiOpenConfigMenu(Player p)
+	{
+		Window w = uiCreateConfigMenu(p);
+		w.setVisible(true);
+	}
+
+	@Override
+	public Window uiCreateConfigMenu(Player p)
+	{
+		//@builder
+		Window window = new UIWindow(Wormholes.instance, p)
+				.setTitle(getRouter(true))
+				.setResolution(WindowResolution.W3_H3)
+				.setViewportHeight(3)
+				.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
+		window.setElement(0, 0, new UIElement("set-mode")
+				.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Mode")
+				.addLore(ChatColor.GRAY + "Switch portal mode.")
+				.addLore(ChatColor.GRAY + "Current Mode " + ChatColor.YELLOW + "" + ChatColor.BOLD + F.capitalize(getType().name().toLowerCase()))
+				.setMaterial(new MaterialBlock(Material.BEACON))
+				.onLeftClick((e) -> uiChooseMode(p)))
+		.setElement(-1, 1, new UIElement("set-direction")
+				.setName(ChatColor.BLUE + "" + ChatColor.BOLD + "Direction")
+				.addLore(ChatColor.GRAY + "Change the portal facing direction.")
+				.addLore(ChatColor.GRAY + "Currently Facing " + ChatColor.BLUE + "" + ChatColor.BOLD + getDirection().toString())
+				.setMaterial(new MaterialBlock(Material.COMPASS))
+				.onLeftClick((e) ->
+				{
+					uiChangeDirection(p);
+					window.close();
+				}))
+		.setElement(1, 1, new UIElement("flip-face")
+				.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Flip Face")
+				.addLore(ChatColor.GRAY + "Reverse the portal face direction.")
+				.addLore(ChatColor.GRAY + "Screen rotation stays aligned.")
+				.addLore(ChatColor.GRAY + "Current Roll Up " + ChatColor.AQUA + "" + ChatColor.BOLD + getFrame().getUp().toString())
+				.setMaterial(new MaterialBlock(Material.TARGET))
+				.onLeftClick((e) ->
+				{
+					setFrame(getFrame().flipNormal());
+					Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s face flipped to " + getDirection().toString() + ".", getStructure().getCenter());
+					window.close();
+					uiOpenConfigMenu(p);
+				}))
 		.setElement(-1, 2, new UIElement("rotate-counter-clockwise")
 				.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Counterclockwise")
 				.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees")
@@ -837,7 +885,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					setFrame(getFrame().rotateCounterClockwise());
 					Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s roll rotated counterclockwise.", getStructure().getCenter());
 					window.close();
-					uiOpenPortalMenu(p);
+					uiOpenConfigMenu(p);
 				}))
 		.setElement(1, 2, new UIElement("rotate-clockwise")
 				.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Clockwise")
@@ -850,12 +898,70 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					setFrame(getFrame().rotateClockwise());
 					Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s roll rotated clockwise.", getStructure().getCenter());
 					window.close();
-					uiOpenPortalMenu(p);
-				}))
-		.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
+					uiOpenConfigMenu(p);
+				}));
 		//@done
 
 		return window;
+	}
+
+	@Override
+	public void uiChooseMode(Player p)
+	{
+		//@builder
+		Window window = new UIWindow(Wormholes.instance, p)
+				.setTitle(getRouter(true))
+				.setResolution(WindowResolution.W3_H3)
+				.setViewportHeight(3)
+				.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE))
+				.onClosed((w) -> FoliaScheduler.runEntity(Wormholes.instance, p, () -> uiOpenConfigMenu(p)));
+		window.setElement(-1, 1, modeOption(PortalType.PORTAL, p, window))
+				.setElement(0, 1, modeOption(PortalType.WORMHOLE, p, window))
+				.setElement(1, 1, modeOption(PortalType.GATEWAY, p, window));
+		//@done
+		window.setVisible(true);
+	}
+
+	private Element modeOption(PortalType target, Player p, Window window)
+	{
+		boolean current = getType() == target;
+		String label = F.capitalize(target.name().toLowerCase());
+		return new UIElement("mode-" + target.name().toLowerCase())
+				.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + label)
+				.setMaterial(new MaterialBlock(modeIcon(target)))
+				.setEnchanted(current)
+				.addLore(ChatColor.GRAY + modeDescription(target))
+				.addLore(ChatColor.GRAY + " ")
+				.addLore(current ? ChatColor.GREEN + "Currently Selected" : ChatColor.GRAY + "Click to select")
+				.onLeftClick((e) ->
+				{
+					if(getType() != target)
+					{
+						setType(target);
+						Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s mode set to " + label + ".", getStructure().getCenter());
+					}
+					window.close();
+				});
+	}
+
+	private static Material modeIcon(PortalType type)
+	{
+		return switch(type)
+		{
+			case GATEWAY -> Material.END_CRYSTAL;
+			case WORMHOLE -> Material.ENDER_PEARL;
+			case PORTAL -> Material.ENDER_EYE;
+		};
+	}
+
+	private static String modeDescription(PortalType type)
+	{
+		return switch(type)
+		{
+			case GATEWAY -> "Reserved for cross-network linking.";
+			case WORMHOLE -> "Linkable portal with viewport projection.";
+			case PORTAL -> "Basic linkable portal.";
+		};
 	}
 
 	@Override

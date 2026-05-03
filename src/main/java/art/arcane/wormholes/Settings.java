@@ -29,8 +29,10 @@ public final class Settings {
     public static int MAX_SPOOFED_ENTITIES = 24;
     public static int PROJECTION_REFRESH_INTERVAL_TICKS = 2;
     public static int PROJECTION_DEPTH_BLOCKS = 64;
+    public static int PROJECTION_RECURSIVE_PORTAL_DEPTH = 3;
     public static int PROJECTION_STABLE_CELL_RESAMPLE_INTERVAL_TICKS = 1;
     public static boolean PROJECTION_CLIENT_VIEW_DISTANCE_CAP = true;
+    public static boolean PROJECTION_FOVEATED_UNRENDERING = false;
     public static double PROJECTION_OBSERVER_INTEREST_DOT = -0.2D;
     public static double PROJECTION_SIDE_GRACE_DOT = 0.12D;
     public static double PROJECTION_STATIONARY_REUSE_DISTANCE_BLOCKS = 0.0D;
@@ -73,8 +75,10 @@ public final class Settings {
         PROJECTION_APERTURE_PADDING_BLOCKS = clampDouble(projection.aperturePaddingBlocks, 0.0D, 8.0D);
         PROJECTION_REFRESH_INTERVAL_TICKS = clampInt(projection.refreshIntervalTicks, 1, 20);
         PROJECTION_DEPTH_BLOCKS = clampInt(projection.depthBlocks, 1, 256);
+        PROJECTION_RECURSIVE_PORTAL_DEPTH = clampInt(projection.recursivePortalDepth, 3, 64);
         PROJECTION_STABLE_CELL_RESAMPLE_INTERVAL_TICKS = clampInt(projection.stableCellResampleIntervalTicks, 1, 200);
         PROJECTION_CLIENT_VIEW_DISTANCE_CAP = projection.clientViewDistanceCap;
+        PROJECTION_FOVEATED_UNRENDERING = projection.foveatedUnrendering;
         PROJECTION_OBSERVER_INTEREST_DOT = clampDouble(projection.observerInterestDot, -1.0D, 1.0D);
         PROJECTION_SIDE_GRACE_DOT = clampDouble(projection.sideGraceDot, 0.0D, 1.0D);
         PROJECTION_STATIONARY_REUSE_DISTANCE_BLOCKS = clampDouble(projection.stationaryReuseDistanceBlocks, 0.0D, 2.0D);

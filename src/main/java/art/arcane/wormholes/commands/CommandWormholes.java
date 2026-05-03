@@ -31,7 +31,7 @@ public class CommandWormholes {
         player.getInventory().addItem(wand, wormholeRunes);
         player.sendMessage(Wormholes.tag + ChatColor.GREEN + "Portal Wand and 32 Wormhole Runes granted.");
         player.sendMessage(Wormholes.tag + ChatColor.GRAY + "Build TWO solid wormhole-rune rectangles, link them, and stand within 16 blocks to see the projection.");
-        player.sendMessage(Wormholes.tag + ChatColor.GRAY + "Run " + ChatColor.YELLOW + "/wormholes info" + ChatColor.GRAY + " for the full step-by-step.");
+        player.sendMessage(Wormholes.tag + ChatColor.GRAY + "Run " + ChatColor.WHITE + "/wormholes info" + ChatColor.GRAY + " for the full step-by-step.");
     }
 
     @Director(name = "rune", aliases = {"runes"}, sync = true, description = "Give yourself portal runes")
@@ -63,7 +63,7 @@ public class CommandWormholes {
                 break;
         }
         player.getInventory().addItem(rune);
-        player.sendMessage(Wormholes.tag + ChatColor.GREEN + "Granted " + ChatColor.AQUA + safeCount + " " + typeLower + ChatColor.GREEN + " runes.");
+        player.sendMessage(Wormholes.tag + ChatColor.GREEN + "Granted " + ChatColor.WHITE + safeCount + " " + typeLower + ChatColor.GREEN + " runes.");
     }
 
     @Director(name = "reload", aliases = {"rl"}, sync = true, description = "Reload Wormholes configuration")
@@ -87,7 +87,7 @@ public class CommandWormholes {
             return;
         }
         int removed = Wormholes.portalManager.deleteAllPortals();
-        sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Deleted " + ChatColor.AQUA + removed + ChatColor.GREEN + " portals and cleared projection state.");
+        sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Deleted " + ChatColor.WHITE + removed + ChatColor.GREEN + " portals and cleared projection state.");
     }
 
     @Director(name = "debug", sync = true, description = "Dump live projection diagnostics")
@@ -108,17 +108,18 @@ public class CommandWormholes {
 
     @Director(name = "info", aliases = {"guide", "instructions"}, sync = true, description = "Show portal building instructions")
     public void info(@Param(name = "sender", contextual = true) CommandSender sender) {
-        sender.sendMessage(Wormholes.tag + ChatColor.GOLD + "How to build a Wormhole");
-        sender.sendMessage(ChatColor.YELLOW + "1. " + ChatColor.GRAY + "Run " + ChatColor.WHITE + "/wormholes wand" + ChatColor.GRAY + " to receive the wand and 32 wormhole runes.");
-        sender.sendMessage(ChatColor.YELLOW + "2. " + ChatColor.GRAY + "Place the runes as one connected flat plane.");
+        sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "" + ChatColor.BOLD + "How to build a Wormhole");
+        sender.sendMessage(ChatColor.DARK_GRAY + "1. " + ChatColor.GRAY + "Run " + ChatColor.WHITE + "/wormholes wand" + ChatColor.GRAY + " to receive the wand and 32 wormhole runes.");
+        sender.sendMessage(ChatColor.DARK_GRAY + "2. " + ChatColor.GRAY + "Place the runes as one connected flat plane.");
         sender.sendMessage(ChatColor.GRAY + "   Rectangles, L-shapes, crosses, and other connected non-rectangular planes work.");
         sender.sendMessage(ChatColor.GRAY + "   The frame must be flat on one axis-aligned wall, floor, or ceiling.");
-        sender.sendMessage(ChatColor.YELLOW + "3. " + ChatColor.GRAY + "Hold the Portal Wand and " + ChatColor.WHITE + "left-click any rune block" + ChatColor.GRAY + " to form the portal.");
+        sender.sendMessage(ChatColor.DARK_GRAY + "3. " + ChatColor.GRAY + "Hold the Portal Wand and " + ChatColor.WHITE + "left-click any rune block" + ChatColor.GRAY + " to form the portal.");
         sender.sendMessage(ChatColor.GRAY + "   Shapes spanning more than one plane are refunded automatically.");
-        sender.sendMessage(ChatColor.YELLOW + "4. " + ChatColor.GRAY + "Build a SECOND portal somewhere else (any distance, any world).");
-        sender.sendMessage(ChatColor.YELLOW + "5. " + ChatColor.GRAY + "Right-click the open portal with the wand to open the menu.");
-        sender.sendMessage(ChatColor.GRAY + "   Choose " + ChatColor.WHITE + "Set Focus" + ChatColor.GRAY + " then click the other portal in the list. Repeat from the other side.");
-        sender.sendMessage(ChatColor.YELLOW + "6. " + ChatColor.GRAY + "Stand within 16 blocks of either portal — the destination world will project through the frame and walking in teleports you.");
+        sender.sendMessage(ChatColor.DARK_GRAY + "4. " + ChatColor.GRAY + "Build a SECOND portal somewhere else (any distance, any world).");
+        sender.sendMessage(ChatColor.DARK_GRAY + "5. " + ChatColor.GRAY + "Click the open portal with the wand to open the main menu.");
+        sender.sendMessage(ChatColor.GRAY + "   Choose " + ChatColor.WHITE + "Link" + ChatColor.GRAY + " then click the other portal in the list. Repeat from the other side.");
+        sender.sendMessage(ChatColor.GRAY + "   Sneak + click the portal opens the configs menu (Mode, Direction, Flip Face, rotation).");
+        sender.sendMessage(ChatColor.DARK_GRAY + "6. " + ChatColor.GRAY + "Stand within 16 blocks of either portal — the destination world will project through the frame and walking in teleports you.");
         sender.sendMessage(ChatColor.GRAY + "Need more runes? " + ChatColor.WHITE + "/wormholes rune <portal|wormhole|gateway> [count]");
         sender.sendMessage(ChatColor.GRAY + "Admin reset: " + ChatColor.WHITE + "/wormholes reset" + ChatColor.GRAY + " deletes all saved portals.");
     }
