@@ -8,39 +8,32 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.logging.Logger;
 
 public final class TomlCodec {
+    private static final Logger LOGGER = Logger.getLogger("Wormholes-TomlCodec");
+    private static final int PARSE_RETRY_ATTEMPTS = 4;
+    private static final long PARSE_RETRY_BACKOFF_MS = 60L;
+
     private TomlCodec() {
     }
 
     public static <T> T loadOrCreate(File tomlFile, Class<T> type) {
-        T defaults;
-        try {
-            defaults = type.getDeclaredConstructor().newInstance();
-        } catch (Exception e) {
-            throw new IllegalStateException("Config type " + type.getName() + " must have a public no-arg constructor", e);
-        }
+        T defaults = newInstance(type);
 
         if (!tomlFile.exists()) {
             writeCanonical(tomlFile, defaults);
             return defaults;
         }
 
-        T loaded;
-        try {
-            Toml toml = new Toml().read(tomlFile);
-            loaded = applyToml(toml, defaults, type);
-        } catch (Throwable e) {
-            String backupName = tomlFile.getName() + ".invalid-" + System.currentTimeMillis();
-            File backup = new File(tomlFile.getParentFile(), backupName);
-            try {
-                Files.move(tomlFile.toPath(), backup.toPath());
-            } catch (IOException ignored) {
-            }
-            writeCanonical(tomlFile, defaults);
+        T loaded = readWithRetries(tomlFile, type, defaults);
+        if (loaded == null) {
+            LOGGER.warning("Failed to parse " + tomlFile.getName() + " after " + PARSE_RETRY_ATTEMPTS + " attempts; using defaults this cycle (file left untouched).");
             return defaults;
         }
 
@@ -116,9 +109,77 @@ public final class TomlCodec {
                     return;
                 }
             }
-            Files.writeString(tomlFile.toPath(), next, StandardCharsets.UTF_8);
+            atomicWrite(tomlFile.toPath(), next);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to write " + tomlFile, e);
+        }
+    }
+
+    private static <T> T newInstance(Class<T> type) {
+        try {
+            return type.getDeclaredConstructor().newInstance();
+        } catch (Exception e) {
+            throw new IllegalStateException("Config type " + type.getName() + " must have a public no-arg constructor", e);
+        }
+    }
+
+    private static <T> T readWithRetries(File tomlFile, Class<T> type, T defaults) {
+        Throwable lastError = null;
+        for (int attempt = 1; attempt <= PARSE_RETRY_ATTEMPTS; attempt++) {
+            try {
+                long sizeBefore = tomlFile.length();
+                if (sizeBefore <= 0L) {
+                    sleepBackoff(attempt);
+                    continue;
+                }
+                Toml toml = new Toml().read(tomlFile);
+                long sizeAfter = tomlFile.length();
+                if (sizeBefore != sizeAfter) {
+                    sleepBackoff(attempt);
+                    continue;
+                }
+                T fresh = newInstance(type);
+                T applied = applyToml(toml, fresh, type);
+                copySectionRefs(applied, defaults);
+                return applied;
+            } catch (Throwable e) {
+                lastError = e;
+                sleepBackoff(attempt);
+            }
+        }
+        if (lastError != null) {
+            LOGGER.warning("[TomlCodec] Parse retries exhausted for " + tomlFile.getName() + ": " + lastError.getMessage());
+        }
+        return null;
+    }
+
+    private static void sleepBackoff(int attempt) {
+        try {
+            Thread.sleep(PARSE_RETRY_BACKOFF_MS * (long) attempt);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static <T> void copySectionRefs(T target, T defaults) {
+        if (target == null || defaults == null) {
+            return;
+        }
+        for (Field f : target.getClass().getDeclaredFields()) {
+            if (Modifier.isStatic(f.getModifiers()) || Modifier.isTransient(f.getModifiers())) {
+                continue;
+            }
+            if (!isSection(f.getType())) {
+                continue;
+            }
+            f.setAccessible(true);
+            try {
+                Object existing = f.get(target);
+                if (existing == null) {
+                    f.set(target, f.get(defaults));
+                }
+            } catch (IllegalAccessException ignored) {
+            }
         }
     }
 
@@ -264,5 +325,27 @@ public final class TomlCodec {
             return false;
         }
         return type.getPackageName().startsWith("art.arcane.wormholes");
+    }
+
+    private static void atomicWrite(Path target, String content) throws IOException {
+        Path dir = target.getParent();
+        if (dir == null) {
+            Files.writeString(target, content, StandardCharsets.UTF_8);
+            return;
+        }
+        Path tmp = Files.createTempFile(dir, target.getFileName().toString() + ".", ".tmp");
+        try {
+            Files.writeString(tmp, content, StandardCharsets.UTF_8);
+            try {
+                Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (UnsupportedOperationException e) {
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            try {
+                Files.deleteIfExists(tmp);
+            } catch (IOException ignored) {
+            }
+        }
     }
 }

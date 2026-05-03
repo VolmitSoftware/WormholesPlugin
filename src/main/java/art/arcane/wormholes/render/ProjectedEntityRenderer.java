@@ -1,6 +1,7 @@
 package art.arcane.wormholes.render;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -61,6 +62,8 @@ public final class ProjectedEntityRenderer {
     private static final int METADATA_REFRESH_PASSES = 10;
     private static final double MIN_POSITION_DELTA_SQUARED = 1.0E-6D;
     private static final double MAX_RELATIVE_MOVE_DELTA = 7.75D;
+    private static final Map<UUID, EntityCandidateSnapshot> REMOTE_ENTITY_CACHE = new HashMap<UUID, EntityCandidateSnapshot>();
+    private static final Map<UUID, EntityCandidateSnapshot> LOCAL_ENTITY_CACHE = new HashMap<UUID, EntityCandidateSnapshot>();
 
     private final Map<UUID, SpoofedEntity> spoofed;
     private final Map<UUID, Entity> hiddenLocalEntities;
@@ -107,7 +110,7 @@ public final class ProjectedEntityRenderer {
         hideLocalEntities(observer, localPortal, frustum, range, projectionDepth);
         int count = 0;
 
-        for (Entity entity : remoteWorld.getNearbyEntities(remoteCenter, range, range, range)) {
+        for (Entity entity : nearbyRemoteEntities(remotePortal, remoteCenter, range)) {
             if (count >= Settings.MAX_SPOOFED_ENTITIES) {
                 break;
             }
@@ -450,7 +453,7 @@ public final class ProjectedEntityRenderer {
         boolean eyeFrontSide = eyeDot >= 0.0D;
         double clearance = PortalProjector.portalPlaneClearance(localPortal.getStructure().getArea(), frame);
         double maxDepth = projectionDepth + clearance;
-        for (Entity entity : localWorld.getNearbyEntities(localCenter, range, range, range)) {
+        for (Entity entity : nearbyLocalEntities(localPortal, localCenter, range)) {
             if (!shouldHideLocalEntity(observer, entity, origin, frame, frustum, eyeFrontSide, clearance, maxDepth)) {
                 continue;
             }
@@ -529,6 +532,30 @@ public final class ProjectedEntityRenderer {
             return false;
         }
         return entity.isValid();
+    }
+
+    private static Collection<Entity> nearbyRemoteEntities(ILocalPortal portal, Location center, double range) {
+        return nearbyEntities(REMOTE_ENTITY_CACHE, portal, center, range);
+    }
+
+    private static Collection<Entity> nearbyLocalEntities(ILocalPortal portal, Location center, double range) {
+        return nearbyEntities(LOCAL_ENTITY_CACHE, portal, center, range);
+    }
+
+    private static Collection<Entity> nearbyEntities(Map<UUID, EntityCandidateSnapshot> cache, ILocalPortal portal, Location center, double range) {
+        if (portal == null || portal.getId() == null || center == null || center.getWorld() == null) {
+            return List.of();
+        }
+        long now = System.currentTimeMillis();
+        EntityCandidateSnapshot snapshot = cache.get(portal.getId());
+        long maxAgeMillis = Math.max(1, Settings.ENTITY_CANDIDATE_CACHE_TICKS) * 50L;
+        if (snapshot != null && snapshot.matches(center, range) && now - snapshot.createdAtMillis <= maxAgeMillis) {
+            return snapshot.entities;
+        }
+        Collection<Entity> entities = center.getWorld().getNearbyEntities(center, range, range, range);
+        EntityCandidateSnapshot next = new EntityCandidateSnapshot(center, range, now, new ArrayList<Entity>(entities));
+        cache.put(portal.getId(), next);
+        return next.entities;
     }
 
     private EntityType packetEntityType(Entity entity) {
@@ -680,6 +707,34 @@ public final class ProjectedEntityRenderer {
 
         private void resetMetadataCooldown() {
             metadataRefreshPasses = METADATA_REFRESH_PASSES;
+        }
+    }
+
+    private static final class EntityCandidateSnapshot {
+        private final String worldName;
+        private final int centerBlockX;
+        private final int centerBlockY;
+        private final int centerBlockZ;
+        private final double range;
+        private final long createdAtMillis;
+        private final List<Entity> entities;
+
+        private EntityCandidateSnapshot(Location center, double range, long createdAtMillis, List<Entity> entities) {
+            this.worldName = center.getWorld().getName();
+            this.centerBlockX = center.getBlockX();
+            this.centerBlockY = center.getBlockY();
+            this.centerBlockZ = center.getBlockZ();
+            this.range = range;
+            this.createdAtMillis = createdAtMillis;
+            this.entities = entities;
+        }
+
+        private boolean matches(Location center, double range) {
+            return worldName.equals(center.getWorld().getName())
+                && centerBlockX == center.getBlockX()
+                && centerBlockY == center.getBlockY()
+                && centerBlockZ == center.getBlockZ()
+                && Math.abs(this.range - range) < 0.001D;
         }
     }
 

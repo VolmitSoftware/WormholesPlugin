@@ -37,6 +37,8 @@ public final class PortalProjector {
     private Long2ObjectOpenHashMap<ProjectedBlockClaim> nextProjected;
     private final HashMap<BlockData, BlockData> transformedBlockCache;
     private final HashMap<World, List<ILocalPortal>> recursivePortalCandidates;
+    private final HashMap<World, Long2ObjectOpenHashMap<ProjectedSample>> remoteSampleCache;
+    private final ArrayList<RecursivePortalIndex> recursivePortalIndexes;
     private final BlockData airBlockData;
     private final double[] scratchRot = new double[3];
     private final double[] scratchRemotePoint = new double[3];
@@ -79,6 +81,8 @@ public final class PortalProjector {
         this.nextProjected = new Long2ObjectOpenHashMap<ProjectedBlockClaim>(256);
         this.transformedBlockCache = new HashMap<BlockData, BlockData>(128);
         this.recursivePortalCandidates = new HashMap<World, List<ILocalPortal>>(4);
+        this.remoteSampleCache = new HashMap<World, Long2ObjectOpenHashMap<ProjectedSample>>(4);
+        this.recursivePortalIndexes = new ArrayList<RecursivePortalIndex>(4);
         this.airBlockData = Material.AIR.createBlockData();
         this.firstProjectionDone = false;
         this.closed = false;
@@ -253,6 +257,8 @@ public final class PortalProjector {
 
         nextProjected.clear();
         recursivePortalCandidates.clear();
+        remoteSampleCache.clear();
+        recursivePortalIndexes.clear();
 
         int enterCount = 0;
         int exitCount = 0;
@@ -543,17 +549,27 @@ public final class PortalProjector {
         int x = (int) Math.floor(sampleX);
         int y = (int) Math.floor(sampleY);
         int z = (int) Math.floor(sampleZ);
+        ProjectedSample cached = cachedRemoteSample(world, x, y, z);
+        if (cached != null) {
+            return cached;
+        }
         Block remoteBlock = sampleRemoteBlock(world, x, y, z);
         if (remoteBlock == null) {
-            return ProjectedSample.noSample();
+            ProjectedSample sample = ProjectedSample.noSample();
+            cacheRemoteSample(world, x, y, z, sample);
+            return sample;
         }
         lastRemoteSamples++;
 
         long remoteKey = packKey(x, y, z);
+        ProjectedSample sample;
         if (isAir(remoteBlock.getType())) {
-            return new ProjectedSample(ProjectedSampleKind.REMOTE_AIR, airBlockData, world, remoteKey);
+            sample = new ProjectedSample(ProjectedSampleKind.REMOTE_AIR, airBlockData, world, remoteKey);
+        } else {
+            sample = new ProjectedSample(ProjectedSampleKind.BLOCK, remoteBlock.getBlockData(), world, remoteKey);
         }
-        return new ProjectedSample(ProjectedSampleKind.BLOCK, remoteBlock.getBlockData(), world, remoteKey);
+        cacheRemoteSample(world, x, y, z, sample);
+        return sample;
     }
 
     private RecursivePortalHit findRecursivePortalHit(World world,
@@ -564,22 +580,26 @@ public final class PortalProjector {
                                                       double eyeY,
                                                       double eyeZ,
                                                       ILocalPortal excludedPortal) {
-        List<ILocalPortal> candidates = getRecursivePortalCandidates(world);
-        RecursivePortalHit best = null;
-        for (ILocalPortal candidate : candidates) {
-            if (isExcludedRecursivePortal(candidate, excludedPortal)) {
-                continue;
-            }
-            RecursivePortalHit hit = createRecursivePortalHit(candidate, pointX, pointY, pointZ, eyeX, eyeY, eyeZ,
-                false);
-            if (hit == null) {
-                continue;
-            }
-            if (best == null || hit.rayT < best.rayT) {
-                best = hit;
+        RecursivePortalIndex index = recursivePortalIndex(world, eyeX, eyeY, eyeZ, excludedPortal);
+        return index.find(pointX, pointY, pointZ);
+    }
+
+    private RecursivePortalIndex recursivePortalIndex(World world,
+                                                      double eyeX,
+                                                      double eyeY,
+                                                      double eyeZ,
+                                                      ILocalPortal excludedPortal) {
+        for (RecursivePortalIndex index : recursivePortalIndexes) {
+            if (index.matches(world, eyeX, eyeY, eyeZ, excludedPortal)) {
+                return index;
             }
         }
-        return best;
+        if (recursivePortalIndexes.size() > 32) {
+            recursivePortalIndexes.clear();
+        }
+        RecursivePortalIndex created = new RecursivePortalIndex(world, eyeX, eyeY, eyeZ, excludedPortal);
+        recursivePortalIndexes.add(created);
+        return created;
     }
 
     private RecursivePortalHit createRecursivePortalHit(ILocalPortal candidate,
@@ -744,6 +764,23 @@ public final class PortalProjector {
             return null;
         }
         return world.getBlockAt(x, y, z);
+    }
+
+    private ProjectedSample cachedRemoteSample(World world, int x, int y, int z) {
+        Long2ObjectOpenHashMap<ProjectedSample> worldSamples = remoteSampleCache.get(world);
+        if (worldSamples == null) {
+            return null;
+        }
+        return worldSamples.get(packKey(x, y, z));
+    }
+
+    private void cacheRemoteSample(World world, int x, int y, int z, ProjectedSample sample) {
+        Long2ObjectOpenHashMap<ProjectedSample> worldSamples = remoteSampleCache.get(world);
+        if (worldSamples == null) {
+            worldSamples = new Long2ObjectOpenHashMap<ProjectedSample>(256);
+            remoteSampleCache.put(world, worldSamples);
+        }
+        worldSamples.put(packKey(x, y, z), sample);
     }
 
     private static boolean isAir(Material material) {
@@ -1030,6 +1067,246 @@ public final class PortalProjector {
                 return new ProjectedBlockClaim(projectedData, null, ProjectedBlockClaim.NO_REMOTE_KEY, true);
             }
             return new ProjectedBlockClaim(projectedData, lightWorld, remoteKey, false);
+        }
+    }
+
+    private final class RecursivePortalIndex {
+        private final World world;
+        private final UUID excludedPortalId;
+        private final double eyeX;
+        private final double eyeY;
+        private final double eyeZ;
+        private final ArrayList<RecursivePortalCandidate> candidates;
+
+        private RecursivePortalIndex(World world, double eyeX, double eyeY, double eyeZ, ILocalPortal excludedPortal) {
+            this.world = world;
+            this.excludedPortalId = excludedPortal == null ? null : excludedPortal.getId();
+            this.eyeX = eyeX;
+            this.eyeY = eyeY;
+            this.eyeZ = eyeZ;
+            this.candidates = new ArrayList<RecursivePortalCandidate>();
+            for (ILocalPortal candidate : getRecursivePortalCandidates(world)) {
+                if (isExcludedRecursivePortal(candidate, excludedPortal)) {
+                    continue;
+                }
+                RecursivePortalCandidate indexed = new RecursivePortalCandidate(candidate, eyeX, eyeY, eyeZ);
+                if (indexed.valid) {
+                    candidates.add(indexed);
+                }
+            }
+        }
+
+        private boolean matches(World world, double eyeX, double eyeY, double eyeZ, ILocalPortal excludedPortal) {
+            UUID candidateExcludedId = excludedPortal == null ? null : excludedPortal.getId();
+            if (this.world == null ? world != null : !this.world.equals(world)) {
+                return false;
+            }
+            if (excludedPortalId == null ? candidateExcludedId != null : !excludedPortalId.equals(candidateExcludedId)) {
+                return false;
+            }
+            return Double.compare(this.eyeX, eyeX) == 0
+                && Double.compare(this.eyeY, eyeY) == 0
+                && Double.compare(this.eyeZ, eyeZ) == 0;
+        }
+
+        private RecursivePortalHit find(double pointX, double pointY, double pointZ) {
+            RecursivePortalHit best = null;
+            for (RecursivePortalCandidate candidate : candidates) {
+                RecursivePortalHit hit = candidate.hit(pointX, pointY, pointZ);
+                if (hit == null) {
+                    continue;
+                }
+                if (best == null || hit.rayT < best.rayT) {
+                    best = hit;
+                }
+            }
+            return best;
+        }
+    }
+
+    private final class RecursivePortalCandidate {
+        private final ILocalPortal candidate;
+        private final AxisAlignedBB view;
+        private final PortalFrame localFrame;
+        private final PortalFrame remoteFrame;
+        private final World nestedWorld;
+        private final ILocalPortal nestedDestination;
+        private final PortalPlaneWindow planeWindow;
+        private final double originX;
+        private final double originY;
+        private final double originZ;
+        private final double remoteOriginX;
+        private final double remoteOriginY;
+        private final double remoteOriginZ;
+        private final double normalX;
+        private final double normalY;
+        private final double normalZ;
+        private final double projectionNormalX;
+        private final double projectionNormalY;
+        private final double projectionNormalZ;
+        private final double eyeX;
+        private final double eyeY;
+        private final double eyeZ;
+        private final double eyeSignedDistance;
+        private final double clearance;
+        private final double maxDepth;
+        private final boolean eyeFrontSide;
+        private final boolean traversable;
+        private final boolean valid;
+
+        private RecursivePortalCandidate(ILocalPortal candidate, double eyeX, double eyeY, double eyeZ) {
+            this.candidate = candidate;
+            this.eyeX = eyeX;
+            this.eyeY = eyeY;
+            this.eyeZ = eyeZ;
+            if (candidate == null || candidate.getOrigin() == null || candidate.getFrame() == null || candidate.getStructure() == null) {
+                this.view = null;
+                this.localFrame = null;
+                this.remoteFrame = null;
+                this.nestedWorld = null;
+                this.nestedDestination = null;
+                this.planeWindow = null;
+                this.originX = 0.0D;
+                this.originY = 0.0D;
+                this.originZ = 0.0D;
+                this.remoteOriginX = 0.0D;
+                this.remoteOriginY = 0.0D;
+                this.remoteOriginZ = 0.0D;
+                this.normalX = 0.0D;
+                this.normalY = 0.0D;
+                this.normalZ = 0.0D;
+                this.projectionNormalX = 0.0D;
+                this.projectionNormalY = 0.0D;
+                this.projectionNormalZ = 0.0D;
+                this.eyeSignedDistance = 0.0D;
+                this.clearance = 0.0D;
+                this.maxDepth = 0.0D;
+                this.eyeFrontSide = false;
+                this.traversable = false;
+                this.valid = false;
+                return;
+            }
+
+            AxisAlignedBB candidateView = candidate.getView();
+            PortalFrame frame = candidate.getFrame();
+            double candidateOriginX = candidate.getOrigin().getX();
+            double candidateOriginY = candidate.getOrigin().getY();
+            double candidateOriginZ = candidate.getOrigin().getZ();
+            double frameNormalX = frame.getNormal().x();
+            double frameNormalY = frame.getNormal().y();
+            double frameNormalZ = frame.getNormal().z();
+            double eyeRelX = eyeX - candidateOriginX;
+            double eyeRelY = eyeY - candidateOriginY;
+            double eyeRelZ = eyeZ - candidateOriginZ;
+            boolean frontSide = ((eyeRelX * frameNormalX) + (eyeRelY * frameNormalY) + (eyeRelZ * frameNormalZ)) >= 0.0D;
+            PortalFrame candidateLocalFrame = viewFrame(frame, frontSide);
+            double localProjectionNormalX = candidateLocalFrame.getNormal().x();
+            double localProjectionNormalY = candidateLocalFrame.getNormal().y();
+            double localProjectionNormalZ = candidateLocalFrame.getNormal().z();
+            double signedEyeDistance = (eyeRelX * localProjectionNormalX) + (eyeRelY * localProjectionNormalY) + (eyeRelZ * localProjectionNormalZ);
+            double candidateClearance = portalPlaneClearance(candidate.getStructure().getArea(), frame);
+
+            ILocalPortal destination;
+            World destinationWorld;
+            PortalFrame destinationFrame;
+            double destinationOriginX;
+            double destinationOriginY;
+            double destinationOriginZ;
+            boolean canTraverse;
+            if (candidate.getProjectionMode() == ProjectionMode.MIRROR) {
+                destination = candidate;
+                destinationWorld = candidate.getWorld();
+                destinationFrame = viewFrame(frame.flipNormal(), frontSide);
+                destinationOriginX = candidateOriginX;
+                destinationOriginY = candidateOriginY;
+                destinationOriginZ = candidateOriginZ;
+                canTraverse = destinationWorld != null;
+            } else if (candidate.getTunnel() != null && candidate.getTunnel().getDestination() instanceof ILocalPortal linkedDestination) {
+                destination = linkedDestination;
+                destinationWorld = linkedDestination.getWorld();
+                destinationFrame = linkedDestination.getFrame() == null ? null : viewFrame(linkedDestination.getFrame(), frontSide);
+                destinationOriginX = linkedDestination.getOrigin() == null ? 0.0D : linkedDestination.getOrigin().getX();
+                destinationOriginY = linkedDestination.getOrigin() == null ? 0.0D : linkedDestination.getOrigin().getY();
+                destinationOriginZ = linkedDestination.getOrigin() == null ? 0.0D : linkedDestination.getOrigin().getZ();
+                canTraverse = destinationWorld != null && destinationFrame != null && linkedDestination.getOrigin() != null;
+            } else {
+                destination = null;
+                destinationWorld = null;
+                destinationFrame = null;
+                destinationOriginX = 0.0D;
+                destinationOriginY = 0.0D;
+                destinationOriginZ = 0.0D;
+                canTraverse = false;
+            }
+
+            this.view = candidateView;
+            this.localFrame = candidateLocalFrame;
+            this.remoteFrame = destinationFrame;
+            this.nestedWorld = destinationWorld;
+            this.nestedDestination = destination;
+            this.planeWindow = candidateView == null ? null : PortalPlaneWindow.create(candidate.getStructure().getArea(), candidateLocalFrame,
+                candidateOriginX, candidateOriginY, candidateOriginZ, Settings.PROJECTION_APERTURE_PADDING_BLOCKS + PLANE_WINDOW_EXTRA_PADDING,
+                signedEyeDistance);
+            this.originX = candidateOriginX;
+            this.originY = candidateOriginY;
+            this.originZ = candidateOriginZ;
+            this.remoteOriginX = destinationOriginX;
+            this.remoteOriginY = destinationOriginY;
+            this.remoteOriginZ = destinationOriginZ;
+            this.normalX = frameNormalX;
+            this.normalY = frameNormalY;
+            this.normalZ = frameNormalZ;
+            this.projectionNormalX = localProjectionNormalX;
+            this.projectionNormalY = localProjectionNormalY;
+            this.projectionNormalZ = localProjectionNormalZ;
+            this.eyeSignedDistance = signedEyeDistance;
+            this.clearance = candidateClearance;
+            this.maxDepth = Settings.PROJECTION_DEPTH_BLOCKS + candidateClearance;
+            this.eyeFrontSide = frontSide;
+            this.traversable = canTraverse;
+            this.valid = candidateView != null && planeWindow != null;
+        }
+
+        private RecursivePortalHit hit(double pointX, double pointY, double pointZ) {
+            if (!valid || !view.containsPrimitive(pointX, pointY, pointZ)) {
+                return null;
+            }
+
+            double pointRelX = pointX - originX;
+            double pointRelY = pointY - originY;
+            double pointRelZ = pointZ - originZ;
+            double pointDot = (pointRelX * normalX) + (pointRelY * normalY) + (pointRelZ * normalZ);
+            if (!projectsBehindPortalPlane(pointDot, eyeFrontSide, clearance)) {
+                return null;
+            }
+            if (Math.abs(pointDot) > maxDepth) {
+                return null;
+            }
+
+            double pointSignedDistance = (pointRelX * projectionNormalX) + (pointRelY * projectionNormalY) + (pointRelZ * projectionNormalZ);
+            double rayT = rayPlaneT(eyeSignedDistance, pointSignedDistance);
+            if (rayT <= 0.0D) {
+                return null;
+            }
+            if (!planeWindow.containsRayIntersection(eyeX, eyeY, eyeZ, pointX, pointY, pointZ, pointSignedDistance)) {
+                return null;
+            }
+            if (!traversable) {
+                return RecursivePortalHit.mask(rayT, false);
+            }
+
+            localFrame.transformPointInto(pointX, pointY, pointZ,
+                originX, originY, originZ,
+                remoteOriginX, remoteOriginY, remoteOriginZ,
+                remoteFrame, scratchRecursivePoint);
+            localFrame.transformPointInto(eyeX, eyeY, eyeZ,
+                originX, originY, originZ,
+                remoteOriginX, remoteOriginY, remoteOriginZ,
+                remoteFrame, scratchRecursiveEye);
+            return new RecursivePortalHit(nestedWorld, nestedDestination, localFrame, remoteFrame,
+                scratchRecursivePoint[0], scratchRecursivePoint[1], scratchRecursivePoint[2],
+                scratchRecursiveEye[0], scratchRecursiveEye[1], scratchRecursiveEye[2],
+                rayT, true, false);
         }
     }
 

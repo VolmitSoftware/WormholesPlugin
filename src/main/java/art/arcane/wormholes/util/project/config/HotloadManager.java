@@ -5,13 +5,16 @@ import art.arcane.wormholes.config.WormholesSettings;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.logging.Logger;
 
 public final class HotloadManager {
-    private static final long POLL_INTERVAL_MS = 250L;
+    private static final long POLL_INTERVAL_MS = 200L;
+    private static final long STABILITY_WINDOW_MS = 350L;
     private static final long STOP_JOIN_TIMEOUT_MS = 2_000L;
     private static final String[] WATCHED_FILES = {"main.toml", "projection.toml", "render.toml", "advanced.toml"};
 
@@ -20,7 +23,8 @@ public final class HotloadManager {
     private final Logger logger;
     private final Consumer<WormholesSettings> reloadCallback;
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private final Map<String, Long> lastModified = new HashMap<>();
+    private final Map<String, FileSignature> lastApplied = new HashMap<>();
+    private final Map<String, PendingChange> pending = new HashMap<>();
     private Thread watcherThread;
 
     public HotloadManager(Path dataFolder, Logger logger, Consumer<WormholesSettings> reloadCallback) {
@@ -44,7 +48,7 @@ public final class HotloadManager {
         thread.setDaemon(true);
         watcherThread = thread;
         thread.start();
-        logger.info("[Hotload] Watching " + configDir + " for TOML changes (poll=" + POLL_INTERVAL_MS + "ms)");
+        logger.info("[Hotload] Watching " + configDir + " for TOML changes (poll=" + POLL_INTERVAL_MS + "ms, stability=" + STABILITY_WINDOW_MS + "ms)");
     }
 
     public void stop() {
@@ -70,12 +74,9 @@ public final class HotloadManager {
     private void captureBaseline() {
         for (String name : WATCHED_FILES) {
             Path file = configDir.resolve(name);
-            try {
-                if (Files.exists(file)) {
-                    lastModified.put(name, Files.getLastModifiedTime(file).toMillis());
-                }
-            } catch (Exception e) {
-                logger.warning("[Hotload] Failed to read mtime for " + name + ": " + e.getMessage());
+            FileSignature signature = readSignature(name, file);
+            if (signature != null) {
+                lastApplied.put(name, signature);
             }
         }
     }
@@ -96,42 +97,101 @@ public final class HotloadManager {
     }
 
     private void checkForChanges() {
-        boolean changed = false;
+        long now = System.currentTimeMillis();
+        Set<String> stableChangedFiles = new HashSet<>();
+
         for (String name : WATCHED_FILES) {
             Path file = configDir.resolve(name);
-            try {
-                if (!Files.exists(file)) {
-                    continue;
-                }
-                long current = Files.getLastModifiedTime(file).toMillis();
-                Long previous = lastModified.get(name);
-                if (previous == null || current > previous) {
-                    lastModified.put(name, current);
-                    if (previous != null) {
-                        changed = true;
-                    }
-                }
-            } catch (Exception e) {
-                logger.warning("[Hotload] mtime check failed for " + name + ": " + e.getMessage());
+            if (!Files.exists(file)) {
+                pending.remove(name);
+                continue;
             }
+            FileSignature current = readSignature(name, file);
+            if (current == null) {
+                continue;
+            }
+            FileSignature applied = lastApplied.get(name);
+            if (applied != null && current.matches(applied)) {
+                pending.remove(name);
+                continue;
+            }
+            PendingChange existing = pending.get(name);
+            if (existing == null || !existing.signature.matches(current)) {
+                pending.put(name, new PendingChange(current, now));
+                continue;
+            }
+            if (now - existing.firstSeenMillis < STABILITY_WINDOW_MS) {
+                continue;
+            }
+            stableChangedFiles.add(name);
         }
-        if (changed && running.get()) {
-            reloadAll();
+
+        if (stableChangedFiles.isEmpty()) {
+            return;
         }
+        if (!running.get()) {
+            return;
+        }
+        reloadAll(stableChangedFiles);
     }
 
-    private void reloadAll() {
+    private void reloadAll(Set<String> changedFiles) {
         try {
             WormholesSettings reloaded = WormholesSettings.loadAll(dataFolder);
             if (!running.get()) {
                 return;
             }
-            logger.info("[Hotload] Configuration reloaded.");
+            logger.info("[Hotload] Configuration reloaded: " + String.join(", ", changedFiles));
             reloadCallback.accept(reloaded);
         } catch (Exception e) {
             logger.warning("[Hotload] Failed to reload configuration: " + e.getMessage());
         } finally {
-            captureBaseline();
+            for (String name : WATCHED_FILES) {
+                Path file = configDir.resolve(name);
+                FileSignature signature = readSignature(name, file);
+                if (signature != null) {
+                    lastApplied.put(name, signature);
+                }
+            }
+            pending.clear();
+        }
+    }
+
+    private FileSignature readSignature(String name, Path file) {
+        try {
+            if (!Files.exists(file)) {
+                return null;
+            }
+            long mtime = Files.getLastModifiedTime(file).toMillis();
+            long size = Files.size(file);
+            return new FileSignature(mtime, size);
+        } catch (Exception e) {
+            logger.warning("[Hotload] mtime/size check failed for " + name + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    private static final class FileSignature {
+        private final long modifiedMillis;
+        private final long size;
+
+        private FileSignature(long modifiedMillis, long size) {
+            this.modifiedMillis = modifiedMillis;
+            this.size = size;
+        }
+
+        private boolean matches(FileSignature other) {
+            return other != null && this.modifiedMillis == other.modifiedMillis && this.size == other.size;
+        }
+    }
+
+    private static final class PendingChange {
+        private final FileSignature signature;
+        private final long firstSeenMillis;
+
+        private PendingChange(FileSignature signature, long firstSeenMillis) {
+            this.signature = signature;
+            this.firstSeenMillis = firstSeenMillis;
         }
     }
 }

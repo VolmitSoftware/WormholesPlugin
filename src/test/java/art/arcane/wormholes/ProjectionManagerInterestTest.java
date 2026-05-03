@@ -63,6 +63,21 @@ public final class ProjectionManagerInterestTest {
     public void foveatedUnrenderingDefaultsOffAndBypassesViewportInterest() {
         assertTrue(ProjectionManager.isObserverProjectionInterested(null, null, null, false));
         assertFalse(ProjectionManager.isObserverProjectionInterested(null, null, null, true));
+        assertTrue(ProjectionManager.isObserverProjectionInterested(null, null, null));
+    }
+
+    @Test
+    public void configuredFoveatedUnrenderingControlsViewportInterest() {
+        ProjectionConfig projection = new ProjectionConfig();
+        projection.foveatedUnrendering = true;
+        Settings.refresh(new WormholesSettings(new MainConfig(), projection, new RenderConfig(), new AdvancedConfig()));
+        assertFalse(ProjectionManager.isObserverProjectionInterested(null, null, null));
+
+        projection.foveatedUnrendering = false;
+        Settings.refresh(new WormholesSettings(new MainConfig(), projection, new RenderConfig(), new AdvancedConfig()));
+        assertTrue(ProjectionManager.isObserverProjectionInterested(null, null, null));
+
+        Settings.refresh(new WormholesSettings(new MainConfig(), new ProjectionConfig(), new RenderConfig(), new AdvancedConfig()));
     }
 
     @Test
@@ -79,6 +94,25 @@ public final class ProjectionManagerInterestTest {
         projection.recursivePortalDepth = 12;
         Settings.refresh(new WormholesSettings(new MainConfig(), projection, new RenderConfig(), new AdvancedConfig()));
         assertEquals(12, Settings.PROJECTION_RECURSIVE_PORTAL_DEPTH);
+
+        Settings.refresh(new WormholesSettings(new MainConfig(), new ProjectionConfig(), new RenderConfig(), new AdvancedConfig()));
+    }
+
+    @Test
+    public void projectionAndRenderBudgetsClampToSafeRanges() {
+        ProjectionConfig projection = new ProjectionConfig();
+        projection.maxPortalsPerObserverTick = 0;
+        projection.interestGraceTicks = -10;
+        RenderConfig render = new RenderConfig();
+        render.lightingMaxSectionsPerPass = 0;
+        render.entityCandidateCacheTicks = 0;
+
+        Settings.refresh(new WormholesSettings(new MainConfig(), projection, render, new AdvancedConfig()));
+
+        assertEquals(1, Settings.PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK);
+        assertEquals(0, Settings.PROJECTION_INTEREST_GRACE_TICKS);
+        assertEquals(1, Settings.LIGHTING_MAX_SECTIONS_PER_PASS);
+        assertEquals(1, Settings.ENTITY_CANDIDATE_CACHE_TICKS);
 
         Settings.refresh(new WormholesSettings(new MainConfig(), new ProjectionConfig(), new RenderConfig(), new AdvancedConfig()));
     }

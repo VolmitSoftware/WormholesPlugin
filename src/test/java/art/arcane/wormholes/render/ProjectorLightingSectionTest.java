@@ -34,4 +34,25 @@ public final class ProjectorLightingSectionTest {
 
         assertEquals(3, ProjectorLighting.countValidSections(dirtySections, minSection, maxSection));
     }
+
+    @Test
+    public void adaptiveLightingBudgetClampsToAtLeastOneSection() {
+        assertEquals(1, ProjectorLighting.lightingSectionBudget(true, 0));
+        assertEquals(2, ProjectorLighting.lightingSectionBudget(true, 2));
+        assertEquals(Integer.MAX_VALUE, ProjectorLighting.lightingSectionBudget(false, 2));
+    }
+
+    @Test
+    public void sectionSelectionLeavesUnsentSectionsPending() {
+        IntOpenHashSet pending = new IntOpenHashSet();
+        pending.add(1);
+        pending.add(2);
+        pending.add(3);
+
+        IntOpenHashSet selected = ProjectorLighting.selectSections(pending, 2);
+        ProjectorLighting.removeSections(pending, selected);
+
+        assertEquals(2, selected.size());
+        assertEquals(1, pending.size());
+    }
 }

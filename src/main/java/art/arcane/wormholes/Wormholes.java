@@ -36,13 +36,13 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     public static Wormholes instance;
     public static String tag = ChatColor.DARK_GRAY + "[" + ChatColor.GRAY + "Wormholes" + ChatColor.DARK_GRAY + "] " + ChatColor.GRAY;
 
-    public static WormholesSettings settings;
-    public static BlockManager blockManager;
-    public static EffectManager effectManager;
-    public static ConstructionManager constructionManager;
-    public static PortalManager portalManager;
-    public static TraversableManager traversableManager;
-    public static ProjectionManager projectionManager;
+    public static volatile WormholesSettings settings;
+    public static volatile BlockManager blockManager;
+    public static volatile EffectManager effectManager;
+    public static volatile ConstructionManager constructionManager;
+    public static volatile PortalManager portalManager;
+    public static volatile TraversableManager traversableManager;
+    public static volatile ProjectionManager projectionManager;
 
     private static final ConcurrentHashMap<UUID, Consumer<String>> CHAT_INPUTS = new ConcurrentHashMap<>();
 
@@ -129,21 +129,42 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     }
 
     public void reloadAll() {
-        settings = WormholesSettings.loadAll(getDataFolder().toPath());
-        Settings.refresh(settings);
-        if (projectionManager != null) {
-            projectionManager.onSettingsReloaded();
-        }
+        WormholesSettings reloaded = WormholesSettings.loadAll(getDataFolder().toPath());
+        applyReloadedSettings(reloaded);
     }
 
     private void onConfigHotReload(WormholesSettings reloaded) {
+        applyReloadedSettings(reloaded);
+    }
+
+    private void applyReloadedSettings(WormholesSettings reloaded) {
+        if (reloaded == null) {
+            return;
+        }
         settings = reloaded;
         Settings.refresh(reloaded);
-        if (projectionManager != null) {
-            projectionManager.onSettingsReloaded();
+        FoliaScheduler.runGlobal(this, () -> applyReloadedManagers(reloaded));
+    }
+
+    private void applyReloadedManagers(WormholesSettings reloaded) {
+        if (settings != reloaded) {
+            return;
         }
-        if (commandService != null) {
-            commandService.invalidateCache();
+        ProjectionManager activeProjection = projectionManager;
+        if (activeProjection != null) {
+            try {
+                activeProjection.onSettingsReloaded();
+            } catch (Throwable ex) {
+                getLogger().log(Level.WARNING, "ProjectionManager rejected hot-reload notification", ex);
+            }
+        }
+        WormholesCommandService activeService = commandService;
+        if (activeService != null) {
+            try {
+                activeService.invalidateCache();
+            } catch (Throwable ex) {
+                getLogger().log(Level.WARNING, "CommandService cache invalidation failed", ex);
+            }
         }
         getLogger().info("Configuration hot-reloaded.");
     }

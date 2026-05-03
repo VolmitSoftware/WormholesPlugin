@@ -20,12 +20,15 @@ import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 
+import art.arcane.wormholes.Settings;
+
 public final class ProjectorLighting {
     private static final int SECTION_NIBBLE_BYTES = 2048;
     private static final long NO_REMOTE_KEY = Long.MIN_VALUE;
 
     private final Long2ObjectOpenHashMap<IntOpenHashSet> sentChunkSections = new Long2ObjectOpenHashMap<IntOpenHashSet>(8);
     private final Long2ObjectOpenHashMap<IntOpenHashSet> chunkToSections = new Long2ObjectOpenHashMap<IntOpenHashSet>(8);
+    private final Long2ObjectOpenHashMap<IntOpenHashSet> pendingChunkSections = new Long2ObjectOpenHashMap<IntOpenHashSet>(8);
 
     public void apply(Player observer,
                       World localWorld,
@@ -44,19 +47,33 @@ public final class ProjectorLighting {
         LongSet currentChunks = collectCurrentChunkKeys(localWorld, projectedClaims.keySet());
         revertStaleChunks(observer, localWorld, currentChunks);
 
-        chunkToSections.clear();
         LongSet dirtyKeys = dirtyLocalKeys == null ? projectedClaims.keySet() : dirtyLocalKeys;
+        chunkToSections.clear();
         collectDirtySections(localWorld, dirtyKeys, chunkToSections);
+        mergePendingSections(chunkToSections);
 
-        for (Long2ObjectMap.Entry<IntOpenHashSet> entry : chunkToSections.long2ObjectEntrySet()) {
+        int remainingSections = lightingSectionBudget();
+        Iterator<Long2ObjectMap.Entry<IntOpenHashSet>> iterator = pendingChunkSections.long2ObjectEntrySet().iterator();
+        while (iterator.hasNext() && remainingSections > 0) {
+            Long2ObjectMap.Entry<IntOpenHashSet> entry = iterator.next();
             long chunkKey = entry.getLongKey();
             if (!currentChunks.contains(chunkKey)) {
+                iterator.remove();
                 continue;
             }
             int chunkX = (int) (chunkKey >> 32);
             int chunkZ = (int) chunkKey;
-            sendChunkLight(observer, localWorld, null, null, projectedClaims, chunkX, chunkZ, entry.getValue());
-            recordSentSections(chunkKey, entry.getValue());
+            IntOpenHashSet selected = selectSections(entry.getValue(), remainingSections);
+            if (selected.isEmpty()) {
+                continue;
+            }
+            sendChunkLight(observer, localWorld, null, null, projectedClaims, chunkX, chunkZ, selected);
+            recordSentSections(chunkKey, selected);
+            removeSections(entry.getValue(), selected);
+            remainingSections -= selected.size();
+            if (entry.getValue().isEmpty()) {
+                iterator.remove();
+            }
         }
     }
 
@@ -90,19 +107,33 @@ public final class ProjectorLighting {
         LongSet currentChunks = currentChunkKeys == null ? collectCurrentChunkKeys(localWorld, projectedKeys) : currentChunkKeys;
         revertStaleChunks(observer, localWorld, currentChunks);
 
-        chunkToSections.clear();
         LongSet dirtyKeys = dirtyLocalKeys == null ? projectedKeys : dirtyLocalKeys;
+        chunkToSections.clear();
         collectDirtySections(localWorld, dirtyKeys, chunkToSections);
+        mergePendingSections(chunkToSections);
 
-        for (Long2ObjectMap.Entry<IntOpenHashSet> entry : chunkToSections.long2ObjectEntrySet()) {
+        int remainingSections = lightingSectionBudget();
+        Iterator<Long2ObjectMap.Entry<IntOpenHashSet>> iterator = pendingChunkSections.long2ObjectEntrySet().iterator();
+        while (iterator.hasNext() && remainingSections > 0) {
+            Long2ObjectMap.Entry<IntOpenHashSet> entry = iterator.next();
             long chunkKey = entry.getLongKey();
             if (!currentChunks.contains(chunkKey)) {
+                iterator.remove();
                 continue;
             }
             int chunkX = (int) (chunkKey >> 32);
             int chunkZ = (int) chunkKey;
-            sendChunkLight(observer, localWorld, destWorld, projectedRemote, null, chunkX, chunkZ, entry.getValue());
-            recordSentSections(chunkKey, entry.getValue());
+            IntOpenHashSet selected = selectSections(entry.getValue(), remainingSections);
+            if (selected.isEmpty()) {
+                continue;
+            }
+            sendChunkLight(observer, localWorld, destWorld, projectedRemote, null, chunkX, chunkZ, selected);
+            recordSentSections(chunkKey, selected);
+            removeSections(entry.getValue(), selected);
+            remainingSections -= selected.size();
+            if (entry.getValue().isEmpty()) {
+                iterator.remove();
+            }
         }
     }
 
@@ -168,6 +199,7 @@ public final class ProjectorLighting {
 
     public void revert(Player observer, World localWorld) {
         if (sentChunkSections.isEmpty()) {
+            pendingChunkSections.clear();
             return;
         }
         if (observer == null || !observer.isOnline()) {
@@ -186,6 +218,45 @@ public final class ProjectorLighting {
             sendLocalChunkLight(observer, localWorld, chunkX, chunkZ, entry.getValue());
         }
         sentChunkSections.clear();
+        pendingChunkSections.clear();
+    }
+
+    private void mergePendingSections(Long2ObjectOpenHashMap<IntOpenHashSet> sections) {
+        for (Long2ObjectMap.Entry<IntOpenHashSet> entry : sections.long2ObjectEntrySet()) {
+            IntOpenHashSet pending = pendingChunkSections.get(entry.getLongKey());
+            if (pending == null) {
+                pending = new IntOpenHashSet(entry.getValue().size());
+                pendingChunkSections.put(entry.getLongKey(), pending);
+            }
+            pending.addAll(entry.getValue());
+        }
+    }
+
+    private static int lightingSectionBudget() {
+        return lightingSectionBudget(Settings.ADAPTIVE_LIGHTING, Settings.LIGHTING_MAX_SECTIONS_PER_PASS);
+    }
+
+    static int lightingSectionBudget(boolean adaptiveLighting, int configuredMaxSections) {
+        if (!adaptiveLighting) {
+            return Integer.MAX_VALUE;
+        }
+        return Math.max(1, configuredMaxSections);
+    }
+
+    static IntOpenHashSet selectSections(IntOpenHashSet sections, int maxSections) {
+        IntOpenHashSet selected = new IntOpenHashSet(Math.min(sections.size(), maxSections));
+        IntIterator iterator = sections.iterator();
+        while (iterator.hasNext() && selected.size() < maxSections) {
+            selected.add(iterator.nextInt());
+        }
+        return selected;
+    }
+
+    static void removeSections(IntOpenHashSet sections, IntOpenHashSet selected) {
+        IntIterator iterator = selected.iterator();
+        while (iterator.hasNext()) {
+            sections.remove(iterator.nextInt());
+        }
     }
 
     private void recordSentSections(long chunkKey, IntSet sections) {

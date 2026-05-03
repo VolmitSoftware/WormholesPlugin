@@ -70,11 +70,23 @@ public class PortalManager implements Listener
 		int loaded = 0;
 		int skipped = 0;
 
-		for(File i : portalFolder.listFiles())
+		File[] firstLevel = portalFolder.listFiles();
+		if(firstLevel == null)
+		{
+			initialLoadComplete = true;
+			return;
+		}
+
+		for(File i : firstLevel)
 		{
 			if(i.isDirectory())
 			{
-				for(File j : i.listFiles())
+				File[] secondLevel = i.listFiles();
+				if(secondLevel == null)
+				{
+					continue;
+				}
+				for(File j : secondLevel)
 				{
 					if(j.isDirectory())
 					{
@@ -362,6 +374,8 @@ public class PortalManager implements Listener
 		}
 
 		portals.clear();
+		pendingPortalFiles.clear();
+		refreshUnresolvedTunnelCount();
 		deletePortalFolder();
 		return removed;
 	}

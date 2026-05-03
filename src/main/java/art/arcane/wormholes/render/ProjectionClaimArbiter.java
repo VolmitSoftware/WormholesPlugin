@@ -73,6 +73,9 @@ public final class ProjectionClaimArbiter {
             portal.getId(), tieKey, priorityDistance, claims);
         ObserverFrame frame = frames.get(observer.getUniqueId());
         if (frame != null) {
+            if (allowLightingUpdate) {
+                frame.allowLightingUpdate = true;
+            }
             frame.result.merge(setResult);
             return new ClaimUpdateResult(0, setResult.getConflicts(), setResult.getWinnerChanges(), setResult.getReverts());
         }
@@ -280,8 +283,8 @@ public final class ProjectionClaimArbiter {
     private static final class ObserverFrame {
         private final Player observer;
         private final World localWorld;
-        private final boolean allowLightingUpdate;
         private final ProjectionClaimSet.ProjectionClaimSetResult result;
+        private boolean allowLightingUpdate;
 
         private ObserverFrame(Player observer, World localWorld, boolean allowLightingUpdate) {
             this.observer = observer;
