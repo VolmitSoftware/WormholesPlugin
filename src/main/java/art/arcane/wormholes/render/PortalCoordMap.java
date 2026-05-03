@@ -40,4 +40,32 @@ public final class PortalCoordMap {
             toOriginX, toOriginY, toOriginZ,
             toFrame, out3);
     }
+
+    public static void reflectPointAcrossPlaneInto(double x, double y, double z,
+                                                   double originX, double originY, double originZ,
+                                                   PortalFrame frame,
+                                                   double[] out3) {
+        double nx = frame.getNormal().x();
+        double ny = frame.getNormal().y();
+        double nz = frame.getNormal().z();
+        double offsetX = x - originX;
+        double offsetY = y - originY;
+        double offsetZ = z - originZ;
+        double dot = offsetX * nx + offsetY * ny + offsetZ * nz;
+        out3[0] = originX + offsetX - 2.0D * dot * nx;
+        out3[1] = originY + offsetY - 2.0D * dot * ny;
+        out3[2] = originZ + offsetZ - 2.0D * dot * nz;
+    }
+
+    public static void reflectVectorAcrossPlaneInto(double x, double y, double z,
+                                                    PortalFrame frame,
+                                                    double[] out3) {
+        double nx = frame.getNormal().x();
+        double ny = frame.getNormal().y();
+        double nz = frame.getNormal().z();
+        double dot = x * nx + y * ny + z * nz;
+        out3[0] = x - 2.0D * dot * nx;
+        out3[1] = y - 2.0D * dot * ny;
+        out3[2] = z - 2.0D * dot * nz;
+    }
 }

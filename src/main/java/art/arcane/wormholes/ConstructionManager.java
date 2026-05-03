@@ -19,7 +19,6 @@ import art.arcane.wormholes.util.Axis;
 import art.arcane.wormholes.util.Cuboid;
 import art.arcane.wormholes.util.Direction;
 import art.arcane.volmlib.util.collection.KList;
-import art.arcane.volmlib.util.collection.KSet;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 
 public class ConstructionManager implements Listener
@@ -113,11 +112,4 @@ public class ConstructionManager implements Listener
 		return new LocalPortal(UUID.randomUUID(), type, s);
 	}
 
-	public void destroy(ILocalPortal localPortal)
-	{
-		KSet<Block> blocks = localPortal.getStructure().toBlocks();
-		Wormholes.effectManager.playNotificationFail(ChatColor.RED + localPortal.getName() + " Destroyed", localPortal.getStructure().getCenter());
-		Wormholes.effectManager.playPortalFailOpen(blocks);
-		Wormholes.blockManager.refund(blocks, localPortal.getType());
-	}
 }

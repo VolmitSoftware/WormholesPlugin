@@ -12,6 +12,7 @@ import java.util.logging.Logger;
 
 public final class HotloadManager {
     private static final long POLL_INTERVAL_MS = 250L;
+    private static final long STOP_JOIN_TIMEOUT_MS = 2_000L;
     private static final String[] WATCHED_FILES = {"main.toml", "projection.toml", "render.toml", "advanced.toml"};
 
     private final Path dataFolder;
@@ -39,9 +40,10 @@ public final class HotloadManager {
             logger.warning("[Hotload] Failed to create config directory " + configDir + ": " + e.getMessage());
         }
         captureBaseline();
-        watcherThread = new Thread(this::pollLoop, "Wormholes-Hotload-Watcher");
-        watcherThread.setDaemon(true);
-        watcherThread.start();
+        Thread thread = new Thread(this::pollLoop, "Wormholes-Hotload-Watcher");
+        thread.setDaemon(true);
+        watcherThread = thread;
+        thread.start();
         logger.info("[Hotload] Watching " + configDir + " for TOML changes (poll=" + POLL_INTERVAL_MS + "ms)");
     }
 
@@ -49,9 +51,19 @@ public final class HotloadManager {
         if (!running.compareAndSet(true, false)) {
             return;
         }
-        if (watcherThread != null) {
-            watcherThread.interrupt();
-            watcherThread = null;
+        Thread thread = watcherThread;
+        watcherThread = null;
+        if (thread == null) {
+            return;
+        }
+        thread.interrupt();
+        try {
+            thread.join(STOP_JOIN_TIMEOUT_MS);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+        if (thread.isAlive()) {
+            logger.warning("[Hotload] Watcher thread did not exit within " + STOP_JOIN_TIMEOUT_MS + "ms; abandoning");
         }
     }
 
@@ -74,6 +86,9 @@ public final class HotloadManager {
                 Thread.sleep(POLL_INTERVAL_MS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                return;
+            }
+            if (!running.get()) {
                 return;
             }
             checkForChanges();
@@ -100,7 +115,7 @@ public final class HotloadManager {
                 logger.warning("[Hotload] mtime check failed for " + name + ": " + e.getMessage());
             }
         }
-        if (changed) {
+        if (changed && running.get()) {
             reloadAll();
         }
     }
@@ -108,6 +123,9 @@ public final class HotloadManager {
     private void reloadAll() {
         try {
             WormholesSettings reloaded = WormholesSettings.loadAll(dataFolder);
+            if (!running.get()) {
+                return;
+            }
             logger.info("[Hotload] Configuration reloaded.");
             reloadCallback.accept(reloaded);
         } catch (Exception e) {

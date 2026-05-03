@@ -33,6 +33,8 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEn
 
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.portal.ILocalPortal;
+import art.arcane.wormholes.portal.ProjectionMode;
+import art.arcane.wormholes.render.ProjectionClaimArbiter;
 import art.arcane.wormholes.render.PortalProjector;
 import art.arcane.wormholes.util.AxisAlignedBB;
 import art.arcane.wormholes.util.Direction;
@@ -41,6 +43,7 @@ import art.arcane.wormholes.util.J;
 public class ProjectionManager implements Listener {
     private static final long DIAGNOSTIC_INTERVAL_MS = 5_000L;
 
+    private final ProjectionClaimArbiter claimArbiter;
     private final Map<UUID, Map<UUID, PortalProjector>> projectors;
     private final Map<UUID, Integer> portalObserverCursors;
     private long lastDiagnostic;
@@ -53,6 +56,7 @@ public class ProjectionManager implements Listener {
     private int lastDeferredProjectors;
 
     public ProjectionManager() {
+        this.claimArbiter = new ProjectionClaimArbiter();
         this.projectors = new HashMap<UUID, Map<UUID, PortalProjector>>();
         this.portalObserverCursors = new HashMap<UUID, Integer>();
         this.lastDiagnostic = 0L;
@@ -128,6 +132,8 @@ public class ProjectionManager implements Listener {
 
         List<ILocalPortal> active = collectActiveProjectors();
         int remainingProjectors = Settings.PROJECTION_MAX_PROJECTORS_PER_TICK;
+        boolean updateBlocks = shouldUpdateBlocks();
+        boolean updateEntities = shouldUpdateEntities();
         lastInterestedObservers = 0;
         lastScheduledProjectors = 0;
         lastDeferredProjectors = 0;
@@ -135,9 +141,11 @@ public class ProjectionManager implements Listener {
         for (int i = 0; i < active.size(); i++) {
             ILocalPortal portal = active.get(i);
             int portalsLeft = active.size() - i;
-            int portalBudget = remainingProjectors <= 0 ? 0 : portalsLeft <= 1 ? remainingProjectors : Math.max(1, remainingProjectors / portalsLeft);
-            int scheduled = updatePortal(portal, portalBudget);
-            remainingProjectors = Math.max(0, remainingProjectors - scheduled);
+            int portalBudget = !updateBlocks || remainingProjectors <= 0 ? 0 : portalsLeft <= 1 ? remainingProjectors : Math.max(1, remainingProjectors / portalsLeft);
+            int scheduled = updatePortal(portal, portalBudget, updateBlocks, updateEntities);
+            if (updateBlocks) {
+                remainingProjectors = Math.max(0, remainingProjectors - scheduled);
+            }
         }
 
         cleanupDeadPortals(active);
@@ -179,7 +187,10 @@ public class ProjectionManager implements Listener {
             if (!portal.supportsProjections() || !portal.isProjecting()) {
                 continue;
             }
-            if (!portal.isOpen() || !portal.hasTunnel()) {
+            if (!portal.isOpen()) {
+                continue;
+            }
+            if (portal.getProjectionMode() != ProjectionMode.MIRROR && !portal.hasTunnel()) {
                 continue;
             }
             active.add(portal);
@@ -209,7 +220,10 @@ public class ProjectionManager implements Listener {
         }
     }
 
-    private int updatePortal(ILocalPortal portal, int remainingProjectors) {
+    private int updatePortal(ILocalPortal portal, int remainingProjectors, boolean updateBlocks, boolean updateEntities) {
+        if (!updateBlocks && !updateEntities) {
+            return 0;
+        }
         Location center = portal.getCenter();
         if (center == null || center.getWorld() == null) {
             Wormholes.w("[ProjectionManager] portal " + portal.getName() + " has no valid center/world; skipping");
@@ -250,7 +264,9 @@ public class ProjectionManager implements Listener {
             }
         }
 
-        Set<UUID> scheduledObservers = selectScheduledObservers(portal.getId(), interestedObservers, remainingProjectors);
+        Set<UUID> scheduledObservers = updateBlocks
+                ? selectScheduledObservers(portal.getId(), interestedObservers, remainingProjectors)
+                : new HashSet<UUID>(interestedObservers);
         int deferred = Math.max(0, interestedObservers.size() - scheduledObservers.size());
         lastScheduledProjectors += scheduledObservers.size();
         lastDeferredProjectors += deferred;
@@ -258,7 +274,7 @@ public class ProjectionManager implements Listener {
             return 0;
         }
 
-        FoliaScheduler.runRegion(Wormholes.instance, center, () -> projectActiveObservers(portal, scheduledObservers));
+        FoliaScheduler.runRegion(Wormholes.instance, center, () -> projectActiveObservers(portal, scheduledObservers, updateBlocks, updateEntities));
         return scheduledObservers.size();
     }
 
@@ -278,7 +294,7 @@ public class ProjectionManager implements Listener {
         return scheduled;
     }
 
-    private void projectActiveObservers(ILocalPortal portal, Set<UUID> activeObservers) {
+    private void projectActiveObservers(ILocalPortal portal, Set<UUID> activeObservers, boolean updateBlocks, boolean updateEntities) {
         Map<UUID, PortalProjector> portalProjectors = projectors.get(portal.getId());
         if (portalProjectors == null) {
             return;
@@ -292,7 +308,7 @@ public class ProjectionManager implements Listener {
 
             PortalProjector projector = portalProjectors.get(observerId);
             if (projector == null) {
-                projector = new PortalProjector(portal, observer);
+                projector = new PortalProjector(portal, observer, claimArbiter);
                 portalProjectors.put(observerId, projector);
                 Wormholes.v("[ProjectionManager] new projector portal=" + portal.getName()
                         + " observer=" + observer.getName()
@@ -301,7 +317,7 @@ public class ProjectionManager implements Listener {
             }
 
             try {
-                projector.project();
+                projector.project(updateBlocks, updateEntities);
             } catch (Throwable ex) {
                 Wormholes.instance.getLogger().log(Level.WARNING,
                         "[ProjectionManager] projection error portal=" + portal.getName() + " observer=" + observer.getName(), ex);
@@ -391,7 +407,8 @@ public class ProjectionManager implements Listener {
                 .append(" hasTunnel=").append(portal.hasTunnel())
                 .append(" center=").append(formatLoc(portal.getCenter()))
                 .append(" direction=").append(portal.getDirection())
-                .append(" projecting=").append(portal.isProjecting());
+                .append(" projecting=").append(portal.isProjecting())
+                .append(" mode=").append(portal.getProjectionMode());
         return sb.toString();
     }
 
@@ -401,12 +418,15 @@ public class ProjectionManager implements Listener {
         sb.append("  tickCount=").append(tickCount).append('\n');
         sb.append("  firstTickLogged=").append(firstTickLogged).append('\n');
         sb.append("  PROJECTION_RANGE=").append(Settings.PROJECTION_RANGE).append('\n');
+        sb.append("  blockRefreshInterval=").append(Settings.PROJECTION_REFRESH_INTERVAL_TICKS).append('\n');
+        sb.append("  entityUpdateInterval=").append(Settings.ENTITY_UPDATE_INTERVAL_TICKS).append('\n');
         sb.append("  foveatedUnrendering=").append(Settings.PROJECTION_FOVEATED_UNRENDERING).append('\n');
         sb.append("  recursivePortalDepth=").append(Settings.PROJECTION_RECURSIVE_PORTAL_DEPTH).append('\n');
         sb.append("  maxProjectorsPerTick=").append(Settings.PROJECTION_MAX_PROJECTORS_PER_TICK).append('\n');
         sb.append("  interestedObservers=").append(lastInterestedObservers).append('\n');
         sb.append("  scheduledProjectors=").append(lastScheduledProjectors).append('\n');
         sb.append("  deferredProjectors=").append(lastDeferredProjectors).append('\n');
+        sb.append("  ").append(claimArbiter.getDiagnostics()).append('\n');
         sb.append("  projectorEntries=").append(projectors.size()).append('\n');
         if (Wormholes.portalManager == null) {
             sb.append("  portalManager=null\n");
@@ -452,6 +472,7 @@ public class ProjectionManager implements Listener {
             Location center = projector.getPortal().getCenter();
             closeOnRegion(projector, center);
         }
+        claimArbiter.releaseObserver(id);
     }
 
     public void removeProjector(ILocalPortal portal, Player player) {
@@ -483,10 +504,21 @@ public class ProjectionManager implements Listener {
         }
         projectors.clear();
         portalObserverCursors.clear();
+        claimArbiter.clear();
     }
 
     public void onSettingsReloaded() {
         scheduleTick();
+    }
+
+    private boolean shouldUpdateBlocks() {
+        int interval = Math.max(1, Settings.PROJECTION_REFRESH_INTERVAL_TICKS);
+        return (tickCount - 1L) % interval == 0L;
+    }
+
+    private boolean shouldUpdateEntities() {
+        int interval = Math.max(1, Settings.ENTITY_UPDATE_INTERVAL_TICKS);
+        return (tickCount - 1L) % interval == 0L;
     }
 
     private void broadcastProjectedEntityAnimation(UUID entityId, EntityAnimationType type) {
@@ -543,7 +575,7 @@ public class ProjectionManager implements Listener {
     }
 
     private void scheduleTick() {
-        int interval = Math.max(1, Settings.PROJECTION_REFRESH_INTERVAL_TICKS);
+        int interval = 1;
         if (taskId >= 0 && currentInterval == interval) {
             return;
         }
@@ -552,7 +584,7 @@ public class ProjectionManager implements Listener {
         }
         currentInterval = interval;
         taskId = J.sr(() -> tick(), interval);
-        Wormholes.v("[ProjectionManager] tick scheduled (taskId=" + taskId + ", interval=" + interval + "t, range=" + Settings.PROJECTION_RANGE + ")");
+        Wormholes.v("[ProjectionManager] tick scheduled (taskId=" + taskId + ", interval=" + interval + "t, blockInterval=" + Settings.PROJECTION_REFRESH_INTERVAL_TICKS + "t, entityInterval=" + Settings.ENTITY_UPDATE_INTERVAL_TICKS + "t, range=" + Settings.PROJECTION_RANGE + ")");
     }
 
     private void closeOnRegion(PortalProjector projector, Location center) {

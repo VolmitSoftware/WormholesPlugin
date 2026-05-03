@@ -18,9 +18,10 @@ public class ProjectionConfig {
 
     @ConfigDescription({
         "Projector refresh interval in server ticks.",
-        "1 updates every tick, 2 updates ten times per second, and higher values reduce CPU/network load at the cost of responsiveness."
+        "1 updates the viewport every tick for smooth observer movement, 2 updates ten times per second, and higher values reduce CPU/network load at the cost of responsiveness.",
+        "Remote block data can still be coalesced separately by stable-cell-resample-interval-ticks."
     })
-    public int refreshIntervalTicks = 2;
+    public int refreshIntervalTicks = 1;
 
     @ConfigDescription({
         "Maximum stale-cell flush window in milliseconds.",
@@ -60,6 +61,7 @@ public class ProjectionConfig {
     @ConfigDescription({
         "Maximum number of portal-through-portal block projection hops.",
         "When a projected destination view contains another linked local portal, Wormholes can continue sampling through that portal so nested portal contents render.",
+        "If the nested view hits the depth limit, cycles back into the same portal chain, or has no valid destination, that nested aperture is masked as fake air instead of leaking the physical blocks behind it.",
         "The value is clamped from 3 to 64 to keep recursive portal chains bounded."
     })
     public int recursivePortalDepth = 3;
@@ -67,9 +69,10 @@ public class ProjectionConfig {
     @ConfigDescription({
         "Minimum server ticks between full remote block resamples for stable projected cells.",
         "When a local projected cell maps to the same destination coordinate as the previous pass, Wormholes can reuse the last projected BlockData instead of re-reading the remote block every refresh.",
-        "1 resamples every projection pass for maximum live block-change accuracy. Higher values reduce CPU while still catching remote block edits on the next full resample."
+        "1 resamples every projection pass for maximum live block-change accuracy. Higher values reduce CPU while still catching remote block edits on the next full resample.",
+        "The default keeps the viewport moving every tick while refreshing stable remote block contents every 4 ticks."
     })
-    public int stableCellResampleIntervalTicks = 1;
+    public int stableCellResampleIntervalTicks = 4;
 
     @ConfigDescription({
         "Cap projection range/depth by the player's client view distance and the server view distance.",
@@ -87,7 +90,7 @@ public class ProjectionConfig {
     @ConfigDescription({
         "Minimum dot product between the player's view direction and the vector from their eye to the portal center before a projector is kept active.",
         "1.0 means only looking exactly at the portal, 0.0 means the portal must be somewhere in front of the player, and negative values allow wide peripheral views.",
-        "Only used when foveated-unrendering is true."
+        "Wormholes applies this as a cheap first-pass interest gate and keeps a short grace window to avoid pop-in."
     })
     public double observerInterestDot = -0.2;
 
@@ -95,7 +98,7 @@ public class ProjectionConfig {
         "Minimum absolute dot product between the portal face normal and the vector from the portal center to the player's eye.",
         "When the value is greater than 0, players almost perfectly side-on to a portal get no projection instead of a front/back side flip-flop.",
         "0 disables this grace band. 0.12 suppresses roughly the last 7 degrees on either side of an edge-on view.",
-        "Only used when foveated-unrendering is true."
+        "This is always used so edge-on portals do not fight over front/back packet ownership."
     })
     public double sideGraceDot = 0.12;
 
@@ -120,6 +123,19 @@ public class ProjectionConfig {
         "Raise this on high-end servers for smoother portals; lower it when profiler samples show projection work crowding the main thread."
     })
     public int maxProjectorsPerTick = 24;
+
+    @ConfigDescription({
+        "Maximum portal projectors updated for one observer during one projection manager tick.",
+        "This keeps one player looking at several portals from monopolizing the tick while still allowing controlled multi-portal views.",
+        "Set this at or above the maximum number of intentionally visible portals in one room."
+    })
+    public int maxPortalsPerObserverTick = 4;
+
+    @ConfigDescription({
+        "Ticks to keep an existing observer/portal projector alive after a cheap interest gate temporarily fails.",
+        "Small grace values prevent flicker when a player nudges their view while still allowing side-on portals to shut off quickly."
+    })
+    public int interestGraceTicks = 5;
 
     @ConfigDescription({
         "Number of first projection passes that resend all currently projected fake blocks, even if their data did not change.",

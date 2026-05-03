@@ -73,7 +73,9 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 
 	public boolean isProjecting();
 
-	public void setProjecting(boolean projecting);
+	public ProjectionMode getProjectionMode();
+
+	public void setProjectionMode(ProjectionMode mode);
 
 	public AxisAlignedBB getView();
 

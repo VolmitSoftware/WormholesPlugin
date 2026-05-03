@@ -29,6 +29,39 @@ public final class ProjectorLighting {
 
     public void apply(Player observer,
                       World localWorld,
+                      Long2ObjectMap<ProjectedBlockClaim> projectedClaims,
+                      LongSet dirtyLocalKeys) {
+        if (observer == null || !observer.isOnline()) {
+            return;
+        }
+        if (projectedClaims.isEmpty()) {
+            return;
+        }
+        if (dirtyLocalKeys != null && dirtyLocalKeys.isEmpty()) {
+            return;
+        }
+
+        LongSet currentChunks = collectCurrentChunkKeys(localWorld, projectedClaims.keySet());
+        revertStaleChunks(observer, localWorld, currentChunks);
+
+        chunkToSections.clear();
+        LongSet dirtyKeys = dirtyLocalKeys == null ? projectedClaims.keySet() : dirtyLocalKeys;
+        collectDirtySections(localWorld, dirtyKeys, chunkToSections);
+
+        for (Long2ObjectMap.Entry<IntOpenHashSet> entry : chunkToSections.long2ObjectEntrySet()) {
+            long chunkKey = entry.getLongKey();
+            if (!currentChunks.contains(chunkKey)) {
+                continue;
+            }
+            int chunkX = (int) (chunkKey >> 32);
+            int chunkZ = (int) chunkKey;
+            sendChunkLight(observer, localWorld, null, null, projectedClaims, chunkX, chunkZ, entry.getValue());
+            recordSentSections(chunkKey, entry.getValue());
+        }
+    }
+
+    public void apply(Player observer,
+                      World localWorld,
                       World destWorld,
                       LongSet projectedKeys,
                       Long2LongMap projectedRemote,
@@ -68,7 +101,7 @@ public final class ProjectorLighting {
             }
             int chunkX = (int) (chunkKey >> 32);
             int chunkZ = (int) chunkKey;
-            sendChunkLight(observer, localWorld, destWorld, projectedRemote, chunkX, chunkZ, entry.getValue());
+            sendChunkLight(observer, localWorld, destWorld, projectedRemote, null, chunkX, chunkZ, entry.getValue());
             recordSentSections(chunkKey, entry.getValue());
         }
     }
@@ -168,11 +201,12 @@ public final class ProjectorLighting {
                                 World localWorld,
                                 World destWorld,
                                 Long2LongMap projectedRemote,
+                                Long2ObjectMap<ProjectedBlockClaim> projectedClaims,
                                 int chunkX, int chunkZ, IntSet dirtySections) {
         int minSec = localWorld.getMinHeight() >> 4;
         int maxSec = (localWorld.getMaxHeight() - 1) >> 4;
-        int destMinY = destWorld.getMinHeight();
-        int destMaxY = destWorld.getMaxHeight() - 1;
+        int destMinY = destWorld == null ? 0 : destWorld.getMinHeight();
+        int destMaxY = destWorld == null ? -1 : destWorld.getMaxHeight() - 1;
         int maskBitCount = (maxSec - minSec + 1) + 2;
         int sectionCount = countValidSections(dirtySections, minSec, maxSec);
         if (sectionCount == 0) {
@@ -208,20 +242,24 @@ public final class ProjectorLighting {
                         int x = (chunkX << 4) + lx;
 
                         long localKey = packKey(x, y, z);
-                        long remoteKey = projectedRemote.get(localKey);
+                        ProjectedBlockClaim claim = projectedClaims == null ? null : projectedClaims.get(localKey);
+                        long remoteKey = claim == null && projectedRemote != null ? projectedRemote.get(localKey) : claim == null ? NO_REMOTE_KEY : claim.getLightRemoteKey();
+                        World sourceWorld = claim == null ? destWorld : claim.getLightWorld();
 
                         int sky;
                         int block;
-                        if (remoteKey != NO_REMOTE_KEY) {
+                        if (remoteKey != NO_REMOTE_KEY && sourceWorld != null) {
                             int rx = unpackX(remoteKey);
                             int ry = unpackY(remoteKey);
                             int rz = unpackZ(remoteKey);
-                            if (ry < destMinY || ry > destMaxY) {
+                            int sourceMinY = claim == null ? destMinY : sourceWorld.getMinHeight();
+                            int sourceMaxY = claim == null ? destMaxY : sourceWorld.getMaxHeight() - 1;
+                            if (ry < sourceMinY || ry > sourceMaxY) {
                                 Block local = localWorld.getBlockAt(x, y, z);
                                 sky = local.getLightFromSky();
                                 block = local.getLightFromBlocks();
                             } else {
-                                Block remote = destWorld.getBlockAt(rx, ry, rz);
+                                Block remote = sourceWorld.getBlockAt(rx, ry, rz);
                                 sky = remote.getLightFromSky();
                                 block = remote.getLightFromBlocks();
                             }

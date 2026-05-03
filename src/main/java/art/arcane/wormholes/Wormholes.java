@@ -269,6 +269,20 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         }
 
         try {
+            HandlerList.unregisterAll(this);
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "Error unregistering plugin listeners", ex);
+        }
+
+        if (commandService != null) {
+            try {
+                commandService.invalidateCache();
+            } catch (Throwable ex) {
+                getLogger().log(Level.WARNING, "Error invalidating command service cache", ex);
+            }
+        }
+
+        try {
             if (projectionManager != null) {
                 projectionManager.shutdown();
             }
@@ -289,7 +303,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
                 blockManager.destroyAll();
             }
         } catch (Throwable ex) {
-            getLogger().log(Level.WARNING, "Error during BlockManager destroyAll", ex);
+            getLogger().log(Level.WARNING, "Error during BlockManager teardown", ex);
         }
 
         if (packetEventsLoaded && PacketEvents.getAPI() != null) {

@@ -2,11 +2,16 @@ package art.arcane.wormholes;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 import java.util.UUID;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.world.WorldLoadEvent;
 
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.IPortal;
@@ -22,14 +27,37 @@ import art.arcane.wormholes.util.VIO;
 
 public class PortalManager implements Listener
 {
+	private static final int LOAD_RETRY_INTERVAL_TICKS = 20;
+	private static final int LOAD_RETRY_ATTEMPTS = 30;
+
 	private KMap<UUID, ILocalPortal> portals;
+	private final List<File> pendingPortalFiles;
+	private boolean initialLoadComplete;
+	private int loadedPortalFiles;
+	private int pendingWorldPortalFiles;
+	private int failedPortalFiles;
+	private int unresolvedTunnelCount;
 
 	public PortalManager()
 	{
 		Wormholes.v("Starting Portal Manager");
 		portals = new KMap<>();
-		J.s(() -> loadExistingPortals(), 40);
+		pendingPortalFiles = new ArrayList<File>();
+		initialLoadComplete = false;
+		loadedPortalFiles = 0;
+		pendingWorldPortalFiles = 0;
+		failedPortalFiles = 0;
+		unresolvedTunnelCount = 0;
+		int loadDelay = Bukkit.getWorlds().isEmpty() ? 40 : 1;
+		J.s(() -> loadExistingPortals(), loadDelay);
+		schedulePendingLoadRetry(LOAD_RETRY_ATTEMPTS);
 		J.ar(() -> updateLocalPortals(), 0);
+	}
+
+	@EventHandler
+	public void on(WorldLoadEvent e)
+	{
+		loadPendingPortals();
 	}
 
 	private void loadExistingPortals()
@@ -50,30 +78,43 @@ public class PortalManager implements Listener
 				{
 					if(j.isDirectory())
 					{
-						for(File k : j.listFiles())
-						{
-							if(k.isFile() && k.getName().endsWith(".json"))
+							File[] files = j.listFiles();
+							if(files == null)
 							{
-								found++;
-								if(loadPortal(k))
+								continue;
+							}
+							for(File k : files)
+							{
+								if(k.isFile() && k.getName().endsWith(".json"))
 								{
-									loaded++;
-								}
-								else
-								{
-									skipped++;
-								}
+									found++;
+									PortalLoadResult result = loadPortal(k);
+									if(result == PortalLoadResult.LOADED)
+									{
+										loaded++;
+									}
+									else if(result == PortalLoadResult.PENDING_WORLD)
+									{
+										queuePendingPortal(k);
+										skipped++;
+									}
+									else
+									{
+										skipped++;
+									}
 							}
 						}
 					}
 				}
 			}
 		}
-
-		Wormholes.v("Portal load complete: " + loaded + " loaded, " + skipped + " skipped (of " + found + " files)");
+	
+		initialLoadComplete = true;
+		refreshUnresolvedTunnelCount();
+		Wormholes.v("Portal load complete: " + loaded + " loaded, " + skipped + " skipped (of " + found + " files), pending=" + pendingPortalFiles.size());
 	}
 
-	private boolean loadPortal(File k)
+	private PortalLoadResult loadPortal(File k)
 	{
 		try
 		{
@@ -83,7 +124,7 @@ public class PortalManager implements Listener
 			if(Bukkit.getWorld(savedWorldName) == null)
 			{
 				Wormholes.w("Skipping portal " + k.getName() + " - world '" + savedWorldName + "' is not loaded");
-				return false;
+				return PortalLoadResult.PENDING_WORLD;
 			}
 
 			PortalType type = PortalType.valueOf(j.getString("type"));
@@ -93,23 +134,73 @@ public class PortalManager implements Listener
 			if(structure.getWorld() == null)
 			{
 				Wormholes.w("Skipping portal " + k.getName() + " - structure world resolved to null after load");
-				return false;
+				failedPortalFiles++;
+				return PortalLoadResult.FAILED;
 			}
 
 			ILocalPortal portal = new LocalPortal(UUID.fromString(j.getString("id")), type, structure);
 
 			portal.loadJSON(j);
 			addLocalPortal(portal);
-			portal.save();
+			loadedPortalFiles++;
 			Wormholes.v("Loaded portal " + portal.getId() + " (" + portal.getName() + ") in " + savedWorldName);
-			return true;
+			return PortalLoadResult.LOADED;
 		}
 		catch(Throwable e)
 		{
 			Wormholes.f("Failed to load portal file " + k.getName());
 			e.printStackTrace();
-			return false;
+			failedPortalFiles++;
+			return PortalLoadResult.FAILED;
 		}
+	}
+
+	private void queuePendingPortal(File file)
+	{
+		if(pendingPortalFiles.contains(file))
+		{
+			return;
+		}
+		pendingWorldPortalFiles++;
+		pendingPortalFiles.add(file);
+	}
+
+	private void loadPendingPortals()
+	{
+		if(pendingPortalFiles.isEmpty())
+		{
+			refreshUnresolvedTunnelCount();
+			return;
+		}
+
+		Iterator<File> iterator = pendingPortalFiles.iterator();
+		while(iterator.hasNext())
+		{
+			File file = iterator.next();
+			PortalLoadResult result = loadPortal(file);
+			if(result == PortalLoadResult.PENDING_WORLD)
+			{
+				continue;
+			}
+			iterator.remove();
+		}
+		refreshUnresolvedTunnelCount();
+	}
+
+	private void schedulePendingLoadRetry(int remainingAttempts)
+	{
+		if(remainingAttempts <= 0)
+		{
+			return;
+		}
+		J.s(() ->
+		{
+			loadPendingPortals();
+			if(!pendingPortalFiles.isEmpty())
+			{
+				schedulePendingLoadRetry(remainingAttempts - 1);
+			}
+		}, LOAD_RETRY_INTERVAL_TICKS);
 	}
 
 	public void saveAll()
@@ -138,6 +229,10 @@ public class PortalManager implements Listener
 
 	public void updateLocalPortals()
 	{
+		if(!initialLoadComplete)
+		{
+			return;
+		}
 		for(ILocalPortal i : getLocalPortals())
 		{
 			updateLocalPortal(i);
@@ -230,6 +325,16 @@ public class PortalManager implements Listener
 	public int getTotalPortalCount()
 	{
 		return getLocalPortals().size();
+	}
+
+	public String getLoadDiagnostics()
+	{
+		return "portalLoad loaded=" + loadedPortalFiles
+			+ " pendingWorld=" + pendingPortalFiles.size()
+			+ " pendingSeen=" + pendingWorldPortalFiles
+			+ " failed=" + failedPortalFiles
+			+ " unresolvedTunnels=" + unresolvedTunnelCount
+			+ " initialComplete=" + initialLoadComplete;
 	}
 
 	public int deleteAllPortals()
@@ -327,6 +432,27 @@ public class PortalManager implements Listener
 	{
 		Wormholes.v("Shutting down portal manager");
 		saveAllNow();
+		pendingPortalFiles.clear();
 		portals.clear();
+	}
+
+	private void refreshUnresolvedTunnelCount()
+	{
+		int unresolved = 0;
+		for(ILocalPortal portal : portals.v())
+		{
+			if(portal.getTunnel() != null && !portal.hasTunnel())
+			{
+				unresolved++;
+			}
+		}
+		unresolvedTunnelCount = unresolved;
+	}
+
+	private enum PortalLoadResult
+	{
+		LOADED,
+		PENDING_WORLD,
+		FAILED
 	}
 }

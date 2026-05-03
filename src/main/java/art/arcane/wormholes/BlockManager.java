@@ -58,42 +58,12 @@ public class BlockManager implements Listener
 
 	public void destroyAll()
 	{
-		Wormholes.v("Destroying portal blocks in " + blocks.k() + " chunks containing portal blocks.");
-		for(GChunk i : blocks.k())
-		{
-			try
-			{
-				destroyAll(i);
-			}
-
-			catch(Throwable e)
-			{
-
-			}
-		}
-
+		Wormholes.v("Releasing tracked portal blocks (" + blocks.k() + " chunks)");
 		blocks.clear();
+		unregisterAllRecipes();
 	}
 
-	@EventHandler
-	public void on(ChunkLoadEvent e)
-	{
-		try
-		{
-			if(blocks.containsKey(new GChunk(e.getChunk())))
-			{
-				destroyAll(new GChunk(e.getChunk()));
-				J.s(() -> e.getChunk().unload());
-			}
-		}
-
-		catch(Throwable ex)
-		{
-			ex.printStackTrace();
-		}
-	}
-
-	private void destroyAll(GChunk c)
+	private void destroyAllInChunk(GChunk c)
 	{
 		Wormholes.v("Destroying " + blocks.get(c).size() + " portal blocks in chunk " + c.getX() + ", " + c.getZ());
 
@@ -105,6 +75,24 @@ public class BlockManager implements Listener
 		}
 
 		blocks.remove(c);
+	}
+
+	@EventHandler
+	public void on(ChunkLoadEvent e)
+	{
+		try
+		{
+			if(blocks.containsKey(new GChunk(e.getChunk())))
+			{
+				destroyAllInChunk(new GChunk(e.getChunk()));
+				J.s(() -> e.getChunk().unload());
+			}
+		}
+
+		catch(Throwable ex)
+		{
+			ex.printStackTrace();
+		}
 	}
 
 	private void updatePlacedBlocks()

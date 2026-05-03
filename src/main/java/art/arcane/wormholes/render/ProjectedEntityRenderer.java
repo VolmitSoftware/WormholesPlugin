@@ -40,6 +40,8 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEn
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityEquipment;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityHeadLook;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityRelativeMove;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityRelativeMoveAndRotation;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityRotation;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityTeleport;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityVelocity;
@@ -57,6 +59,8 @@ import art.arcane.wormholes.portal.PortalFrame;
 public final class ProjectedEntityRenderer {
     private static final AtomicInteger NEXT_FAKE_ID = new AtomicInteger(1_900_000_000);
     private static final int METADATA_REFRESH_PASSES = 10;
+    private static final double MIN_POSITION_DELTA_SQUARED = 1.0E-6D;
+    private static final double MAX_RELATIVE_MOVE_DELTA = 7.75D;
 
     private final Map<UUID, SpoofedEntity> spoofed;
     private final Map<UUID, Entity> hiddenLocalEntities;
@@ -171,24 +175,41 @@ public final class ProjectedEntityRenderer {
             return false;
         }
 
+        boolean mirror = remotePortal == localPortal;
+        PortalFrame mirrorPlaneFrame = mirror ? localPortal.getFrame() : null;
+        Vector mirrorPlaneOrigin = mirror ? localPortal.getOrigin() : null;
+
         Location remoteLocation = entity.getLocation();
         double visibleY = remoteLocation.getY() + (entity.getHeight() * 0.5D);
-        PortalCoordMap.transformPointInto(remoteLocation.getX(), visibleY, remoteLocation.getZ(),
-            remotePortal.getOrigin().getX(), remotePortal.getOrigin().getY(), remotePortal.getOrigin().getZ(),
-            localPortal.getOrigin().getX(), localPortal.getOrigin().getY(), localPortal.getOrigin().getZ(),
-            remoteViewFrame, localViewFrame, scratchVisiblePoint);
+        if (mirror) {
+            PortalCoordMap.reflectPointAcrossPlaneInto(remoteLocation.getX(), visibleY, remoteLocation.getZ(),
+                mirrorPlaneOrigin.getX(), mirrorPlaneOrigin.getY(), mirrorPlaneOrigin.getZ(),
+                mirrorPlaneFrame, scratchVisiblePoint);
+        } else {
+            PortalCoordMap.transformPointInto(remoteLocation.getX(), visibleY, remoteLocation.getZ(),
+                remotePortal.getOrigin().getX(), remotePortal.getOrigin().getY(), remotePortal.getOrigin().getZ(),
+                localPortal.getOrigin().getX(), localPortal.getOrigin().getY(), localPortal.getOrigin().getZ(),
+                remoteViewFrame, localViewFrame, scratchVisiblePoint);
+        }
 
         if (!frustum.containsPrimitive(scratchVisiblePoint[0], scratchVisiblePoint[1], scratchVisiblePoint[2])) {
             return false;
         }
 
         Vector direction = lookDirection(entity, remoteLocation);
-        remoteViewFrame.transformVectorInto(direction.getX(), direction.getY(), direction.getZ(), localViewFrame, scratchDirection);
+        if (mirror) {
+            PortalCoordMap.reflectVectorAcrossPlaneInto(direction.getX(), direction.getY(), direction.getZ(),
+                mirrorPlaneFrame, scratchDirection);
+        } else {
+            remoteViewFrame.transformVectorInto(direction.getX(), direction.getY(), direction.getZ(), localViewFrame, scratchDirection);
+        }
         float yaw = yaw(scratchDirection[0], scratchDirection[2]);
         float pitch = pitch(scratchDirection[0], scratchDirection[1], scratchDirection[2]);
         double visualBaseY = scratchVisiblePoint[1] - (entity.getHeight() * 0.5D);
         Vector3d position = new Vector3d(scratchVisiblePoint[0], visualBaseY, scratchVisiblePoint[2]);
-        Vector3d velocity = transformedVelocity(entity, remoteViewFrame, localViewFrame);
+        Vector3d velocity = mirror
+            ? mirroredVelocity(entity, mirrorPlaneFrame)
+            : transformedVelocity(entity, remoteViewFrame, localViewFrame);
 
         SpoofedEntity state = spoofed.get(entity.getUniqueId());
         if (state == null) {
@@ -202,16 +223,17 @@ public final class ProjectedEntityRenderer {
                 packetType, position, pitch, yaw, yaw, 0, Optional.of(velocity));
             PacketEvents.getAPI().getPlayerManager().sendPacket(observer, spawn);
             state.updateRotation(yaw, pitch);
+            state.rememberPosition(position);
             sendHeadLook(observer, state, yaw);
             sendEntityState(observer, entity, state);
             state.resetMetadataCooldown();
             return true;
         }
 
-        WrapperPlayServerEntityTeleport teleport = new WrapperPlayServerEntityTeleport(state.fakeId, position, yaw, pitch, entity.isOnGround());
-        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, teleport);
-        if (state.updateRotation(yaw, pitch)) {
-            sendEntityRotation(observer, state, yaw, pitch, entity.isOnGround());
+        EntityMove move = state.updatePosition(position);
+        boolean rotationChanged = state.updateRotation(yaw, pitch);
+        sendEntityMovement(observer, state, move, rotationChanged, position, yaw, pitch, entity.isOnGround());
+        if (rotationChanged) {
             sendHeadLook(observer, state, yaw);
         }
         if (state.updateVelocity(velocity)) {
@@ -222,6 +244,34 @@ public final class ProjectedEntityRenderer {
             state.resetMetadataCooldown();
         }
         return true;
+    }
+
+    private void sendEntityMovement(Player observer,
+                                    SpoofedEntity state,
+                                    EntityMove move,
+                                    boolean rotationChanged,
+                                    Vector3d position,
+                                    float yaw,
+                                    float pitch,
+                                    boolean onGround) {
+        if (move.moved) {
+            if (move.relative) {
+                if (rotationChanged) {
+                    PacketEvents.getAPI().getPlayerManager().sendPacket(observer,
+                        new WrapperPlayServerEntityRelativeMoveAndRotation(state.fakeId, move.deltaX, move.deltaY, move.deltaZ, yaw, pitch, onGround));
+                } else {
+                    PacketEvents.getAPI().getPlayerManager().sendPacket(observer,
+                        new WrapperPlayServerEntityRelativeMove(state.fakeId, move.deltaX, move.deltaY, move.deltaZ, onGround));
+                }
+                return;
+            }
+            PacketEvents.getAPI().getPlayerManager().sendPacket(observer,
+                new WrapperPlayServerEntityTeleport(state.fakeId, position, yaw, pitch, onGround));
+            return;
+        }
+        if (rotationChanged) {
+            sendEntityRotation(observer, state, yaw, pitch, onGround);
+        }
     }
 
     private Vector lookDirection(Entity entity, Location fallback) {
@@ -503,6 +553,12 @@ public final class ProjectedEntityRenderer {
         return new Vector3d(scratchDirection[0], scratchDirection[1], scratchDirection[2]);
     }
 
+    private Vector3d mirroredVelocity(Entity entity, PortalFrame planeFrame) {
+        Vector velocity = entity.getVelocity();
+        PortalCoordMap.reflectVectorAcrossPlaneInto(velocity.getX(), velocity.getY(), velocity.getZ(), planeFrame, scratchDirection);
+        return new Vector3d(scratchDirection[0], scratchDirection[1], scratchDirection[2]);
+    }
+
     private static float yaw(double x, double z) {
         return (float) Math.toDegrees(Math.atan2(-x, z));
     }
@@ -532,8 +588,12 @@ public final class ProjectedEntityRenderer {
         private double velocityX;
         private double velocityY;
         private double velocityZ;
+        private double x;
+        private double y;
+        private double z;
         private boolean rotationKnown;
         private boolean velocityKnown;
+        private boolean positionKnown;
         private int metadataRefreshPasses;
 
         private SpoofedEntity(int fakeId, UUID fakeUuid, boolean playerEntry) {
@@ -545,9 +605,48 @@ public final class ProjectedEntityRenderer {
             this.velocityX = 0.0D;
             this.velocityY = 0.0D;
             this.velocityZ = 0.0D;
+            this.x = 0.0D;
+            this.y = 0.0D;
+            this.z = 0.0D;
             this.rotationKnown = false;
             this.velocityKnown = false;
+            this.positionKnown = false;
             this.metadataRefreshPasses = METADATA_REFRESH_PASSES;
+        }
+
+        private void rememberPosition(Vector3d position) {
+            x = position.getX();
+            y = position.getY();
+            z = position.getZ();
+            positionKnown = true;
+        }
+
+        private EntityMove updatePosition(Vector3d position) {
+            double nextX = position.getX();
+            double nextY = position.getY();
+            double nextZ = position.getZ();
+            if (!positionKnown) {
+                x = nextX;
+                y = nextY;
+                z = nextZ;
+                positionKnown = true;
+                return EntityMove.teleport();
+            }
+
+            double deltaX = nextX - x;
+            double deltaY = nextY - y;
+            double deltaZ = nextZ - z;
+            double distanceSquared = (deltaX * deltaX) + (deltaY * deltaY) + (deltaZ * deltaZ);
+            x = nextX;
+            y = nextY;
+            z = nextZ;
+            if (distanceSquared <= MIN_POSITION_DELTA_SQUARED) {
+                return EntityMove.none();
+            }
+            if (Math.abs(deltaX) > MAX_RELATIVE_MOVE_DELTA || Math.abs(deltaY) > MAX_RELATIVE_MOVE_DELTA || Math.abs(deltaZ) > MAX_RELATIVE_MOVE_DELTA) {
+                return EntityMove.teleport();
+            }
+            return EntityMove.relative(deltaX, deltaY, deltaZ);
         }
 
         private boolean updateRotation(float yaw, float pitch) {
@@ -581,6 +680,37 @@ public final class ProjectedEntityRenderer {
 
         private void resetMetadataCooldown() {
             metadataRefreshPasses = METADATA_REFRESH_PASSES;
+        }
+    }
+
+    private static final class EntityMove {
+        private static final EntityMove NONE = new EntityMove(false, false, 0.0D, 0.0D, 0.0D);
+        private static final EntityMove TELEPORT = new EntityMove(true, false, 0.0D, 0.0D, 0.0D);
+
+        private final boolean moved;
+        private final boolean relative;
+        private final double deltaX;
+        private final double deltaY;
+        private final double deltaZ;
+
+        private EntityMove(boolean moved, boolean relative, double deltaX, double deltaY, double deltaZ) {
+            this.moved = moved;
+            this.relative = relative;
+            this.deltaX = deltaX;
+            this.deltaY = deltaY;
+            this.deltaZ = deltaZ;
+        }
+
+        private static EntityMove none() {
+            return NONE;
+        }
+
+        private static EntityMove teleport() {
+            return TELEPORT;
+        }
+
+        private static EntityMove relative(double deltaX, double deltaY, double deltaZ) {
+            return new EntityMove(true, true, deltaX, deltaY, deltaZ);
         }
     }
 }

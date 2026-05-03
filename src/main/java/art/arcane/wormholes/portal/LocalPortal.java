@@ -74,7 +74,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private Direction chosenDirection;
 	private Vector chosenLook;
 	private boolean needsSaving;
-	private boolean projecting;
+	private ProjectionMode projectionMode;
 	private AxisAlignedBB view;
 	private double viewRange;
 
@@ -94,7 +94,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		chosenLook = null;
 		setName(F.capitalize(getType().name().toLowerCase()) + " " + id.toString().substring(0, 4));
 		needsSaving = false;
-		projecting = true;
+		projectionMode = ProjectionMode.ON;
 		view = computeView();
 	}
 
@@ -105,7 +105,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		j.put("structure", getStructure().toJSON());
 		j.put("type", type.name());
 		j.put("owner", getOwner().toString());
-		j.put("projecting", projecting);
+		j.put("projectionMode", projectionMode.name());
 
 		if(tunnel != null)
 		{
@@ -125,7 +125,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 		type = PortalType.valueOf(j.getString("type"));
 		owner = UUID.fromString(j.getString("owner"));
-		projecting = !j.has("projecting") || j.getBoolean("projecting");
+		projectionMode = resolveProjectionMode(j);
 		view = computeView();
 
 		if(j.has("tunnel"))
@@ -208,6 +208,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private void updateCaptures()
 	{
 		if(!isOpen() || !hasTunnel())
+		{
+			return;
+		}
+
+		if(projectionMode == ProjectionMode.MIRROR || isInboundDisabledByOneWay())
 		{
 			return;
 		}
@@ -755,8 +760,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 			if(f.get() == 0)
 			{
+				if(Wormholes.projectionManager != null)
+				{
+					Wormholes.projectionManager.removeProjector(LocalPortal.this);
+				}
 				Wormholes.portalManager.removeLocalPortal(LocalPortal.this);
-				Wormholes.constructionManager.destroy(LocalPortal.this);
+				Wormholes.effectManager.playNotificationFail(ChatColor.RED + getName() + " Deleted", getStructure().getCenter());
 				deleteData();
 			}
 		};
@@ -798,24 +807,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				.addLore(ChatColor.GRAY + "Change the portal name.")
 				.setMaterial(new MaterialBlock(Material.NAME_TAG))
 				.onLeftClick((e) -> uiChangeName(p)))
-		.setElement(1, 1, new UIElement("toggle-projections")
-				.setName(isProjecting() ? ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Projections Enabled" : ChatColor.DARK_PURPLE + "" + ChatColor.BOLD + "Projections Disabled")
-				.setEnchanted(isProjecting())
-				.setMaterial(new MaterialBlock(isProjecting() ? Material.REDSTONE_TORCH : Material.TORCH))
-				.addLore(ChatColor.GRAY + "Project blocks from the destination")
-				.addLore(ChatColor.GRAY + "portal through this portal.")
-				.onLeftClick((e) ->
-				{
-					setProjecting(!isProjecting());
-					e.setName(isProjecting() ? ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Projections Enabled" : ChatColor.DARK_PURPLE + "" + ChatColor.BOLD + "Projections Disabled");
-					e.setEnchanted(isProjecting());
-					e.setMaterial(new MaterialBlock(isProjecting() ? Material.REDSTONE_TORCH : Material.TORCH));
-					window.updateInventory();
-				}))
+		.setElement(1, 1, projectionsElement(window))
 		.setElement(0, 2, new UIElement("destroy")
 				.setName(ChatColor.RED + "" + ChatColor.BOLD + "Delete Portal")
-				.addLore(ChatColor.GRAY + "Destroys the portal and")
-				.addLore(ChatColor.GRAY + "drops its portal blocks.")
+				.addLore(ChatColor.GRAY + "Deletes the portal without")
+				.addLore(ChatColor.GRAY + "dropping portal blocks.")
 				.addLore(ChatColor.GRAY + " ")
 				.addLore(ChatColor.RED + "" + ChatColor.UNDERLINE + "Shift + Left Click")
 				.setMaterial(new MaterialBlock(Material.GUNPOWDER))
@@ -920,6 +916,33 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				.setElement(1, 1, modeOption(PortalType.GATEWAY, p, window));
 		//@done
 		window.setVisible(true);
+	}
+
+	private Element projectionsElement(Window window)
+	{
+		UIElement element = new UIElement("toggle-projections");
+		element.onLeftClick((e) ->
+		{
+			setProjectionMode(getProjectionMode().next());
+			applyProjectionMode(e);
+			window.updateInventory();
+		});
+		applyProjectionMode(element);
+		return element;
+	}
+
+	private void applyProjectionMode(Element element)
+	{
+		ProjectionMode mode = getProjectionMode();
+		element.setName(mode.getDisplayName());
+		element.setEnchanted(mode.isEnchanted());
+		element.setMaterial(new MaterialBlock(mode.getIcon()));
+		KList<String> lore = element.getLore();
+		lore.clear();
+		lore.add(ChatColor.GRAY + mode.getLoreLine1());
+		lore.add(ChatColor.GRAY + mode.getLoreLine2());
+		lore.add(" ");
+		lore.add(ChatColor.DARK_GRAY + "Click to cycle: " + ChatColor.GRAY + "Off > On > One-Way > Mirror");
 	}
 
 	private Element modeOption(PortalType target, Player p, Window window)
@@ -1148,14 +1171,70 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public boolean isProjecting()
 	{
-		return projecting;
+		if(projectionMode == ProjectionMode.OFF)
+		{
+			return false;
+		}
+		if(projectionMode == ProjectionMode.MIRROR)
+		{
+			return true;
+		}
+		return !isInboundDisabledByOneWay();
 	}
 
 	@Override
-	public void setProjecting(boolean projecting)
+	public ProjectionMode getProjectionMode()
 	{
-		this.projecting = projecting;
+		return projectionMode;
+	}
+
+	@Override
+	public void setProjectionMode(ProjectionMode mode)
+	{
+		ProjectionMode normalized = mode == null ? ProjectionMode.ON : mode;
+		if(this.projectionMode == normalized)
+		{
+			return;
+		}
+		this.projectionMode = normalized;
 		save();
+	}
+
+	private static ProjectionMode resolveProjectionMode(JSONObject j)
+	{
+		if(j.has("projectionMode"))
+		{
+			return ProjectionMode.fromName(j.getString("projectionMode"));
+		}
+		return ProjectionMode.ON;
+	}
+
+	public boolean isInboundDisabledByOneWay()
+	{
+		if(!hasTunnel())
+		{
+			return false;
+		}
+		IPortal destination = getTunnel().getDestination();
+		if(!(destination instanceof ILocalPortal))
+		{
+			return false;
+		}
+		ILocalPortal localDestination = (ILocalPortal) destination;
+		if(localDestination.getProjectionMode() != ProjectionMode.ONE_WAY)
+		{
+			return false;
+		}
+		if(!localDestination.hasTunnel())
+		{
+			return false;
+		}
+		IPortal destinationOfDestination = localDestination.getTunnel().getDestination();
+		if(destinationOfDestination == null)
+		{
+			return false;
+		}
+		return getId().equals(destinationOfDestination.getId());
 	}
 
 	@Override
