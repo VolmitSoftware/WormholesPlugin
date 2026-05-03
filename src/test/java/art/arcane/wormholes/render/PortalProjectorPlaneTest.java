@@ -48,4 +48,45 @@ public final class PortalProjectorPlaneTest {
 		assertEquals(5, PortalProjector.minBlockForCenter(4.500002D));
 		assertEquals(7, PortalProjector.maxBlockForCenter(8.499998D));
 	}
+
+	@Test
+	public void portalPlaneWindowRejectsRaysThatMissTheApertureBounds() {
+		AxisAlignedBB area = new AxisAlignedBB(0.0D, 2.999D, 64.0D, 66.999D, 10.0D, 10.999D);
+		PortalFrame frame = PortalFrame.canonical(Direction.N);
+		double originX = 1.5D;
+		double originY = 65.5D;
+		double originZ = 10.5D;
+		double eyeX = 1.5D;
+		double eyeY = 65.5D;
+		double eyeZ = 6.5D;
+		double eyeSignedDistance = 4.0D;
+		PortalProjector.PortalPlaneWindow window = PortalProjector.PortalPlaneWindow.create(area, frame,
+			originX, originY, originZ, 0.0D, eyeSignedDistance);
+
+		assertTrue(window.containsRayIntersection(eyeX, eyeY, eyeZ, 1.5D, 65.5D, 15.5D, -5.0D));
+		assertFalse(window.containsRayIntersection(eyeX, eyeY, eyeZ, 20.5D, 65.5D, 15.5D, -5.0D));
+		assertFalse(window.containsRayIntersection(eyeX, eyeY, eyeZ, 1.5D, 90.5D, 15.5D, -5.0D));
+	}
+
+	@Test
+	public void backSideViewFrameKeepsUpAndFlipsRight() {
+		PortalFrame front = PortalFrame.canonical(Direction.N);
+		PortalFrame back = PortalProjector.viewFrame(front, false);
+
+		assertEquals(Direction.S, back.getNormal());
+		assertEquals(Direction.U, back.getUp());
+		assertEquals(Direction.W, back.getRight());
+	}
+
+	@Test
+	public void stationaryCameraAllowsTinyMotionButRejectsMeaningfulMovement() {
+		assertTrue(PortalProjector.isStationaryCamera(0.01D, 64.0D, 0.01D, 359.5F, 0.5F,
+			0.0D, 64.0D, 0.0D, 0.0F, 0.0F, 0.04D, 1.5D));
+
+		assertFalse(PortalProjector.isStationaryCamera(0.2D, 64.0D, 0.0D, 0.0F, 0.0F,
+			0.0D, 64.0D, 0.0D, 0.0F, 0.0F, 0.04D, 1.5D));
+
+		assertFalse(PortalProjector.isStationaryCamera(0.0D, 64.0D, 0.0D, 5.0F, 0.0F,
+			0.0D, 64.0D, 0.0D, 0.0F, 0.0F, 0.04D, 1.5D));
+	}
 }

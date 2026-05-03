@@ -227,7 +227,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				if(getStructure().contains(l))
 				{
 					playEffect(PortalEffect.PUSH, l);
-					f[0] = new Traversive(i, getFrame(), getOrigin(), l.toVector(), velocity, i.getLocation().getDirection());
+					double relX = start.getX() - getOrigin().getX();
+					double relY = start.getY() - getOrigin().getY();
+					double relZ = start.getZ() - getOrigin().getZ();
+					boolean frontSide = ((relX * getFrame().getNormal().x()) + (relY * getFrame().getNormal().y()) + (relZ * getFrame().getNormal().z())) >= 0.0D;
+					f[0] = new Traversive(i, getFrame().view(frontSide), getOrigin(), l.toVector(), velocity, i.getLocation().getDirection(), frontSide);
 					return false;
 				}
 
@@ -427,7 +431,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		switch(effect)
 		{
 			case PUSH:
-				phase(Direction.getDirection(location.getDirection()).getAxis(), ParticleEffect.WATER_WAKE, location, 0.125f);
+				ParticleEffect.SMOKE.display(0.01f, 6, location, 32);
 				location.getWorld().playSound(location, MSound.ENDERMAN_TELEPORT.bukkitSound(), 0.5f, 1.7f + (float) (Math.random() * 0.2));
 				location.getWorld().playSound(location, MSound.ENDERMAN_TELEPORT.bukkitSound(), 0.5f, 1.5f + (float) (Math.random() * 0.2));
 				location.getWorld().playSound(location, MSound.ENDERMAN_TELEPORT.bukkitSound(), 0.5f, 1.3f + (float) (Math.random() * 0.2));
@@ -761,19 +765,19 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				.setTitle(getRouter(true))
 				.setResolution(WindowResolution.W3_H3)
 				.setViewportHeight(3);
-		window.setElement(0, 1, new UIElement("set-destination")
+		window.setElement(-1, 1, new UIElement("set-destination")
 				.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Set Focus")
 				.addLore(ChatColor.GRAY + "Choose a portal destination for")
 				.addLore(ChatColor.GRAY + "this portal.")
 				.setMaterial(new MaterialBlock(Material.ENDER_EYE))
 				.setCount(Math.max(1, Wormholes.portalManager.getAccessableCount(getType()) - 1))
 				.onLeftClick((e) -> uiChooseDestination(p)))
-		.setElement(0, 0, new UIElement("set-name")
+		.setElement(-1, 0, new UIElement("set-name")
 				.setName(ChatColor.GREEN + "" + ChatColor.BOLD + "Set Name")
 				.addLore(ChatColor.GRAY + "Change the portal name ")
 				.setMaterial(new MaterialBlock(Material.NAME_TAG))
 				.onLeftClick((e) -> uiChangeName(p)))
-		.setElement(1, 1, new UIElement("set-direction")
+		.setElement(0, 1, new UIElement("set-direction")
 				.setName(ChatColor.BLUE + "" + ChatColor.BOLD + "Change Direction")
 				.addLore(ChatColor.GRAY + "Change the portal facing direction")
 				.addLore(ChatColor.GRAY + "Currently Facing " + ChatColor.BLUE + "" + ChatColor.BOLD + getDirection().toString())
@@ -783,7 +787,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					uiChangeDirection(p);
 					window.close();
 				}))
-		.setElement(2, 1, new UIElement("flip-face")
+		.setElement(1, 1, new UIElement("flip-face")
 				.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Flip Face")
 				.addLore(ChatColor.GRAY + "Reverse the portal face direction")
 				.addLore(ChatColor.GRAY + "Screen rotation stays aligned.")
@@ -796,7 +800,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					window.close();
 					uiOpenPortalMenu(p);
 				}))
-		.setElement(1, 2, new UIElement("destroy")
+		.setElement(0, 2, new UIElement("destroy")
 				.setName(ChatColor.RED + "" + ChatColor.BOLD + "Destroy Portal")
 				.addLore(ChatColor.GRAY + "Destroys the portal and ")
 				.addLore(ChatColor.GRAY + "drops its portal blocks.")
@@ -808,7 +812,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					window.close();
 					destroy();
 				}))
-		.setElement(1, 0, new UIElement("toggle-projections")
+		.setElement(0, 0, new UIElement("toggle-projections")
 				.setName(isProjecting() ? ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Projections Enabled" : ChatColor.DARK_PURPLE + "" + ChatColor.BOLD + "Projections Disabled")
 				.setEnchanted(isProjecting())
 				.setMaterial(new MaterialBlock(isProjecting() ? Material.REDSTONE_TORCH : Material.TORCH))
@@ -822,7 +826,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					e.setMaterial(new MaterialBlock(isProjecting() ? Material.REDSTONE_TORCH : Material.TORCH));
 					window.updateInventory();
 				}))
-		.setElement(0, 2, new UIElement("rotate-counter-clockwise")
+		.setElement(-1, 2, new UIElement("rotate-counter-clockwise")
 				.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Counterclockwise")
 				.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees")
 				.addLore(ChatColor.GRAY + "without changing the face.")
@@ -835,7 +839,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					window.close();
 					uiOpenPortalMenu(p);
 				}))
-		.setElement(2, 2, new UIElement("rotate-clockwise")
+		.setElement(1, 2, new UIElement("rotate-clockwise")
 				.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Clockwise")
 				.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees")
 				.addLore(ChatColor.GRAY + "without changing the face.")

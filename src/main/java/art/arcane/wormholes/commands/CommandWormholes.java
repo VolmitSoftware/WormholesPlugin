@@ -8,7 +8,7 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 
-@Director(name = "wormholes", description = "Wormholes command root")
+@Director(name = "wormholes", aliases = {"wh", "wormhole", "worm", "whole", "portal", "w"}, description = "Wormholes command root")
 public class CommandWormholes {
     private final Wormholes plugin;
 
@@ -16,7 +16,7 @@ public class CommandWormholes {
         this.plugin = plugin;
     }
 
-    @Director(name = "wand", description = "Give yourself a portal wand and starter runes")
+    @Director(name = "wand", sync = true, description = "Give yourself a portal wand and starter runes")
     public void wand(@Param(name = "sender", contextual = true) CommandSender sender) {
         if (!sender.hasPermission("wormholes.admin.items")) {
             sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
@@ -34,7 +34,7 @@ public class CommandWormholes {
         player.sendMessage(Wormholes.tag + ChatColor.GRAY + "Run " + ChatColor.YELLOW + "/wormholes info" + ChatColor.GRAY + " for the full step-by-step.");
     }
 
-    @Director(name = "rune", description = "Give yourself portal runes")
+    @Director(name = "rune", aliases = {"runes"}, sync = true, description = "Give yourself portal runes")
     public void rune(@Param(name = "sender", contextual = true) CommandSender sender,
                      @Param(name = "type", description = "portal | wormhole | gateway") String type,
                      @Param(name = "count", description = "How many runes (default 16)", defaultValue = "16") int count) {
@@ -66,7 +66,7 @@ public class CommandWormholes {
         player.sendMessage(Wormholes.tag + ChatColor.GREEN + "Granted " + ChatColor.AQUA + safeCount + " " + typeLower + ChatColor.GREEN + " runes.");
     }
 
-    @Director(name = "reload", description = "Reload Wormholes configuration")
+    @Director(name = "reload", aliases = {"rl"}, sync = true, description = "Reload Wormholes configuration")
     public void reload(@Param(name = "sender", contextual = true) CommandSender sender) {
         if (!sender.hasPermission("wormholes.admin.reload")) {
             sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
@@ -76,7 +76,7 @@ public class CommandWormholes {
         sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Wormholes configuration reloaded.");
     }
 
-    @Director(name = "reset", aliases = {"deleteall", "delete-all", "clear"}, description = "Delete every saved portal and clear active projections")
+    @Director(name = "reset", aliases = {"deleteall", "delete-all", "clear"}, sync = true, description = "Delete every saved portal and clear active projections")
     public void reset(@Param(name = "sender", contextual = true) CommandSender sender) {
         if (!sender.hasPermission("wormholes.admin.reset")) {
             sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
@@ -90,7 +90,7 @@ public class CommandWormholes {
         sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Deleted " + ChatColor.AQUA + removed + ChatColor.GREEN + " portals and cleared projection state.");
     }
 
-    @Director(name = "debug", description = "Dump live projection diagnostics")
+    @Director(name = "debug", sync = true, description = "Dump live projection diagnostics")
     public void debug(@Param(name = "sender", contextual = true) CommandSender sender) {
         if (!sender.hasPermission("wormholes.admin.reload")) {
             sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
@@ -106,7 +106,7 @@ public class CommandWormholes {
         }
     }
 
-    @Director(name = "info", description = "Show portal building instructions")
+    @Director(name = "info", aliases = {"guide", "instructions"}, sync = true, description = "Show portal building instructions")
     public void info(@Param(name = "sender", contextual = true) CommandSender sender) {
         sender.sendMessage(Wormholes.tag + ChatColor.GOLD + "How to build a Wormhole");
         sender.sendMessage(ChatColor.YELLOW + "1. " + ChatColor.GRAY + "Run " + ChatColor.WHITE + "/wormholes wand" + ChatColor.GRAY + " to receive the wand and 32 wormhole runes.");

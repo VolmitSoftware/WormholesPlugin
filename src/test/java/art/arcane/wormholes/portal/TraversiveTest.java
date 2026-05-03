@@ -30,6 +30,24 @@ public final class TraversiveTest {
         assertVector(new Vector(0.4D, 0.0D, 0.0D), outVelocity);
     }
 
+    @Test
+    public void backSideTraversalFlipsHorizontalScreenAxis() {
+        PortalFrame inFrame = PortalFrame.canonical(Direction.N).view(false);
+        PortalFrame outFrame = PortalFrame.canonical(Direction.E);
+        Vector inOrigin = new Vector(10.0D, 64.0D, 20.0D);
+        Vector outOrigin = new Vector(100.0D, 70.0D, -30.0D);
+        Vector inPoint = new Vector(8.75D, 64.5D, 20.5D);
+        Vector velocity = new Vector(0.0D, 0.0D, -0.4D);
+        Vector look = new Vector(0.0D, 0.0D, -1.0D);
+        Traversive traversive = new Traversive(new Object(), TraversableType.ENTITY, inFrame, inOrigin, inPoint, velocity, look, false);
+
+        Vector outPoint = traversive.getOutPoint(outFrame, outOrigin);
+        Vector outVelocity = traversive.getOutVelocity(outFrame);
+
+        assertVector(new Vector(99.5D, 70.5D, -31.25D), outPoint);
+        assertVector(new Vector(0.4D, 0.0D, 0.0D), outVelocity);
+    }
+
     private static void assertVector(Vector expected, Vector actual) {
         assertEquals(expected.getX(), actual.getX(), EPSILON);
         assertEquals(expected.getY(), actual.getY(), EPSILON);

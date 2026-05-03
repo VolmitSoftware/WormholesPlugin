@@ -1,8 +1,11 @@
 package art.arcane.wormholes.render;
 
+import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -10,41 +13,78 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.EntityEquipment;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.Vector;
 
+import com.destroystokyo.paper.profile.PlayerProfile;
+import com.destroystokyo.paper.profile.ProfileProperty;
 import com.github.retrooper.packetevents.PacketEvents;
+import com.github.retrooper.packetevents.protocol.entity.data.EntityData;
 import com.github.retrooper.packetevents.protocol.entity.type.EntityType;
 import com.github.retrooper.packetevents.protocol.entity.type.EntityTypes;
+import com.github.retrooper.packetevents.protocol.player.Equipment;
+import com.github.retrooper.packetevents.protocol.player.GameMode;
+import com.github.retrooper.packetevents.protocol.player.TextureProperty;
+import com.github.retrooper.packetevents.protocol.player.UserProfile;
 import com.github.retrooper.packetevents.util.Vector3d;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityAnimation;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityAnimation.EntityAnimationType;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityEquipment;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityHeadLook;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityRotation;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityTeleport;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityVelocity;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerHurtAnimation;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoRemove;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity;
+import io.github.retrooper.packetevents.util.SpigotConversionUtil;
 
 import art.arcane.wormholes.Settings;
+import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.PortalFrame;
 
 public final class ProjectedEntityRenderer {
     private static final AtomicInteger NEXT_FAKE_ID = new AtomicInteger(1_900_000_000);
+    private static final int METADATA_REFRESH_PASSES = 10;
 
     private final Map<UUID, SpoofedEntity> spoofed;
+    private final Map<UUID, Entity> hiddenLocalEntities;
+    private final Map<NamespacedKey, EntityType> entityTypeCache;
     private final Set<UUID> visible;
-    private final double[] scratchPoint;
+    private final Set<UUID> visibleLocalHides;
+    private final double[] scratchVisiblePoint;
     private final double[] scratchDirection;
+    private boolean metadataBridgeFailed;
 
     public ProjectedEntityRenderer() {
         this.spoofed = new HashMap<UUID, SpoofedEntity>(16);
+        this.hiddenLocalEntities = new HashMap<UUID, Entity>(16);
+        this.entityTypeCache = new HashMap<NamespacedKey, EntityType>(32);
         this.visible = new HashSet<UUID>(16);
-        this.scratchPoint = new double[3];
+        this.visibleLocalHides = new HashSet<UUID>(16);
+        this.scratchVisiblePoint = new double[3];
         this.scratchDirection = new double[3];
+        this.metadataBridgeFailed = false;
     }
 
-    public void apply(Player observer, ILocalPortal localPortal, ILocalPortal remotePortal, Frustum4D frustum, double projectionDepth) {
+    public void apply(Player observer,
+                      ILocalPortal localPortal,
+                      ILocalPortal remotePortal,
+                      Frustum4D frustum,
+                      double projectionDepth,
+                      PortalFrame localViewFrame,
+                      PortalFrame remoteViewFrame) {
         if (!Settings.ENTITY_SPOOFING || Settings.MAX_SPOOFED_ENTITIES <= 0) {
             close(observer);
             return;
@@ -59,16 +99,18 @@ public final class ProjectedEntityRenderer {
 
         double range = Math.min(Settings.ENTITY_SPOOF_RANGE, projectionDepth);
         visible.clear();
+        visibleLocalHides.clear();
+        hideLocalEntities(observer, localPortal, frustum, range, projectionDepth);
         int count = 0;
 
         for (Entity entity : remoteWorld.getNearbyEntities(remoteCenter, range, range, range)) {
             if (count >= Settings.MAX_SPOOFED_ENTITIES) {
                 break;
             }
-            if (!canSpoof(observer, entity)) {
+            if (!canSpoof(entity)) {
                 continue;
             }
-            if (!projectEntity(observer, localPortal, remotePortal, frustum, entity)) {
+            if (!projectEntity(observer, localPortal, remotePortal, localViewFrame, remoteViewFrame, frustum, entity)) {
                 continue;
             }
             visible.add(entity.getUniqueId());
@@ -76,64 +118,125 @@ public final class ProjectedEntityRenderer {
         }
 
         destroyHidden(observer);
+        restoreLocalEntities(observer);
     }
 
     public void close(Player observer) {
-        if (spoofed.isEmpty()) {
-            return;
-        }
         if (observer != null && observer.isOnline()) {
-            int[] ids = new int[spoofed.size()];
-            int index = 0;
-            for (SpoofedEntity state : spoofed.values()) {
-                ids[index] = state.fakeId;
-                index++;
-            }
-            PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerDestroyEntities(ids));
+            destroySpoofedEntities(observer, spoofed.values());
+            showAllLocalEntities(observer);
         }
         spoofed.clear();
+        hiddenLocalEntities.clear();
         visible.clear();
+        visibleLocalHides.clear();
     }
 
-    private boolean projectEntity(Player observer, ILocalPortal localPortal, ILocalPortal remotePortal, Frustum4D frustum, Entity entity) {
+    public boolean hasProjectedEntity(UUID sourceId) {
+        return spoofed.containsKey(sourceId);
+    }
+
+    public void sendAnimation(Player observer, UUID sourceId, EntityAnimationType type) {
+        if (observer == null || !observer.isOnline() || sourceId == null || type == null) {
+            return;
+        }
+        SpoofedEntity state = spoofed.get(sourceId);
+        if (state == null) {
+            return;
+        }
+        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerEntityAnimation(state.fakeId, type));
+    }
+
+    public void sendHurt(Player observer, UUID sourceId, float yaw) {
+        if (observer == null || !observer.isOnline() || sourceId == null) {
+            return;
+        }
+        SpoofedEntity state = spoofed.get(sourceId);
+        if (state == null) {
+            return;
+        }
+        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerEntityAnimation(state.fakeId, EntityAnimationType.HURT));
+        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerHurtAnimation(state.fakeId, yaw));
+    }
+
+    private boolean projectEntity(Player observer,
+                                  ILocalPortal localPortal,
+                                  ILocalPortal remotePortal,
+                                  PortalFrame localViewFrame,
+                                  PortalFrame remoteViewFrame,
+                                  Frustum4D frustum,
+                                  Entity entity) {
         EntityType packetType = packetEntityType(entity);
         if (packetType == null) {
             return false;
         }
 
         Location remoteLocation = entity.getLocation();
-        PortalFrame remoteFrame = remotePortal.getFrame();
-        PortalFrame localFrame = localPortal.getFrame();
-        PortalCoordMap.transformPointInto(remoteLocation.getX(), remoteLocation.getY(), remoteLocation.getZ(),
+        double visibleY = remoteLocation.getY() + (entity.getHeight() * 0.5D);
+        PortalCoordMap.transformPointInto(remoteLocation.getX(), visibleY, remoteLocation.getZ(),
             remotePortal.getOrigin().getX(), remotePortal.getOrigin().getY(), remotePortal.getOrigin().getZ(),
             localPortal.getOrigin().getX(), localPortal.getOrigin().getY(), localPortal.getOrigin().getZ(),
-            remoteFrame, localFrame, scratchPoint);
+            remoteViewFrame, localViewFrame, scratchVisiblePoint);
 
-        if (!frustum.containsPrimitive(scratchPoint[0], scratchPoint[1], scratchPoint[2])) {
+        if (!frustum.containsPrimitive(scratchVisiblePoint[0], scratchVisiblePoint[1], scratchVisiblePoint[2])) {
             return false;
         }
 
-        Vector direction = remoteLocation.getDirection();
-        remoteFrame.transformVectorInto(direction.getX(), direction.getY(), direction.getZ(), localFrame, scratchDirection);
+        Vector direction = lookDirection(entity, remoteLocation);
+        remoteViewFrame.transformVectorInto(direction.getX(), direction.getY(), direction.getZ(), localViewFrame, scratchDirection);
         float yaw = yaw(scratchDirection[0], scratchDirection[2]);
         float pitch = pitch(scratchDirection[0], scratchDirection[1], scratchDirection[2]);
-        Vector3d position = new Vector3d(scratchPoint[0], scratchPoint[1], scratchPoint[2]);
-        Vector3d velocity = transformedVelocity(entity, remoteFrame, localFrame);
+        double visualBaseY = scratchVisiblePoint[1] - (entity.getHeight() * 0.5D);
+        Vector3d position = new Vector3d(scratchVisiblePoint[0], visualBaseY, scratchVisiblePoint[2]);
+        Vector3d velocity = transformedVelocity(entity, remoteViewFrame, localViewFrame);
 
         SpoofedEntity state = spoofed.get(entity.getUniqueId());
         if (state == null) {
-            state = new SpoofedEntity(NEXT_FAKE_ID.getAndIncrement(), UUID.randomUUID());
+            boolean playerEntity = entity instanceof Player;
+            state = new SpoofedEntity(NEXT_FAKE_ID.getAndIncrement(), UUID.randomUUID(), playerEntity);
             spoofed.put(entity.getUniqueId(), state);
+            if (playerEntity) {
+                sendPlayerInfo(observer, (Player) entity, state);
+            }
             WrapperPlayServerSpawnEntity spawn = new WrapperPlayServerSpawnEntity(state.fakeId, Optional.of(state.fakeUuid),
                 packetType, position, pitch, yaw, yaw, 0, Optional.of(velocity));
             PacketEvents.getAPI().getPlayerManager().sendPacket(observer, spawn);
+            state.updateRotation(yaw, pitch);
+            sendHeadLook(observer, state, yaw);
+            sendEntityState(observer, entity, state);
+            state.resetMetadataCooldown();
             return true;
         }
 
         WrapperPlayServerEntityTeleport teleport = new WrapperPlayServerEntityTeleport(state.fakeId, position, yaw, pitch, entity.isOnGround());
         PacketEvents.getAPI().getPlayerManager().sendPacket(observer, teleport);
-        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerEntityVelocity(state.fakeId, velocity));
+        if (state.updateRotation(yaw, pitch)) {
+            sendEntityRotation(observer, state, yaw, pitch, entity.isOnGround());
+            sendHeadLook(observer, state, yaw);
+        }
+        if (state.updateVelocity(velocity)) {
+            PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerEntityVelocity(state.fakeId, velocity));
+        }
+        if (state.shouldRefreshMetadata()) {
+            sendEntityState(observer, entity, state);
+            state.resetMetadataCooldown();
+        }
         return true;
+    }
+
+    private Vector lookDirection(Entity entity, Location fallback) {
+        if (entity instanceof LivingEntity) {
+            return ((LivingEntity) entity).getEyeLocation().getDirection();
+        }
+        return fallback.getDirection();
+    }
+
+    private void sendHeadLook(Player observer, SpoofedEntity state, float yaw) {
+        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerEntityHeadLook(state.fakeId, yaw));
+    }
+
+    private void sendEntityRotation(Player observer, SpoofedEntity state, float yaw, float pitch, boolean onGround) {
+        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerEntityRotation(state.fakeId, yaw, pitch, onGround));
     }
 
     private void destroyHidden(Player observer) {
@@ -142,6 +245,7 @@ public final class ProjectedEntityRenderer {
         }
 
         int[] ids = new int[spoofed.size()];
+        List<UUID> playerInfos = new ArrayList<UUID>();
         int count = 0;
         Iterator<Map.Entry<UUID, SpoofedEntity>> iterator = spoofed.entrySet().iterator();
         while (iterator.hasNext()) {
@@ -149,8 +253,12 @@ public final class ProjectedEntityRenderer {
             if (visible.contains(entry.getKey())) {
                 continue;
             }
-            ids[count] = entry.getValue().fakeId;
+            SpoofedEntity state = entry.getValue();
+            ids[count] = state.fakeId;
             count++;
+            if (state.playerEntry) {
+                playerInfos.add(state.fakeUuid);
+            }
             iterator.remove();
         }
 
@@ -161,16 +269,216 @@ public final class ProjectedEntityRenderer {
         int[] trimmed = new int[count];
         System.arraycopy(ids, 0, trimmed, 0, count);
         PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerDestroyEntities(trimmed));
+        if (!playerInfos.isEmpty()) {
+            PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerPlayerInfoRemove(playerInfos));
+        }
     }
 
-    private boolean canSpoof(Player observer, Entity entity) {
+    private void destroySpoofedEntities(Player observer, Iterable<SpoofedEntity> states) {
+        List<UUID> players = new ArrayList<UUID>();
+        int size = spoofed.size();
+        if (size > 0) {
+            int[] ids = new int[size];
+            int index = 0;
+            for (SpoofedEntity state : states) {
+                ids[index] = state.fakeId;
+                index++;
+                if (state.playerEntry) {
+                    players.add(state.fakeUuid);
+                }
+            }
+            PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerDestroyEntities(ids));
+        }
+        if (!players.isEmpty()) {
+            PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerPlayerInfoRemove(players));
+        }
+    }
+
+    private void sendEntityState(Player observer, Entity entity, SpoofedEntity state) {
+        sendEntityMetadata(observer, entity, state.fakeId);
+        sendEntityEquipment(observer, entity, state.fakeId);
+    }
+
+    private void sendEntityMetadata(Player observer, Entity entity, int fakeId) {
+        if (metadataBridgeFailed) {
+            return;
+        }
+        try {
+            List<EntityData<?>> metadata = SpigotConversionUtil.getEntityMetadata(entity);
+            if (!metadata.isEmpty()) {
+                PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerEntityMetadata(fakeId, metadata));
+            }
+        } catch (RuntimeException ex) {
+            metadataBridgeFailed = true;
+            Wormholes.w("[ProjectedEntityRenderer] disabled entity metadata bridge after failure for " + entity.getType() + " " + entity.getUniqueId());
+            ex.printStackTrace();
+        }
+    }
+
+    private void sendEntityEquipment(Player observer, Entity entity, int fakeId) {
+        if (!(entity instanceof LivingEntity)) {
+            return;
+        }
+        LivingEntity living = (LivingEntity) entity;
+        EntityEquipment equipment = living.getEquipment();
+        if (equipment == null) {
+            return;
+        }
+        List<Equipment> packetEquipment = new ArrayList<Equipment>(8);
+        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.HAND, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.MAIN_HAND);
+        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.OFF_HAND, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.OFF_HAND);
+        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.FEET, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.BOOTS);
+        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.LEGS, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.LEGGINGS);
+        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.CHEST, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.CHEST_PLATE);
+        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.HEAD, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.HELMET);
+        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.BODY, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.BODY);
+        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.SADDLE, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.SADDLE);
+        if (!packetEquipment.isEmpty()) {
+            PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerEntityEquipment(fakeId, packetEquipment));
+        }
+    }
+
+    private void addEquipment(List<Equipment> packetEquipment,
+                              LivingEntity living,
+                              EntityEquipment equipment,
+                              org.bukkit.inventory.EquipmentSlot bukkitSlot,
+                              com.github.retrooper.packetevents.protocol.player.EquipmentSlot packetSlot) {
+        if (!living.canUseEquipmentSlot(bukkitSlot)) {
+            return;
+        }
+        ItemStack item = equipment.getItem(bukkitSlot);
+        if (item == null) {
+            item = new ItemStack(Material.AIR);
+        }
+        com.github.retrooper.packetevents.protocol.item.ItemStack packetItem = SpigotConversionUtil.fromBukkitItemStack(item);
+        if (packetItem != null) {
+            packetEquipment.add(new Equipment(packetSlot, packetItem));
+        }
+    }
+
+    private void sendPlayerInfo(Player observer, Player player, SpoofedEntity state) {
+        UserProfile userProfile = new UserProfile(state.fakeUuid, limitedProfileName(player.getName()));
+        PlayerProfile playerProfile = player.getPlayerProfile();
+        if (playerProfile != null) {
+            for (ProfileProperty property : playerProfile.getProperties()) {
+                userProfile.getTextureProperties().add(new TextureProperty(property.getName(), property.getValue(), property.getSignature()));
+            }
+        }
+        GameMode gameMode = SpigotConversionUtil.fromBukkitGameMode(player.getGameMode());
+        WrapperPlayServerPlayerInfoUpdate.PlayerInfo info = new WrapperPlayServerPlayerInfoUpdate.PlayerInfo(
+            userProfile, false, player.getPing(), gameMode, null, null, 0, true);
+        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerPlayerInfoUpdate(
+            EnumSet.of(WrapperPlayServerPlayerInfoUpdate.Action.ADD_PLAYER,
+                WrapperPlayServerPlayerInfoUpdate.Action.UPDATE_GAME_MODE,
+                WrapperPlayServerPlayerInfoUpdate.Action.UPDATE_LISTED,
+                WrapperPlayServerPlayerInfoUpdate.Action.UPDATE_LATENCY,
+                WrapperPlayServerPlayerInfoUpdate.Action.UPDATE_HAT),
+            info));
+    }
+
+    private String limitedProfileName(String name) {
+        String safe = name == null || name.isBlank() ? "PortalPlayer" : name;
+        if (safe.length() <= 16) {
+            return safe;
+        }
+        return safe.substring(0, 16);
+    }
+
+    private void hideLocalEntities(Player observer, ILocalPortal localPortal, Frustum4D frustum, double range, double projectionDepth) {
+        if (Wormholes.instance == null || observer == null || !observer.isOnline()) {
+            return;
+        }
+        Location localCenter = localPortal.getCenter();
+        World localWorld = localPortal.getWorld();
+        if (localCenter == null || localWorld == null || !localWorld.equals(observer.getWorld())) {
+            return;
+        }
+        PortalFrame frame = localPortal.getFrame();
+        Vector origin = localPortal.getOrigin();
+        Location eye = observer.getEyeLocation();
+        double eyeDot = dot(eye.getX() - origin.getX(), eye.getY() - origin.getY(), eye.getZ() - origin.getZ(), frame);
+        boolean eyeFrontSide = eyeDot >= 0.0D;
+        double clearance = PortalProjector.portalPlaneClearance(localPortal.getStructure().getArea(), frame);
+        double maxDepth = projectionDepth + clearance;
+        for (Entity entity : localWorld.getNearbyEntities(localCenter, range, range, range)) {
+            if (!shouldHideLocalEntity(observer, entity, origin, frame, frustum, eyeFrontSide, clearance, maxDepth)) {
+                continue;
+            }
+            visibleLocalHides.add(entity.getUniqueId());
+            if (hiddenLocalEntities.containsKey(entity.getUniqueId())) {
+                hiddenLocalEntities.put(entity.getUniqueId(), entity);
+                continue;
+            }
+            observer.hideEntity(Wormholes.instance, entity);
+            hiddenLocalEntities.put(entity.getUniqueId(), entity);
+        }
+    }
+
+    private boolean shouldHideLocalEntity(Player observer,
+                                          Entity entity,
+                                          Vector origin,
+                                          PortalFrame frame,
+                                          Frustum4D frustum,
+                                          boolean eyeFrontSide,
+                                          double clearance,
+                                          double maxDepth) {
+        if (entity == null || entity.isDead() || !entity.isValid()) {
+            return false;
+        }
+        if (entity.getUniqueId().equals(observer.getUniqueId())) {
+            return false;
+        }
+        Location location = entity.getLocation();
+        double centerY = location.getY() + (entity.getHeight() * 0.5D);
+        double signedDistance = dot(location.getX() - origin.getX(), centerY - origin.getY(), location.getZ() - origin.getZ(), frame);
+        if (Math.abs(signedDistance) <= clearance || Math.abs(signedDistance) > maxDepth) {
+            return false;
+        }
+        boolean entityFrontSide = signedDistance >= 0.0D;
+        if (entityFrontSide == eyeFrontSide) {
+            return false;
+        }
+        return frustum.containsPrimitive(location.getX(), centerY, location.getZ());
+    }
+
+    private void restoreLocalEntities(Player observer) {
+        if (hiddenLocalEntities.isEmpty() || observer == null || !observer.isOnline() || Wormholes.instance == null) {
+            return;
+        }
+        Iterator<Map.Entry<UUID, Entity>> iterator = hiddenLocalEntities.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<UUID, Entity> entry = iterator.next();
+            if (visibleLocalHides.contains(entry.getKey())) {
+                continue;
+            }
+            Entity entity = entry.getValue();
+            if (entity != null && entity.isValid() && !entity.isDead()) {
+                observer.showEntity(Wormholes.instance, entity);
+            }
+            iterator.remove();
+        }
+    }
+
+    private void showAllLocalEntities(Player observer) {
+        if (hiddenLocalEntities.isEmpty() || observer == null || !observer.isOnline() || Wormholes.instance == null) {
+            return;
+        }
+        for (Entity entity : hiddenLocalEntities.values()) {
+            if (entity != null && entity.isValid() && !entity.isDead()) {
+                observer.showEntity(Wormholes.instance, entity);
+            }
+        }
+    }
+
+    private double dot(double x, double y, double z, PortalFrame frame) {
+        return (x * frame.getNormal().x()) + (y * frame.getNormal().y()) + (z * frame.getNormal().z());
+    }
+
+    private boolean canSpoof(Entity entity) {
         if (entity == null || entity.isDead()) {
             return false;
         }
-        if (entity instanceof Player) {
-            return false;
-        }
-        return !entity.getUniqueId().equals(observer.getUniqueId());
+        return entity.isValid();
     }
 
     private EntityType packetEntityType(Entity entity) {
@@ -178,7 +486,15 @@ public final class ProjectedEntityRenderer {
         if (key == null || "unknown".equals(key.getKey())) {
             return null;
         }
-        return EntityTypes.getByName(key.getNamespace() + ":" + key.getKey());
+        EntityType cached = entityTypeCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        EntityType resolved = EntityTypes.getByName(key.getNamespace() + ":" + key.getKey());
+        if (resolved != null) {
+            entityTypeCache.put(key, resolved);
+        }
+        return resolved;
     }
 
     private Vector3d transformedVelocity(Entity entity, PortalFrame fromFrame, PortalFrame toFrame) {
@@ -196,13 +512,75 @@ public final class ProjectedEntityRenderer {
         return (float) Math.toDegrees(-Math.atan2(y, horizontal));
     }
 
+    private static float angleDelta(float a, float b) {
+        float delta = (a - b) % 360.0F;
+        if (delta >= 180.0F) {
+            delta -= 360.0F;
+        }
+        if (delta < -180.0F) {
+            delta += 360.0F;
+        }
+        return Math.abs(delta);
+    }
+
     private static final class SpoofedEntity {
         private final int fakeId;
         private final UUID fakeUuid;
+        private final boolean playerEntry;
+        private float yaw;
+        private float pitch;
+        private double velocityX;
+        private double velocityY;
+        private double velocityZ;
+        private boolean rotationKnown;
+        private boolean velocityKnown;
+        private int metadataRefreshPasses;
 
-        private SpoofedEntity(int fakeId, UUID fakeUuid) {
+        private SpoofedEntity(int fakeId, UUID fakeUuid, boolean playerEntry) {
             this.fakeId = fakeId;
             this.fakeUuid = fakeUuid;
+            this.playerEntry = playerEntry;
+            this.yaw = 0.0F;
+            this.pitch = 0.0F;
+            this.velocityX = 0.0D;
+            this.velocityY = 0.0D;
+            this.velocityZ = 0.0D;
+            this.rotationKnown = false;
+            this.velocityKnown = false;
+            this.metadataRefreshPasses = METADATA_REFRESH_PASSES;
+        }
+
+        private boolean updateRotation(float yaw, float pitch) {
+            if (rotationKnown && angleDelta(yaw, this.yaw) < 0.5F && Math.abs(pitch - this.pitch) < 0.5F) {
+                return false;
+            }
+            this.yaw = yaw;
+            this.pitch = pitch;
+            rotationKnown = true;
+            return true;
+        }
+
+        private boolean updateVelocity(Vector3d velocity) {
+            double x = velocity.getX();
+            double y = velocity.getY();
+            double z = velocity.getZ();
+            if (velocityKnown && Math.abs(x - velocityX) < 0.001D && Math.abs(y - velocityY) < 0.001D && Math.abs(z - velocityZ) < 0.001D) {
+                return false;
+            }
+            velocityX = x;
+            velocityY = y;
+            velocityZ = z;
+            velocityKnown = true;
+            return true;
+        }
+
+        private boolean shouldRefreshMetadata() {
+            metadataRefreshPasses--;
+            return metadataRefreshPasses <= 0;
+        }
+
+        private void resetMetadataCooldown() {
+            metadataRefreshPasses = METADATA_REFRESH_PASSES;
         }
     }
 }

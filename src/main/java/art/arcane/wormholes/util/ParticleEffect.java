@@ -20,6 +20,7 @@ public enum ParticleEffect {
     ITEM_CRACK(Particle.ITEM),
     PORTAL(Particle.PORTAL),
     REDSTONE(Particle.DUST),
+    SMOKE(Particle.SMOKE),
     TOWN_AURA(Particle.MYCELIUM),
     WATER_DROP(Particle.SPLASH),
     WATER_WAKE(Particle.SPLASH);

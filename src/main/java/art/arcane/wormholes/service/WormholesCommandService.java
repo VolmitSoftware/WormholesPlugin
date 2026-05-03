@@ -1,18 +1,26 @@
 package art.arcane.wormholes.service;
 
-import art.arcane.volmlib.util.collection.KList;
+import art.arcane.volmlib.util.director.compat.BukkitDirectorContext;
 import art.arcane.volmlib.util.director.compat.DirectorEngineFactory;
 import art.arcane.volmlib.util.director.context.DirectorContextRegistry;
+import art.arcane.volmlib.util.director.help.DirectorMiniMenu;
+import art.arcane.volmlib.util.director.runtime.DirectorExecutionMode;
 import art.arcane.volmlib.util.director.runtime.DirectorExecutionResult;
 import art.arcane.volmlib.util.director.runtime.DirectorInvocation;
+import art.arcane.volmlib.util.director.runtime.DirectorInvocationHook;
 import art.arcane.volmlib.util.director.runtime.DirectorRuntimeEngine;
+import art.arcane.volmlib.util.director.runtime.DirectorRuntimeNode;
 import art.arcane.volmlib.util.director.runtime.DirectorSender;
-import art.arcane.volmlib.util.director.visual.DirectorVisualCommand;
-import art.arcane.volmlib.util.director.visual.DirectorVisualCommand.HelpRequest;
+import art.arcane.volmlib.util.director.theme.DirectorProduct;
+import art.arcane.volmlib.util.director.theme.DirectorTheme;
+import art.arcane.volmlib.util.director.theme.DirectorThemes;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.commands.CommandWormholes;
 import art.arcane.wormholes.util.common.cache.AtomicCache;
-import org.bukkit.Sound;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import org.bukkit.SoundCategory;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -22,21 +30,26 @@ import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import java.util.logging.Level;
 
-public final class WormholesCommandService implements CommandExecutor, TabCompleter {
+public final class WormholesCommandService implements CommandExecutor, TabCompleter, DirectorInvocationHook {
     private static final String ROOT_COMMAND = "wormholes";
     private static final String ROOT_PERMISSION = "wormholes.admin";
     private static final int HELP_PAGE_SIZE = 8;
+    private static final MiniMessage MINI_MESSAGE = MiniMessage.miniMessage();
+    private static final LegacyComponentSerializer LEGACY_SERIALIZER = LegacyComponentSerializer.legacySection();
 
     private final Wormholes plugin;
+    private final DirectorTheme theme;
     private final AtomicCache<DirectorRuntimeEngine> directorCache = new AtomicCache<>();
-    private final AtomicCache<DirectorVisualCommand> visualCache = new AtomicCache<>();
 
     public WormholesCommandService(Wormholes plugin) {
         this.plugin = plugin;
+        this.theme = DirectorThemes.forProduct(DirectorProduct.WORMHOLES);
     }
 
     public void register() {
@@ -52,7 +65,6 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
 
     public void invalidateCache() {
         directorCache.invalidate();
-        visualCache.invalidate();
     }
 
     @Override
@@ -66,9 +78,7 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
             return true;
         }
 
-        Optional<HelpRequest> help = resolveHelpRequest(args);
-        if (help.isPresent()) {
-            renderHelp(sender, help.get());
+        if (sendHelpIfRequested(sender, args)) {
             playInfoChime(sender);
             return true;
         }
@@ -97,17 +107,13 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
         return directorCache.aquire(this::buildDirector);
     }
 
-    private DirectorVisualCommand getVisual() {
-        return visualCache.aquire(() -> DirectorVisualCommand.createRoot(getDirector()));
-    }
-
     private DirectorRuntimeEngine buildDirector() {
         return DirectorEngineFactory.create(
             new CommandWormholes(plugin),
             null,
             buildDirectorContexts(),
-            null,
-            null,
+            this::dispatchDirector,
+            this,
             null
         );
     }
@@ -129,11 +135,27 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
         return contexts;
     }
 
+    private void dispatchDirector(DirectorExecutionMode mode, Runnable runnable) {
+        runnable.run();
+    }
+
+    @Override
+    public void beforeInvoke(DirectorInvocation invocation, DirectorRuntimeNode node) {
+        if (invocation.getSender() instanceof BukkitDirectorSender sender) {
+            BukkitDirectorContext.touch(sender.sender());
+        }
+    }
+
+    @Override
+    public void afterInvoke(DirectorInvocation invocation, DirectorRuntimeNode node) {
+        BukkitDirectorContext.remove();
+    }
+
     private DirectorExecutionResult runDirector(CommandSender sender, String label, String[] args) {
         try {
             return getDirector().execute(new DirectorInvocation(new BukkitDirectorSender(sender), label, Arrays.asList(args)));
         } catch (Throwable e) {
-            plugin.getLogger().warning("Director command execution failed: " + e.getClass().getSimpleName() + " " + e.getMessage());
+            plugin.getLogger().log(Level.SEVERE, "Director command execution failed", e);
             return DirectorExecutionResult.notHandled();
         }
     }
@@ -142,75 +164,102 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
         try {
             return getDirector().tabComplete(new DirectorInvocation(new BukkitDirectorSender(sender), alias, Arrays.asList(args)));
         } catch (Throwable e) {
-            plugin.getLogger().warning("Director tab completion failed: " + e.getClass().getSimpleName() + " " + e.getMessage());
+            plugin.getLogger().log(Level.WARNING, "Director tab completion failed", e);
             return List.of();
         }
     }
 
-    private Optional<HelpRequest> resolveHelpRequest(String[] args) {
-        if (args.length == 0) {
-            return Optional.of(new HelpRequest(getVisual(), 0));
+    private boolean sendHelpIfRequested(CommandSender sender, String[] args) {
+        Optional<DirectorMiniMenu.DirectorHelpPage> page = DirectorMiniMenu.resolveHelp(getDirector(), Arrays.asList(normalizeHelpArgs(args)), HELP_PAGE_SIZE);
+        if (page.isEmpty()) {
+            return false;
         }
-        if (args.length == 1 && (args[0].equalsIgnoreCase("help") || args[0].equalsIgnoreCase("?"))) {
-            return Optional.of(new HelpRequest(getVisual(), 0));
+
+        DirectorMiniMenu.Theme helpTheme = DirectorMiniMenu.Theme.fromDirectorTheme(theme);
+        for (String line : DirectorMiniMenu.render(page.get(), helpTheme)) {
+            sendRich(sender, line);
         }
-        if (args.length == 2 && (args[0].equalsIgnoreCase("help") || args[0].equalsIgnoreCase("?"))) {
-            int page = parsePage(args[1]);
-            return Optional.of(new HelpRequest(getVisual(), page));
-        }
-        return Optional.empty();
+
+        return true;
     }
 
-    private int parsePage(String raw) {
+    static String[] normalizeHelpArgs(String[] args) {
+        if (args == null || args.length == 0) {
+            return new String[0];
+        }
+
+        List<String> normalized = new ArrayList<>(args.length);
+        for (int i = 0; i < args.length; i++) {
+            String arg = args[i];
+            if (!isHelpWord(arg)) {
+                normalized.add(arg);
+                continue;
+            }
+
+            String page = "1";
+            if (i + 1 < args.length && isPageToken(args[i + 1])) {
+                page = args[i + 1].trim();
+                i++;
+            }
+            normalized.add("help=" + page);
+        }
+
+        return normalized.toArray(new String[0]);
+    }
+
+    private static boolean isHelpWord(String value) {
+        return value != null && (value.equalsIgnoreCase("help") || value.equals("?"));
+    }
+
+    private static boolean isPageToken(String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+
         try {
-            return Math.max(0, Integer.parseInt(raw.trim()) - 1);
+            Integer.parseInt(value.trim());
+            return true;
         } catch (NumberFormatException ignored) {
-            return 0;
+            return false;
         }
     }
 
-    private void renderHelp(CommandSender sender, HelpRequest request) {
-        DirectorVisualCommand root = request.command();
-        KList<DirectorVisualCommand> children = root.getNodes();
-        int total = children.size();
-        if (total == 0) {
-            sender.sendMessage("§7No subcommands available.");
+    private void sendRich(CommandSender sender, String miniMessage) {
+        if (miniMessage == null || miniMessage.trim().isEmpty()) {
             return;
         }
-        int totalPages = Math.max(1, (int) Math.ceil(total / (double) HELP_PAGE_SIZE));
-        int page = Math.min(request.page(), totalPages - 1);
-        int start = page * HELP_PAGE_SIZE;
-        int end = Math.min(start + HELP_PAGE_SIZE, total);
 
-        sender.sendMessage("§8§m-----§r §6Wormholes §8(§7page " + (page + 1) + "/" + totalPages + "§8) §m-----");
-        for (int i = start; i < end; i++) {
-            DirectorVisualCommand child = children.get(i);
-            String description = child.getDescription();
-            if (description == null || description.isBlank()) {
-                description = "§7No description";
-            }
-            sender.sendMessage("§e/" + ROOT_COMMAND + " " + child.getName() + " §8- §f" + description);
+        Component component = MINI_MESSAGE.deserialize(miniMessage);
+        try {
+            sender.getClass().getMethod("sendRichMessage", String.class).invoke(sender, miniMessage);
+            return;
+        } catch (Throwable ignored) {
         }
-        if (totalPages > 1) {
-            sender.sendMessage("§8§oUse §f§o/" + ROOT_COMMAND + " help <page> §8§oto see more.");
+
+        try {
+            sender.getClass().getMethod("sendMessage", Component.class).invoke(sender, component);
+            return;
+        } catch (Throwable ignored) {
         }
+
+        sender.sendMessage(LEGACY_SERIALIZER.serialize(component));
     }
 
     private void playSuccessChime(CommandSender sender) {
         if (sender instanceof Player player) {
-            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.5f, 1.5f);
+            player.playSound(player.getLocation(), theme.getSuccessSound(), SoundCategory.MASTER, 0.5f, 1.5f);
         }
     }
 
     private void playFailureChime(CommandSender sender) {
         if (sender instanceof Player player) {
-            player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 0.4f, 0.6f);
+            player.playSound(player.getLocation(), theme.getErrorSound(), SoundCategory.MASTER, 0.4f, 0.6f);
         }
     }
 
     private void playInfoChime(CommandSender sender) {
         if (sender instanceof Player player) {
-            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.4f, 1.0f);
+            player.playSound(player.getLocation(), theme.getSuccessSound(), SoundCategory.MASTER, 0.4f, 1.0f);
         }
     }
 

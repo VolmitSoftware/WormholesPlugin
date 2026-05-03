@@ -62,11 +62,54 @@ public class ProjectionConfig {
         "When a local projected cell maps to the same destination coordinate as the previous pass, Wormholes can reuse the last projected BlockData instead of re-reading the remote block every refresh.",
         "1 resamples every projection pass for maximum live block-change accuracy. Higher values reduce CPU while still catching remote block edits on the next full resample."
     })
-    public int stableCellResampleIntervalTicks = 10;
+    public int stableCellResampleIntervalTicks = 1;
 
     @ConfigDescription({
         "Cap projection range/depth by the player's client view distance and the server view distance.",
         "Leave enabled for public servers; disabling lets operators force larger projection distances for controlled tests."
     })
     public boolean clientViewDistanceCap = true;
+
+    @ConfigDescription({
+        "Minimum dot product between the player's view direction and the vector from their eye to the portal center before a projector is kept active.",
+        "1.0 means only looking exactly at the portal, 0.0 means the portal must be somewhere in front of the player, and negative values allow wide peripheral views.",
+        "The default keeps projections visible while turning near a portal, but stops doing projection work for players clearly looking away."
+    })
+    public double observerInterestDot = -0.2;
+
+    @ConfigDescription({
+        "Minimum absolute dot product between the portal face normal and the vector from the portal center to the player's eye.",
+        "When the value is greater than 0, players almost perfectly side-on to a portal get no projection instead of a front/back side flip-flop.",
+        "0 disables this grace band. 0.12 suppresses roughly the last 7 degrees on either side of an edge-on view."
+    })
+    public double sideGraceDot = 0.12;
+
+    @ConfigDescription({
+        "Maximum eye-position movement, in blocks, that can reuse an already rendered projection frame.",
+        "This only applies after the projector has rendered at least once and only until the stable-cell resample interval is due.",
+        "The default is 0 because live block accuracy behind the pane is more important than idle-frame reuse.",
+        "Raise this only when profiling shows idle observers are a bigger problem than delayed block updates."
+    })
+    public double stationaryReuseDistanceBlocks = 0.0;
+
+    @ConfigDescription({
+        "Maximum yaw or pitch movement, in degrees, that can reuse an already rendered projection frame.",
+        "Small values avoid burning CPU for idle observers while still rebuilding quickly when they turn their view.",
+        "Set to 0 to disable camera-angle reuse."
+    })
+    public double stationaryReuseAngleDegrees = 1.5;
+
+    @ConfigDescription({
+        "Maximum observer/portal projector updates run during one projection manager tick.",
+        "This is the main server-scale safety valve: with many players near controlled portals, observers are updated round-robin instead of all in the same tick.",
+        "Raise this on high-end servers for smoother portals; lower it when profiler samples show projection work crowding the main thread."
+    })
+    public int maxProjectorsPerTick = 24;
+
+    @ConfigDescription({
+        "Number of first projection passes that resend all currently projected fake blocks, even if their data did not change.",
+        "This protects players who join while already viewing a portal from chunk-load packets overwriting the first fake-block projection.",
+        "0 disables startup resends; 3-5 is usually enough for login and teleport chunk-load races."
+    })
+    public int initialResendPasses = 4;
 }

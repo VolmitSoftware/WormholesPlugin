@@ -14,13 +14,19 @@ public class Traversive
 	private final Vector inPoint;
 	private final Vector inVelocity;
 	private final Vector inLook;
+	private final boolean frontSide;
 
 	public Traversive(Object o, TraversableType type, Direction inDirection, Vector inOrigin, Vector inPoint, Vector inVelocity, Vector inLook)
 	{
-		this(o, type, PortalFrame.canonical(inDirection), inOrigin, inPoint, inVelocity, inLook);
+		this(o, type, PortalFrame.canonical(inDirection), inOrigin, inPoint, inVelocity, inLook, true);
 	}
 
 	public Traversive(Object o, TraversableType type, PortalFrame inFrame, Vector inOrigin, Vector inPoint, Vector inVelocity, Vector inLook)
+	{
+		this(o, type, inFrame, inOrigin, inPoint, inVelocity, inLook, true);
+	}
+
+	public Traversive(Object o, TraversableType type, PortalFrame inFrame, Vector inOrigin, Vector inPoint, Vector inVelocity, Vector inLook, boolean frontSide)
 	{
 		this.object = o;
 		this.type = type;
@@ -29,6 +35,7 @@ public class Traversive
 		this.inPoint = inPoint.clone();
 		this.inVelocity = inVelocity.clone();
 		this.inLook = inLook.clone();
+		this.frontSide = frontSide;
 	}
 
 	public Traversive(Entity entity, Direction inDirection, Vector inOrigin, Vector inPoint, Vector inVelocity, Vector inLook)
@@ -41,6 +48,11 @@ public class Traversive
 		this(entity, TraversableType.ENTITY, inFrame, inOrigin, inPoint, inVelocity, inLook);
 	}
 
+	public Traversive(Entity entity, PortalFrame inFrame, Vector inOrigin, Vector inPoint, Vector inVelocity, Vector inLook, boolean frontSide)
+	{
+		this(entity, TraversableType.ENTITY, inFrame, inOrigin, inPoint, inVelocity, inLook, frontSide);
+	}
+
 	public Vector getOutVelocity(Direction outDirection)
 	{
 		return getOutVelocity(PortalFrame.canonical(outDirection));
@@ -48,7 +60,7 @@ public class Traversive
 
 	public Vector getOutVelocity(PortalFrame outFrame)
 	{
-		return inFrame.transformVector(getInVelocity(), outFrame);
+		return inFrame.transformVector(getInVelocity(), outFrame.view(frontSide));
 	}
 
 	public Vector getOutLook(Direction outDirection)
@@ -58,7 +70,7 @@ public class Traversive
 
 	public Vector getOutLook(PortalFrame outFrame)
 	{
-		return inFrame.transformVector(getInLook(), outFrame);
+		return inFrame.transformVector(getInLook(), outFrame.view(frontSide));
 	}
 
 	public Vector getOutOffset(Direction outDirection)
@@ -68,12 +80,12 @@ public class Traversive
 
 	public Vector getOutOffset(PortalFrame outFrame)
 	{
-		return inFrame.transformVector(getInOffset(), outFrame);
+		return inFrame.transformVector(getInOffset(), outFrame.view(frontSide));
 	}
 
 	public Vector getOutPoint(PortalFrame outFrame, Vector outOrigin)
 	{
-		return inFrame.transformPoint(inPoint, inOrigin, outOrigin, outFrame);
+		return inFrame.transformPoint(inPoint, inOrigin, outOrigin, outFrame.view(frontSide));
 	}
 
 	public Direction getInDirection()

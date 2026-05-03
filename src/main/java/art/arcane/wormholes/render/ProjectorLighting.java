@@ -171,6 +171,8 @@ public final class ProjectorLighting {
                                 int chunkX, int chunkZ, IntSet dirtySections) {
         int minSec = localWorld.getMinHeight() >> 4;
         int maxSec = (localWorld.getMaxHeight() - 1) >> 4;
+        int destMinY = destWorld.getMinHeight();
+        int destMaxY = destWorld.getMaxHeight() - 1;
         int maskBitCount = (maxSec - minSec + 1) + 2;
         int sectionCount = countValidSections(dirtySections, minSec, maxSec);
         if (sectionCount == 0) {
@@ -214,7 +216,7 @@ public final class ProjectorLighting {
                             int rx = unpackX(remoteKey);
                             int ry = unpackY(remoteKey);
                             int rz = unpackZ(remoteKey);
-                            if (ry < destWorld.getMinHeight() || ry > destWorld.getMaxHeight() - 1) {
+                            if (ry < destMinY || ry > destMaxY) {
                                 Block local = localWorld.getBlockAt(x, y, z);
                                 sky = local.getLightFromSky();
                                 block = local.getLightFromBlocks();

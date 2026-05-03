@@ -98,6 +98,10 @@ public final class PortalFrame {
 		return fromNormalUp(normal.reverse(), up);
 	}
 
+	public PortalFrame view(boolean frontSide) {
+		return frontSide ? this : flipNormal();
+	}
+
 	public PortalFrame rotateClockwise() {
 		return fromNormalUp(normal, right);
 	}
