@@ -29,6 +29,7 @@ import art.arcane.wormholes.util.Direction;
 public final class PortalProjector {
     private static final long NO_REMOTE_KEY = Long.MIN_VALUE;
     private static final double PLANE_WINDOW_EXTRA_PADDING = 1.0D;
+    private static final int RECURSIVE_BUCKET_SHIFT = 3;
 
     private final ILocalPortal portal;
     private final Player observer;
@@ -1076,7 +1077,7 @@ public final class PortalProjector {
         private final double eyeX;
         private final double eyeY;
         private final double eyeZ;
-        private final ArrayList<RecursivePortalCandidate> candidates;
+        private final Long2ObjectOpenHashMap<ArrayList<RecursivePortalCandidate>> buckets;
 
         private RecursivePortalIndex(World world, double eyeX, double eyeY, double eyeZ, ILocalPortal excludedPortal) {
             this.world = world;
@@ -1084,14 +1085,14 @@ public final class PortalProjector {
             this.eyeX = eyeX;
             this.eyeY = eyeY;
             this.eyeZ = eyeZ;
-            this.candidates = new ArrayList<RecursivePortalCandidate>();
+            this.buckets = new Long2ObjectOpenHashMap<ArrayList<RecursivePortalCandidate>>();
             for (ILocalPortal candidate : getRecursivePortalCandidates(world)) {
                 if (isExcludedRecursivePortal(candidate, excludedPortal)) {
                     continue;
                 }
                 RecursivePortalCandidate indexed = new RecursivePortalCandidate(candidate, eyeX, eyeY, eyeZ);
                 if (indexed.valid) {
-                    candidates.add(indexed);
+                    index(indexed);
                 }
             }
         }
@@ -1110,8 +1111,15 @@ public final class PortalProjector {
         }
 
         private RecursivePortalHit find(double pointX, double pointY, double pointZ) {
+            int bucketX = bucket(pointX);
+            int bucketY = bucket(pointY);
+            int bucketZ = bucket(pointZ);
+            ArrayList<RecursivePortalCandidate> bucketCandidates = buckets.get(packKey(bucketX, bucketY, bucketZ));
+            if (bucketCandidates == null) {
+                return null;
+            }
             RecursivePortalHit best = null;
-            for (RecursivePortalCandidate candidate : candidates) {
+            for (RecursivePortalCandidate candidate : bucketCandidates) {
                 RecursivePortalHit hit = candidate.hit(pointX, pointY, pointZ);
                 if (hit == null) {
                     continue;
@@ -1121,6 +1129,32 @@ public final class PortalProjector {
                 }
             }
             return best;
+        }
+
+        private void index(RecursivePortalCandidate candidate) {
+            int minX = bucket(candidate.view.getXa());
+            int maxX = bucket(candidate.view.getXb());
+            int minY = bucket(candidate.view.getYa());
+            int maxY = bucket(candidate.view.getYb());
+            int minZ = bucket(candidate.view.getZa());
+            int maxZ = bucket(candidate.view.getZb());
+            for (int x = minX; x <= maxX; x++) {
+                for (int y = minY; y <= maxY; y++) {
+                    for (int z = minZ; z <= maxZ; z++) {
+                        long key = packKey(x, y, z);
+                        ArrayList<RecursivePortalCandidate> bucketCandidates = buckets.get(key);
+                        if (bucketCandidates == null) {
+                            bucketCandidates = new ArrayList<RecursivePortalCandidate>(2);
+                            buckets.put(key, bucketCandidates);
+                        }
+                        bucketCandidates.add(candidate);
+                    }
+                }
+            }
+        }
+
+        private int bucket(double coordinate) {
+            return ((int) Math.floor(coordinate)) >> RECURSIVE_BUCKET_SHIFT;
         }
     }
 

@@ -193,7 +193,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		{
 			playEffect(PortalEffect.AMBIENT_CLOSED);
 
-			if(hasTunnel())
+			if(hasTunnel() || projectionMode == ProjectionMode.MIRROR)
 			{
 				open();
 			}

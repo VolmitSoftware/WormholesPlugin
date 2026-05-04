@@ -2,6 +2,7 @@ package art.arcane.wormholes.render;
 
 import io.papermc.paper.math.Position;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 
@@ -103,6 +104,7 @@ public final class ProjectionClaimArbiter {
         }
         observerClaims.claimSet.releasePortal(portalId);
         observerClaims.pendingLightingKeys.clear();
+        observerClaims.sentBlocks.clear();
         removeObserverIfEmpty(observerId, observerClaims);
     }
 
@@ -113,12 +115,14 @@ public final class ProjectionClaimArbiter {
         }
         observerClaims.claimSet.clear();
         observerClaims.pendingLightingKeys.clear();
+        observerClaims.sentBlocks.clear();
     }
 
     public synchronized void clear() {
         for (ObserverClaims observerClaims : observers.values()) {
             observerClaims.claimSet.clear();
             observerClaims.pendingLightingKeys.clear();
+            observerClaims.sentBlocks.clear();
         }
         observers.clear();
         frames.clear();
@@ -165,10 +169,25 @@ public final class ProjectionClaimArbiter {
                     int x = unpackX(key);
                     int y = unpackY(key);
                     int z = unpackZ(key);
+                    if (!observerClaims.sentBlocks.containsKey(key)) {
+                        continue;
+                    }
                     Block localBlock = localWorld.getBlockAt(x, y, z);
-                    blockChanges.put(Position.block(x, y, z), localBlock.getBlockData());
+                    BlockData localData = localBlock.getBlockData();
+                    BlockData sentData = observerClaims.sentBlocks.get(key);
+                    observerClaims.sentBlocks.remove(key);
+                    if (sentData.equals(localData)) {
+                        continue;
+                    }
+                    blockChanges.put(Position.block(x, y, z), localData);
                 } else {
-                    blockChanges.put(Position.block(unpackX(key), unpackY(key), unpackZ(key)), winner.getData());
+                    BlockData sentData = observerClaims.sentBlocks.get(key);
+                    BlockData winnerData = winner.getData();
+                    if (sentData != null && sentData.equals(winnerData)) {
+                        continue;
+                    }
+                    observerClaims.sentBlocks.put(key, winnerData);
+                    blockChanges.put(Position.block(unpackX(key), unpackY(key), unpackZ(key)), winnerData);
                 }
             }
             if (!blockChanges.isEmpty()) {
@@ -271,11 +290,13 @@ public final class ProjectionClaimArbiter {
     private static final class ObserverClaims {
         private final ProjectionClaimSet claimSet;
         private final LongOpenHashSet pendingLightingKeys;
+        private final Long2ObjectOpenHashMap<BlockData> sentBlocks;
         private final ProjectorLighting lighting;
 
         private ObserverClaims() {
             this.claimSet = new ProjectionClaimSet();
             this.pendingLightingKeys = new LongOpenHashSet();
+            this.sentBlocks = new Long2ObjectOpenHashMap<BlockData>(256);
             this.lighting = new ProjectorLighting();
         }
     }
