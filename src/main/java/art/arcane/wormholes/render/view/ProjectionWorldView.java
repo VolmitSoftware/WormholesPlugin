@@ -17,6 +17,18 @@ public interface ProjectionWorldView {
 
     int getLight(int x, int y, int z);
 
+    int getSkyDarken();
+
+    static int computeSkyDarken(long dayTime) {
+        double d = (dayTime / 24000.0D) - 0.25D;
+        d = d - Math.floor(d);
+        double e = 0.5D - Math.cos(d * Math.PI) / 2.0D;
+        double celestialAngle = (d * 2.0D + e) / 3.0D;
+        double f = 1.0D - (Math.cos(celestialAngle * Math.PI * 2.0D) * 2.0D + 0.5D);
+        f = Math.max(0.0D, Math.min(1.0D, f));
+        return (int) (f * 11.0D);
+    }
+
     static boolean isAir(Material material) {
         return material == Material.AIR || material == Material.CAVE_AIR || material == Material.VOID_AIR;
     }

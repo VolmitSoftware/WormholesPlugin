@@ -51,6 +51,11 @@ public final class LiveWorldView implements ProjectionWorldView {
     }
 
     @Override
+    public int getSkyDarken() {
+        return ProjectionWorldView.computeSkyDarken(world.getTime());
+    }
+
+    @Override
     public boolean equals(Object other) {
         if (this == other) {
             return true;

@@ -84,6 +84,11 @@ public final class RemoteWorldView implements ProjectionWorldView {
         return view.getEquipment(entityId);
     }
 
+    @Override
+    public int getSkyDarken() {
+        return view.getSkyDarken();
+    }
+
     public long getRevision() {
         return view.getRevision();
     }

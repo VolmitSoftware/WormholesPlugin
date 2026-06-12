@@ -65,6 +65,7 @@ public final class RemoteViewCache {
         private volatile ViewBox box;
         private volatile long lastUpdateMillis;
         private volatile long revision;
+        private volatile int skyDarken;
         private volatile List<EntityVisual> entities = List.of();
         private final Map<UUID, Integer> stateVersions = new ConcurrentHashMap<>();
         private final Map<Long, DecodedSlice> slices = new ConcurrentHashMap<>();
@@ -119,6 +120,10 @@ public final class RemoteViewCache {
 
         public long getRevision() {
             return revision;
+        }
+
+        public int getSkyDarken() {
+            return skyDarken;
         }
 
         public int getStateVersion(UUID entityId) {
@@ -177,6 +182,15 @@ public final class RemoteViewCache {
         for (ViewSlice slice : slices) {
             view.slices.put(slice.columnKey(), decode(slice));
         }
+        view.lastUpdateMillis = System.currentTimeMillis();
+    }
+
+    public void applyTime(String peerName, UUID portalId, int skyDarken) {
+        RemoteView view = views.get(key(peerName, portalId));
+        if (view == null) {
+            return;
+        }
+        view.skyDarken = Math.max(0, Math.min(11, skyDarken));
         view.lastUpdateMillis = System.currentTimeMillis();
     }
 

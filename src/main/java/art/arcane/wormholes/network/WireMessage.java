@@ -447,6 +447,23 @@ public sealed interface WireMessage {
         }
     }
 
+    record ViewTime(UUID portalId, int skyDarken) implements WireMessage {
+        @Override
+        public WireMessageType type() {
+            return WireMessageType.VIEW_TIME;
+        }
+
+        @Override
+        public void write(DataOutputStream out) throws IOException {
+            writeUuid(out, portalId);
+            out.writeByte(skyDarken);
+        }
+
+        public static ViewTime read(DataInputStream in) throws IOException {
+            return new ViewTime(readUuid(in), in.readUnsignedByte());
+        }
+    }
+
     private static void writeUuid(DataOutputStream out, UUID id) throws IOException {
         out.writeLong(id.getMostSignificantBits());
         out.writeLong(id.getLeastSignificantBits());

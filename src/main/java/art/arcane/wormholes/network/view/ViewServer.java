@@ -65,6 +65,7 @@ public final class ViewServer implements Listener {
         private final AtomicInteger captureCountdown = new AtomicInteger(0);
         private final AtomicBoolean entityCaptureRunning = new AtomicBoolean(false);
         private volatile List<EntityVisual> lastVisuals = List.of();
+        private volatile int lastSkyDarken = -1;
         private volatile boolean ticketsHeld;
 
         private Session(UUID portalId, World world, ViewBox box, int centerChunkX, int centerChunkZ) {
@@ -225,6 +226,14 @@ public final class ViewServer implements Listener {
 
     private void captureEntities(Session session) {
         try {
+            int skyDarken = art.arcane.wormholes.render.view.ProjectionWorldView.computeSkyDarken(session.world.getTime());
+            if (skyDarken != session.lastSkyDarken) {
+                session.lastSkyDarken = skyDarken;
+                WireMessage.ViewTime time = new WireMessage.ViewTime(session.portalId, skyDarken);
+                for (String peerName : session.peers) {
+                    network.send(peerName, time);
+                }
+            }
             BoundingBox bounds = new BoundingBox(session.box.minX(), session.box.minY(), session.box.minZ(),
                 session.box.maxX() + 1, session.box.maxY() + 1, session.box.maxZ() + 1);
             List<EntityVisual> visuals = new ArrayList<>(16);
@@ -405,8 +414,12 @@ public final class ViewServer implements Listener {
         }
         List<ViewSlice> slices = new ArrayList<>(session.latestSlices.values());
         WireMessage.ViewSnapshot snapshot = new WireMessage.ViewSnapshot(session.portalId, session.box, slices);
+        WireMessage.ViewTime time = session.lastSkyDarken >= 0 ? new WireMessage.ViewTime(session.portalId, session.lastSkyDarken) : null;
         for (String peerName : session.pendingFullPeers) {
             network.send(peerName, snapshot);
+            if (time != null) {
+                network.send(peerName, time);
+            }
         }
         session.pendingFullPeers.clear();
     }

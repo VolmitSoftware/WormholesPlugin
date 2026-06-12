@@ -206,6 +206,7 @@ public final class ProjectorLighting {
                                 int chunkX, int chunkZ, IntSet dirtySections) {
         int minSec = localWorld.getMinHeight() >> 4;
         int maxSec = (localWorld.getMaxHeight() - 1) >> 4;
+        int localSkyDarken = ProjectionWorldView.computeSkyDarken(localWorld.getTime());
         int maskBitCount = (maxSec - minSec + 1) + 2;
         int sectionCount = countValidSections(dirtySections, minSec, maxSec);
         if (sectionCount == 0) {
@@ -248,12 +249,14 @@ public final class ProjectorLighting {
                         int sky;
                         int block;
                         int packedLight = ProjectionWorldView.LIGHT_UNAVAILABLE;
+                        ProjectionWorldView lightSource = null;
                         if (remoteKey != NO_REMOTE_KEY && sourceView != null) {
                             int rx = unpackX(remoteKey);
                             int ry = unpackY(remoteKey);
                             int rz = unpackZ(remoteKey);
                             if (ry >= sourceView.getMinHeight() && ry <= sourceView.getMaxHeight() - 1) {
                                 packedLight = sourceView.getLight(rx, ry, rz);
+                                lightSource = sourceView;
                             }
                         }
                         if (packedLight == ProjectionWorldView.LIGHT_UNAVAILABLE) {
@@ -261,8 +264,13 @@ public final class ProjectorLighting {
                             sky = local.getLightFromSky();
                             block = local.getLightFromBlocks();
                         } else {
-                            sky = ProjectionWorldView.unpackSkyLight(packedLight);
-                            block = ProjectionWorldView.unpackBlockLight(packedLight);
+                            int rawSky = ProjectionWorldView.unpackSkyLight(packedLight);
+                            int rawBlock = ProjectionWorldView.unpackBlockLight(packedLight);
+                            int sourceDarken = lightSource.getSkyDarken();
+                            int sourceSkyBrightness = Math.max(0, rawSky - sourceDarken);
+                            sky = Math.min(15, sourceSkyBrightness + localSkyDarken);
+                            int target = Math.max(rawBlock, sourceSkyBrightness);
+                            block = target > 15 - localSkyDarken ? target : rawBlock;
                         }
 
                         int nibbleIdx = (ly << 8) | (lz << 4) | lx;

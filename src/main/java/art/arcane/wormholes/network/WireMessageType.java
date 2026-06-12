@@ -16,6 +16,7 @@ public enum WireMessageType {
     VIEW_DELTA(23),
     VIEW_ENTITIES(24),
     VIEW_ENTITY_ANIMATION(25),
+    VIEW_TIME(26),
     HANDOFF_REQUEST(30),
     HANDOFF_ACK(31),
     HANDOFF_DENY(32),

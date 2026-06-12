@@ -45,6 +45,7 @@ public final class NetworkRouter {
             case WireMessage.ViewSnapshot snapshot -> viewCache.applySnapshot(peerName, snapshot.portalId(), snapshot.box(), snapshot.slices());
             case WireMessage.ViewDelta delta -> viewCache.applyDelta(peerName, delta.portalId(), delta.slices());
             case WireMessage.ViewEntities entities -> viewCache.applyEntities(peerName, entities.portalId(), entities.entities());
+            case WireMessage.ViewTime time -> viewCache.applyTime(peerName, time.portalId(), time.skyDarken());
             case WireMessage.ViewEntityAnimation animation -> {
                 art.arcane.wormholes.ProjectionManager projectionManager = art.arcane.wormholes.Wormholes.projectionManager;
                 if (projectionManager != null) {

@@ -9,7 +9,7 @@ import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 
 public final class WireCodec {
-    public static final int PROTOCOL_VERSION = 3;
+    public static final int PROTOCOL_VERSION = 4;
     public static final int MAX_FRAME_BYTES = 4 * 1024 * 1024;
     public static final int MAX_INFLATED_BYTES = 16 * 1024 * 1024;
     private static final int COMPRESS_THRESHOLD_BYTES = 1024;
@@ -93,6 +93,7 @@ public final class WireCodec {
             case VIEW_DELTA -> WireMessage.ViewDelta.read(in);
             case VIEW_ENTITIES -> WireMessage.ViewEntities.read(in);
             case VIEW_ENTITY_ANIMATION -> WireMessage.ViewEntityAnimation.read(in);
+            case VIEW_TIME -> WireMessage.ViewTime.read(in);
         };
     }
 
