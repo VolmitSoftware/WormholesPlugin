@@ -1,7 +1,7 @@
 [versions]
 shadow = "9.0.0-rc3"
 runTask = "2.3.1"
-paper = "1.21.11-R0.1-SNAPSHOT"
+paper = "26.1.2.build.66-stable"
 packetevents = "2.12.1"
 bstats = "3.0.2"
 toml4j = "0.7.2"

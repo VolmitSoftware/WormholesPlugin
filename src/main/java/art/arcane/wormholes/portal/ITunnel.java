@@ -27,8 +27,9 @@ public interface ITunnel extends IWritable
 				tu.loadJSON(j);
 				return tu;
 			case UNIVERSAL:
-				// TODO NOT YET IMPLEMENTED
-				break;
+				UniversalTunnel tun = new UniversalTunnel(null);
+				tun.loadJSON(j);
+				return tun;
 		}
 
 		return null;

@@ -24,10 +24,9 @@ import org.bukkit.inventory.EntityEquipment;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.Vector;
 
-import com.destroystokyo.paper.profile.PlayerProfile;
-import com.destroystokyo.paper.profile.ProfileProperty;
 import com.github.retrooper.packetevents.PacketEvents;
 import com.github.retrooper.packetevents.protocol.entity.data.EntityData;
+import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes;
 import com.github.retrooper.packetevents.protocol.entity.type.EntityType;
 import com.github.retrooper.packetevents.protocol.entity.type.EntityTypes;
 import com.github.retrooper.packetevents.protocol.player.Equipment;
@@ -50,16 +49,32 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerHu
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoRemove;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerTeams;
 import io.github.retrooper.packetevents.util.SpigotConversionUtil;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.network.view.EntityVisual;
+import art.arcane.wormholes.network.view.PacketBlobs;
+import art.arcane.wormholes.network.view.RemoteViewCache;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.PortalFrame;
+import art.arcane.wormholes.render.view.RemoteWorldView;
+import art.arcane.wormholes.service.WormholesTelemetry;
 
 public final class ProjectedEntityRenderer {
     private static final AtomicInteger NEXT_FAKE_ID = new AtomicInteger(1_900_000_000);
     private static final int METADATA_REFRESH_PASSES = 10;
+    private static final String FLIP_NAME = "Dinnerbone";
+    private static final String FLIP_NAME_ALT = "Grumm";
+    private static final String FLIP_TEAM_NAME = "wh_flip";
+    private static final String NEUTRAL_PROFILE_NAME = "PortalPlayer";
+    private static final int CUSTOM_NAME_INDEX = 2;
+    private static final int CUSTOM_NAME_VISIBLE_INDEX = 3;
+    private static final int PLAYER_SKIN_PARTS_INDEX = 16;
+    private static final byte CAPE_PART_BIT = 0x01;
     private static final double MIN_POSITION_DELTA_SQUARED = 1.0E-6D;
     private static final double MAX_RELATIVE_MOVE_DELTA = 7.75D;
     private static final Map<UUID, EntityCandidateSnapshot> REMOTE_ENTITY_CACHE = new HashMap<UUID, EntityCandidateSnapshot>();
@@ -73,6 +88,7 @@ public final class ProjectedEntityRenderer {
     private final double[] scratchVisiblePoint;
     private final double[] scratchDirection;
     private boolean metadataBridgeFailed;
+    private boolean flipTeamSent;
 
     public ProjectedEntityRenderer() {
         this.spoofed = new HashMap<UUID, SpoofedEntity>(16);
@@ -83,6 +99,16 @@ public final class ProjectedEntityRenderer {
         this.scratchVisiblePoint = new double[3];
         this.scratchDirection = new double[3];
         this.metadataBridgeFailed = false;
+        this.flipTeamSent = false;
+    }
+
+    private static void sendCounted(Player observer, com.github.retrooper.packetevents.wrapper.PacketWrapper<?> packet) {
+        WormholesTelemetry.countPacket();
+        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, packet);
+    }
+
+    public int getSpoofedCount() {
+        return spoofed.size();
     }
 
     public void apply(Player observer,
@@ -108,6 +134,9 @@ public final class ProjectedEntityRenderer {
         visible.clear();
         visibleLocalHides.clear();
         hideLocalEntities(observer, localPortal, frustum, range, projectionDepth);
+        boolean upsideDown = remotePortal == localPortal
+            ? PortalCoordMap.reflectionFlipsWorldUp(localPortal.getFrame())
+            : PortalCoordMap.transformFlipsWorldUp(remoteViewFrame, localViewFrame);
         int count = 0;
 
         for (Entity entity : nearbyRemoteEntities(remotePortal, remoteCenter, range)) {
@@ -117,7 +146,7 @@ public final class ProjectedEntityRenderer {
             if (!canSpoof(entity)) {
                 continue;
             }
-            if (!projectEntity(observer, localPortal, remotePortal, localViewFrame, remoteViewFrame, frustum, entity)) {
+            if (!projectEntity(observer, localPortal, remotePortal, localViewFrame, remoteViewFrame, frustum, entity, upsideDown)) {
                 continue;
             }
             visible.add(entity.getUniqueId());
@@ -126,6 +155,192 @@ public final class ProjectedEntityRenderer {
 
         destroyHidden(observer);
         restoreLocalEntities(observer);
+    }
+
+    public void applyRemote(Player observer,
+                            ILocalPortal localPortal,
+                            double remoteOriginX,
+                            double remoteOriginY,
+                            double remoteOriginZ,
+                            RemoteWorldView remoteView,
+                            Frustum4D frustum,
+                            double projectionDepth,
+                            PortalFrame localViewFrame,
+                            PortalFrame remoteViewFrame) {
+        if (!Settings.ENTITY_SPOOFING || Settings.MAX_SPOOFED_ENTITIES <= 0) {
+            close(observer);
+            return;
+        }
+        if (observer == null) {
+            close(observer);
+            return;
+        }
+
+        double range = Math.min(Settings.ENTITY_SPOOF_RANGE, projectionDepth);
+        visible.clear();
+        visibleLocalHides.clear();
+        hideLocalEntities(observer, localPortal, frustum, range, projectionDepth);
+        boolean upsideDown = PortalCoordMap.transformFlipsWorldUp(remoteViewFrame, localViewFrame);
+        int count = 0;
+
+        for (EntityVisual visual : remoteView.getEntities()) {
+            if (count >= Settings.MAX_SPOOFED_ENTITIES) {
+                break;
+            }
+            if (!projectRemoteVisual(observer, localPortal, remoteOriginX, remoteOriginY, remoteOriginZ, localViewFrame, remoteViewFrame, frustum, remoteView, visual, upsideDown)) {
+                continue;
+            }
+            visible.add(visual.id());
+            count++;
+        }
+
+        destroyHidden(observer);
+        restoreLocalEntities(observer);
+    }
+
+    private boolean projectRemoteVisual(Player observer,
+                                        ILocalPortal localPortal,
+                                        double remoteOriginX,
+                                        double remoteOriginY,
+                                        double remoteOriginZ,
+                                        PortalFrame localViewFrame,
+                                        PortalFrame remoteViewFrame,
+                                        Frustum4D frustum,
+                                        RemoteWorldView remoteView,
+                                        EntityVisual visual,
+                                        boolean upsideDown) {
+        EntityType packetType = packetEntityTypeByKey(visual.typeKey());
+        if (packetType == null) {
+            return false;
+        }
+
+        double visibleY = visual.y() + (visual.height() * 0.5D);
+        PortalCoordMap.transformPointInto(visual.x(), visibleY, visual.z(),
+            remoteOriginX, remoteOriginY, remoteOriginZ,
+            localPortal.getOrigin().getX(), localPortal.getOrigin().getY(), localPortal.getOrigin().getZ(),
+            remoteViewFrame, localViewFrame, scratchVisiblePoint);
+
+        if (!frustum.containsPrimitive(scratchVisiblePoint[0], scratchVisiblePoint[1], scratchVisiblePoint[2])) {
+            return false;
+        }
+
+        remoteViewFrame.transformVectorInto(visual.lookX(), visual.lookY(), visual.lookZ(), localViewFrame, scratchDirection);
+        float yaw = yaw(scratchDirection[0], scratchDirection[2]);
+        float pitch = pitch(scratchDirection[0], scratchDirection[1], scratchDirection[2]);
+        double visualBaseY = scratchVisiblePoint[1] - (visual.height() * 0.5D);
+        Vector3d position = new Vector3d(scratchVisiblePoint[0], visualBaseY, scratchVisiblePoint[2]);
+        remoteViewFrame.transformVectorInto(visual.velocityX(), visual.velocityY(), visual.velocityZ(), localViewFrame, scratchDirection);
+        Vector3d velocity = new Vector3d(scratchDirection[0], scratchDirection[1], scratchDirection[2]);
+
+        SpoofedEntity state = spoofed.get(visual.id());
+        if (state != null && state.upsideDown != upsideDown) {
+            destroySingleSpoof(observer, state);
+            spoofed.remove(visual.id());
+            state = null;
+        }
+        if (state == null) {
+            state = new SpoofedEntity(NEXT_FAKE_ID.getAndIncrement(), UUID.randomUUID(), visual.isPlayer(), upsideDown);
+            spoofed.put(visual.id(), state);
+            if (visual.isPlayer()) {
+                sendRemotePlayerInfo(observer, remoteView.getProfile(visual.id()), state, upsideDown);
+            }
+            WrapperPlayServerSpawnEntity spawn = new WrapperPlayServerSpawnEntity(state.fakeId, Optional.of(state.fakeUuid),
+                packetType, position, pitch, yaw, yaw, 0, Optional.of(velocity));
+            sendCounted(observer, spawn);
+            state.updateRotation(yaw, pitch);
+            state.rememberPosition(position);
+            sendHeadLook(observer, state, yaw);
+            state.remoteStateVersion = remoteView.getStateVersion(visual.id());
+            sendRemoteEntityState(observer, remoteView, visual, state);
+            state.resetMetadataCooldown();
+            return true;
+        }
+
+        EntityMove move = state.updatePosition(position);
+        boolean rotationChanged = state.updateRotation(yaw, pitch);
+        sendEntityMovement(observer, state, move, rotationChanged, position, yaw, pitch, visual.onGround());
+        if (rotationChanged) {
+            sendHeadLook(observer, state, yaw);
+        }
+        if (state.updateVelocity(velocity)) {
+            sendCounted(observer, new WrapperPlayServerEntityVelocity(state.fakeId, velocity));
+        }
+        int stateVersion = remoteView.getStateVersion(visual.id());
+        if (stateVersion != state.remoteStateVersion || state.shouldRefreshMetadata()) {
+            state.remoteStateVersion = stateVersion;
+            sendRemoteEntityState(observer, remoteView, visual, state);
+            state.resetMetadataCooldown();
+        }
+        return true;
+    }
+
+    private void sendRemoteEntityState(Player observer, RemoteWorldView remoteView, EntityVisual visual, SpoofedEntity state) {
+        List<EntityData<?>> metadata = remoteView.getMetadata(visual.id());
+        if (metadata != null && !metadata.isEmpty()) {
+            List<EntityData<?>> patched = state.upsideDown ? withUpsideDownMetadataRemote(visual.isPlayer(), metadata) : metadata;
+            sendCounted(observer, new WrapperPlayServerEntityMetadata(state.fakeId, patched));
+        }
+        List<com.github.retrooper.packetevents.protocol.player.Equipment> equipment = remoteView.getEquipment(visual.id());
+        if (equipment != null && !equipment.isEmpty()) {
+            sendCounted(observer, new WrapperPlayServerEntityEquipment(state.fakeId, equipment));
+        }
+    }
+
+    private List<EntityData<?>> withUpsideDownMetadataRemote(boolean isPlayer, List<EntityData<?>> metadata) {
+        if (isPlayer) {
+            List<EntityData<?>> patched = new ArrayList<EntityData<?>>(metadata.size() + 1);
+            byte skinParts = 0;
+            for (EntityData<?> data : metadata) {
+                if (data.getIndex() == PLAYER_SKIN_PARTS_INDEX && data.getValue() instanceof Byte) {
+                    skinParts = ((Byte) data.getValue()).byteValue();
+                    continue;
+                }
+                patched.add(data);
+            }
+            patched.add(new EntityData<Byte>(PLAYER_SKIN_PARTS_INDEX, EntityDataTypes.BYTE, Byte.valueOf((byte) (skinParts | CAPE_PART_BIT))));
+            return patched;
+        }
+        List<EntityData<?>> patched = new ArrayList<EntityData<?>>(metadata.size() + 2);
+        for (EntityData<?> data : metadata) {
+            if (data.getIndex() == CUSTOM_NAME_INDEX || data.getIndex() == CUSTOM_NAME_VISIBLE_INDEX) {
+                continue;
+            }
+            patched.add(data);
+        }
+        patched.add(new EntityData<Optional<Component>>(CUSTOM_NAME_INDEX, EntityDataTypes.OPTIONAL_ADV_COMPONENT, Optional.of(Component.text(FLIP_NAME))));
+        patched.add(new EntityData<Boolean>(CUSTOM_NAME_VISIBLE_INDEX, EntityDataTypes.BOOLEAN, Boolean.FALSE));
+        return patched;
+    }
+
+    private void sendRemotePlayerInfo(Player observer, RemoteViewCache.RemoteProfile profile, SpoofedEntity state, boolean upsideDown) {
+        if (upsideDown) {
+            ensureFlipTeam(observer);
+        }
+        String sourceName = profile == null ? null : profile.name();
+        String name = upsideDown
+            ? (isFlipName(sourceName) ? NEUTRAL_PROFILE_NAME : FLIP_NAME)
+            : limitedProfileName(sourceName);
+        UserProfile userProfile = new UserProfile(state.fakeUuid, name);
+        if (profile != null && profile.textureValue() != null && !profile.textureValue().isEmpty()) {
+            String signature = profile.textureSignature() == null || profile.textureSignature().isEmpty() ? null : profile.textureSignature();
+            userProfile.getTextureProperties().add(new TextureProperty("textures", profile.textureValue(), signature));
+        }
+        WrapperPlayServerPlayerInfoUpdate.PlayerInfo info = new WrapperPlayServerPlayerInfoUpdate.PlayerInfo(
+            userProfile, false, 0, GameMode.SURVIVAL, null, null, 0, true);
+        sendCounted(observer, new WrapperPlayServerPlayerInfoUpdate(
+            EnumSet.of(WrapperPlayServerPlayerInfoUpdate.Action.ADD_PLAYER,
+                WrapperPlayServerPlayerInfoUpdate.Action.UPDATE_GAME_MODE,
+                WrapperPlayServerPlayerInfoUpdate.Action.UPDATE_LISTED,
+                WrapperPlayServerPlayerInfoUpdate.Action.UPDATE_LATENCY,
+                WrapperPlayServerPlayerInfoUpdate.Action.UPDATE_HAT),
+            info));
+    }
+
+    private EntityType packetEntityTypeByKey(String typeKey) {
+        if (typeKey == null || typeKey.isBlank()) {
+            return null;
+        }
+        return EntityTypes.getByName(typeKey);
     }
 
     public void close(Player observer) {
@@ -151,7 +366,7 @@ public final class ProjectedEntityRenderer {
         if (state == null) {
             return;
         }
-        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerEntityAnimation(state.fakeId, type));
+        sendCounted(observer, new WrapperPlayServerEntityAnimation(state.fakeId, type));
     }
 
     public void sendHurt(Player observer, UUID sourceId, float yaw) {
@@ -162,8 +377,8 @@ public final class ProjectedEntityRenderer {
         if (state == null) {
             return;
         }
-        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerEntityAnimation(state.fakeId, EntityAnimationType.HURT));
-        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerHurtAnimation(state.fakeId, yaw));
+        sendCounted(observer, new WrapperPlayServerEntityAnimation(state.fakeId, EntityAnimationType.HURT));
+        sendCounted(observer, new WrapperPlayServerHurtAnimation(state.fakeId, yaw));
     }
 
     private boolean projectEntity(Player observer,
@@ -172,7 +387,8 @@ public final class ProjectedEntityRenderer {
                                   PortalFrame localViewFrame,
                                   PortalFrame remoteViewFrame,
                                   Frustum4D frustum,
-                                  Entity entity) {
+                                  Entity entity,
+                                  boolean upsideDown) {
         EntityType packetType = packetEntityType(entity);
         if (packetType == null) {
             return false;
@@ -215,16 +431,21 @@ public final class ProjectedEntityRenderer {
             : transformedVelocity(entity, remoteViewFrame, localViewFrame);
 
         SpoofedEntity state = spoofed.get(entity.getUniqueId());
+        if (state != null && state.upsideDown != upsideDown) {
+            destroySingleSpoof(observer, state);
+            spoofed.remove(entity.getUniqueId());
+            state = null;
+        }
         if (state == null) {
             boolean playerEntity = entity instanceof Player;
-            state = new SpoofedEntity(NEXT_FAKE_ID.getAndIncrement(), UUID.randomUUID(), playerEntity);
+            state = new SpoofedEntity(NEXT_FAKE_ID.getAndIncrement(), UUID.randomUUID(), playerEntity, upsideDown);
             spoofed.put(entity.getUniqueId(), state);
             if (playerEntity) {
-                sendPlayerInfo(observer, (Player) entity, state);
+                sendPlayerInfo(observer, (Player) entity, state, upsideDown);
             }
             WrapperPlayServerSpawnEntity spawn = new WrapperPlayServerSpawnEntity(state.fakeId, Optional.of(state.fakeUuid),
                 packetType, position, pitch, yaw, yaw, 0, Optional.of(velocity));
-            PacketEvents.getAPI().getPlayerManager().sendPacket(observer, spawn);
+            sendCounted(observer, spawn);
             state.updateRotation(yaw, pitch);
             state.rememberPosition(position);
             sendHeadLook(observer, state, yaw);
@@ -240,7 +461,7 @@ public final class ProjectedEntityRenderer {
             sendHeadLook(observer, state, yaw);
         }
         if (state.updateVelocity(velocity)) {
-            PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerEntityVelocity(state.fakeId, velocity));
+            sendCounted(observer, new WrapperPlayServerEntityVelocity(state.fakeId, velocity));
         }
         if (state.shouldRefreshMetadata()) {
             sendEntityState(observer, entity, state);
@@ -260,15 +481,15 @@ public final class ProjectedEntityRenderer {
         if (move.moved) {
             if (move.relative) {
                 if (rotationChanged) {
-                    PacketEvents.getAPI().getPlayerManager().sendPacket(observer,
+                    sendCounted(observer,
                         new WrapperPlayServerEntityRelativeMoveAndRotation(state.fakeId, move.deltaX, move.deltaY, move.deltaZ, yaw, pitch, onGround));
                 } else {
-                    PacketEvents.getAPI().getPlayerManager().sendPacket(observer,
+                    sendCounted(observer,
                         new WrapperPlayServerEntityRelativeMove(state.fakeId, move.deltaX, move.deltaY, move.deltaZ, onGround));
                 }
                 return;
             }
-            PacketEvents.getAPI().getPlayerManager().sendPacket(observer,
+            sendCounted(observer,
                 new WrapperPlayServerEntityTeleport(state.fakeId, position, yaw, pitch, onGround));
             return;
         }
@@ -285,11 +506,11 @@ public final class ProjectedEntityRenderer {
     }
 
     private void sendHeadLook(Player observer, SpoofedEntity state, float yaw) {
-        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerEntityHeadLook(state.fakeId, yaw));
+        sendCounted(observer, new WrapperPlayServerEntityHeadLook(state.fakeId, yaw));
     }
 
     private void sendEntityRotation(Player observer, SpoofedEntity state, float yaw, float pitch, boolean onGround) {
-        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerEntityRotation(state.fakeId, yaw, pitch, onGround));
+        sendCounted(observer, new WrapperPlayServerEntityRotation(state.fakeId, yaw, pitch, onGround));
     }
 
     private void destroyHidden(Player observer) {
@@ -321,9 +542,9 @@ public final class ProjectedEntityRenderer {
 
         int[] trimmed = new int[count];
         System.arraycopy(ids, 0, trimmed, 0, count);
-        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerDestroyEntities(trimmed));
+        sendCounted(observer, new WrapperPlayServerDestroyEntities(trimmed));
         if (!playerInfos.isEmpty()) {
-            PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerPlayerInfoRemove(playerInfos));
+            sendCounted(observer, new WrapperPlayServerPlayerInfoRemove(playerInfos));
         }
     }
 
@@ -340,26 +561,29 @@ public final class ProjectedEntityRenderer {
                     players.add(state.fakeUuid);
                 }
             }
-            PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerDestroyEntities(ids));
+            sendCounted(observer, new WrapperPlayServerDestroyEntities(ids));
         }
         if (!players.isEmpty()) {
-            PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerPlayerInfoRemove(players));
+            sendCounted(observer, new WrapperPlayServerPlayerInfoRemove(players));
         }
     }
 
     private void sendEntityState(Player observer, Entity entity, SpoofedEntity state) {
-        sendEntityMetadata(observer, entity, state.fakeId);
+        sendEntityMetadata(observer, entity, state.fakeId, state.upsideDown);
         sendEntityEquipment(observer, entity, state.fakeId);
     }
 
-    private void sendEntityMetadata(Player observer, Entity entity, int fakeId) {
+    private void sendEntityMetadata(Player observer, Entity entity, int fakeId, boolean upsideDown) {
         if (metadataBridgeFailed) {
             return;
         }
         try {
             List<EntityData<?>> metadata = SpigotConversionUtil.getEntityMetadata(entity);
+            if (upsideDown) {
+                metadata = withUpsideDownMetadata(entity, metadata);
+            }
             if (!metadata.isEmpty()) {
-                PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerEntityMetadata(fakeId, metadata));
+                sendCounted(observer, new WrapperPlayServerEntityMetadata(fakeId, metadata));
             }
         } catch (RuntimeException ex) {
             metadataBridgeFailed = true;
@@ -368,59 +592,66 @@ public final class ProjectedEntityRenderer {
         }
     }
 
-    private void sendEntityEquipment(Player observer, Entity entity, int fakeId) {
-        if (!(entity instanceof LivingEntity)) {
-            return;
-        }
-        LivingEntity living = (LivingEntity) entity;
-        EntityEquipment equipment = living.getEquipment();
-        if (equipment == null) {
-            return;
-        }
-        List<Equipment> packetEquipment = new ArrayList<Equipment>(8);
-        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.HAND, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.MAIN_HAND);
-        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.OFF_HAND, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.OFF_HAND);
-        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.FEET, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.BOOTS);
-        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.LEGS, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.LEGGINGS);
-        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.CHEST, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.CHEST_PLATE);
-        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.HEAD, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.HELMET);
-        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.BODY, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.BODY);
-        addEquipment(packetEquipment, living, equipment, org.bukkit.inventory.EquipmentSlot.SADDLE, com.github.retrooper.packetevents.protocol.player.EquipmentSlot.SADDLE);
-        if (!packetEquipment.isEmpty()) {
-            PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerEntityEquipment(fakeId, packetEquipment));
-        }
-    }
-
-    private void addEquipment(List<Equipment> packetEquipment,
-                              LivingEntity living,
-                              EntityEquipment equipment,
-                              org.bukkit.inventory.EquipmentSlot bukkitSlot,
-                              com.github.retrooper.packetevents.protocol.player.EquipmentSlot packetSlot) {
-        if (!living.canUseEquipmentSlot(bukkitSlot)) {
-            return;
-        }
-        ItemStack item = equipment.getItem(bukkitSlot);
-        if (item == null) {
-            item = new ItemStack(Material.AIR);
-        }
-        com.github.retrooper.packetevents.protocol.item.ItemStack packetItem = SpigotConversionUtil.fromBukkitItemStack(item);
-        if (packetItem != null) {
-            packetEquipment.add(new Equipment(packetSlot, packetItem));
-        }
-    }
-
-    private void sendPlayerInfo(Player observer, Player player, SpoofedEntity state) {
-        UserProfile userProfile = new UserProfile(state.fakeUuid, limitedProfileName(player.getName()));
-        PlayerProfile playerProfile = player.getPlayerProfile();
-        if (playerProfile != null) {
-            for (ProfileProperty property : playerProfile.getProperties()) {
-                userProfile.getTextureProperties().add(new TextureProperty(property.getName(), property.getValue(), property.getSignature()));
+    private List<EntityData<?>> withUpsideDownMetadata(Entity entity, List<EntityData<?>> metadata) {
+        if (entity instanceof Player) {
+            List<EntityData<?>> patched = new ArrayList<EntityData<?>>(metadata.size() + 1);
+            byte skinParts = 0;
+            for (EntityData<?> data : metadata) {
+                if (data.getIndex() == PLAYER_SKIN_PARTS_INDEX && data.getValue() instanceof Byte) {
+                    skinParts = ((Byte) data.getValue()).byteValue();
+                    continue;
+                }
+                patched.add(data);
             }
+            patched.add(new EntityData<Byte>(PLAYER_SKIN_PARTS_INDEX, EntityDataTypes.BYTE, Byte.valueOf((byte) (skinParts | CAPE_PART_BIT))));
+            return patched;
+        }
+        if (!(entity instanceof LivingEntity)) {
+            return metadata;
+        }
+        List<EntityData<?>> patched = new ArrayList<EntityData<?>>(metadata.size() + 2);
+        for (EntityData<?> data : metadata) {
+            if (data.getIndex() == CUSTOM_NAME_INDEX || data.getIndex() == CUSTOM_NAME_VISIBLE_INDEX) {
+                continue;
+            }
+            patched.add(data);
+        }
+        if (!isFlipName(entity.getCustomName())) {
+            patched.add(new EntityData<Optional<Component>>(CUSTOM_NAME_INDEX, EntityDataTypes.OPTIONAL_ADV_COMPONENT, Optional.of(Component.text(FLIP_NAME))));
+            patched.add(new EntityData<Boolean>(CUSTOM_NAME_VISIBLE_INDEX, EntityDataTypes.BOOLEAN, Boolean.FALSE));
+        }
+        return patched;
+    }
+
+    private static boolean isFlipName(String name) {
+        return FLIP_NAME.equals(name) || FLIP_NAME_ALT.equals(name);
+    }
+
+    private void sendEntityEquipment(Player observer, Entity entity, int fakeId) {
+        List<Equipment> packetEquipment = PacketBlobs.collectEquipment(entity);
+        if (!packetEquipment.isEmpty()) {
+            sendCounted(observer, new WrapperPlayServerEntityEquipment(fakeId, packetEquipment));
+        }
+    }
+
+    private void sendPlayerInfo(Player observer, Player player, SpoofedEntity state, boolean upsideDown) {
+        if (upsideDown) {
+            ensureFlipTeam(observer);
+        }
+        UserProfile userProfile = new UserProfile(state.fakeUuid, profileName(player, upsideDown));
+        try {
+            UserProfile sourceProfile = PacketEvents.getAPI().getPlayerManager().getUser(player).getProfile();
+            if (sourceProfile != null) {
+                for (TextureProperty property : sourceProfile.getTextureProperties()) {
+                    userProfile.getTextureProperties().add(new TextureProperty(property.getName(), property.getValue(), property.getSignature()));
+                }
+            }
+        } catch (Throwable ignored) {
         }
         GameMode gameMode = SpigotConversionUtil.fromBukkitGameMode(player.getGameMode());
         WrapperPlayServerPlayerInfoUpdate.PlayerInfo info = new WrapperPlayServerPlayerInfoUpdate.PlayerInfo(
             userProfile, false, player.getPing(), gameMode, null, null, 0, true);
-        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, new WrapperPlayServerPlayerInfoUpdate(
+        sendCounted(observer, new WrapperPlayServerPlayerInfoUpdate(
             EnumSet.of(WrapperPlayServerPlayerInfoUpdate.Action.ADD_PLAYER,
                 WrapperPlayServerPlayerInfoUpdate.Action.UPDATE_GAME_MODE,
                 WrapperPlayServerPlayerInfoUpdate.Action.UPDATE_LISTED,
@@ -429,12 +660,41 @@ public final class ProjectedEntityRenderer {
             info));
     }
 
+    private String profileName(Player player, boolean upsideDown) {
+        String name = player.getName();
+        if (upsideDown) {
+            return isFlipName(name) ? NEUTRAL_PROFILE_NAME : FLIP_NAME;
+        }
+        return limitedProfileName(name);
+    }
+
     private String limitedProfileName(String name) {
-        String safe = name == null || name.isBlank() ? "PortalPlayer" : name;
+        String safe = name == null || name.isBlank() ? NEUTRAL_PROFILE_NAME : name;
         if (safe.length() <= 16) {
             return safe;
         }
         return safe.substring(0, 16);
+    }
+
+    private void ensureFlipTeam(Player observer) {
+        if (flipTeamSent) {
+            return;
+        }
+        WrapperPlayServerTeams.ScoreBoardTeamInfo info = new WrapperPlayServerTeams.ScoreBoardTeamInfo(
+            Component.empty(), Component.empty(), Component.empty(),
+            WrapperPlayServerTeams.NameTagVisibility.NEVER,
+            WrapperPlayServerTeams.CollisionRule.NEVER,
+            NamedTextColor.WHITE,
+            WrapperPlayServerTeams.OptionData.NONE);
+        sendCounted(observer, new WrapperPlayServerTeams(FLIP_TEAM_NAME, WrapperPlayServerTeams.TeamMode.CREATE, info, FLIP_NAME));
+        flipTeamSent = true;
+    }
+
+    private void destroySingleSpoof(Player observer, SpoofedEntity state) {
+        sendCounted(observer, new WrapperPlayServerDestroyEntities(state.fakeId));
+        if (state.playerEntry) {
+            sendCounted(observer, new WrapperPlayServerPlayerInfoRemove(List.of(state.fakeUuid)));
+        }
     }
 
     private void hideLocalEntities(Player observer, ILocalPortal localPortal, Frustum4D frustum, double range, double projectionDepth) {
@@ -610,6 +870,8 @@ public final class ProjectedEntityRenderer {
         private final int fakeId;
         private final UUID fakeUuid;
         private final boolean playerEntry;
+        private final boolean upsideDown;
+        private int remoteStateVersion = -1;
         private float yaw;
         private float pitch;
         private double velocityX;
@@ -623,10 +885,11 @@ public final class ProjectedEntityRenderer {
         private boolean positionKnown;
         private int metadataRefreshPasses;
 
-        private SpoofedEntity(int fakeId, UUID fakeUuid, boolean playerEntry) {
+        private SpoofedEntity(int fakeId, UUID fakeUuid, boolean playerEntry, boolean upsideDown) {
             this.fakeId = fakeId;
             this.fakeUuid = fakeUuid;
             this.playerEntry = playerEntry;
+            this.upsideDown = upsideDown;
             this.yaw = 0.0F;
             this.pitch = 0.0F;
             this.velocityX = 0.0D;

@@ -19,7 +19,6 @@ import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.util.Vector;
-import io.papermc.paper.entity.TeleportFlag;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.title.Title;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
@@ -184,7 +183,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 			if(hasTunnel() && !getTunnel().isValid())
 			{
-				tunnel = null;
+				if(getTunnel().getTunnelType() != TunnelType.UNIVERSAL)
+				{
+					tunnel = null;
+				}
+
 				close();
 			}
 		}
@@ -193,7 +196,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		{
 			playEffect(PortalEffect.AMBIENT_CLOSED);
 
-			if(hasTunnel() || projectionMode == ProjectionMode.MIRROR)
+			if((hasTunnel() && getTunnel().isValid()) || projectionMode == ProjectionMode.MIRROR)
 			{
 				open();
 			}
@@ -287,7 +290,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void setOpen(boolean open)
 	{
-		if(this.open != open)
+		boolean changed = this.open != open;
+		if(changed)
 		{
 			if(open)
 			{
@@ -301,6 +305,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 
 		this.open = open;
+
+		if(changed && isGateway() && Wormholes.portalSyncService != null)
+		{
+			Wormholes.portalSyncService.broadcastPortal(this);
+		}
 	}
 
 	public void phase(Axis a, ParticleEffect e, Location l, float scale)
@@ -634,18 +643,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 			Location target = exit.clone().add(dx.toVector().normalize().multiply(1.25));
 			target.setDirection(outLook);
-			if(p instanceof Player)
-			{
-				p.teleport(target, PlayerTeleportEvent.TeleportCause.PLUGIN,
-					TeleportFlag.Relative.VELOCITY_X,
-					TeleportFlag.Relative.VELOCITY_Y,
-					TeleportFlag.Relative.VELOCITY_Z);
-			}
-			else
-			{
-				p.teleport(target, PlayerTeleportEvent.TeleportCause.PLUGIN);
-			}
+			p.teleport(target, PlayerTeleportEvent.TeleportCause.PLUGIN);
 			p.setVelocity(outVelocity);
+			art.arcane.wormholes.service.WormholesTelemetry.countTraversal();
 			markTeleportCooldown(p.getUniqueId(), System.currentTimeMillis());
 			playEffect(PortalEffect.PUSH, exit);
 
@@ -661,6 +661,28 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				p.sendMessage("MOT: " + "(" + F.f(t.getInVelocity().getX(), 1) + ", " + F.f(t.getInVelocity().getY(), 1) + ", " + F.f(t.getInVelocity().getZ(), 1) + ") -> (" + F.f(outVelocity.getX(), 1) + ", " + F.f(outVelocity.getY(), 1) + ", " + F.f(outVelocity.getZ(), 1) + ")");
 			}
 		}
+	}
+
+	@Override
+	public Location computeExitTarget(Traversive t)
+	{
+		Vector outVelocity = t.getOutVelocity(getFrame());
+		Vector outLook = t.getOutLook(getFrame());
+		Direction dx = Direction.closest(outVelocity);
+		Location exit = t.getOutPoint(getFrame(), getOrigin()).toLocation(getStructure().getWorld());
+		Location target = exit.clone().add(dx.toVector().normalize().multiply(1.25));
+		target.setDirection(outLook);
+		return target;
+	}
+
+	@Override
+	public void completeRemoteArrival(Entity entity, Traversive t)
+	{
+		Vector outVelocity = t.getOutVelocity(getFrame());
+		entity.setVelocity(outVelocity);
+		markTeleportCooldown(entity.getUniqueId(), System.currentTimeMillis());
+		art.arcane.wormholes.service.WormholesTelemetry.countTraversal();
+		playEffect(PortalEffect.PUSH, entity.getLocation());
 	}
 
 	static boolean isTeleportCoolingDown(UUID entityId, long now)
@@ -737,6 +759,13 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		{
 			throw new RuntimeException("Unable to determine identity of new destination!");
 		}
+	}
+
+	@Override
+	public void linkRemote(String serverName, UUID portalId)
+	{
+		tunnel = new UniversalTunnel(serverName, portalId);
+		save();
 	}
 
 	@Override
@@ -821,6 +850,50 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					destroy();
 				}));
 		//@done
+
+		if(isGateway())
+		{
+			//@builder
+			window.setElement(-1, 2, new UIElement("export-portal")
+					.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Export")
+					.addLore(ChatColor.GRAY + "Get a portal code to paste into")
+					.addLore(ChatColor.GRAY + "another server's Import button.")
+					.setMaterial(new MaterialBlock(Material.PAPER))
+					.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () ->
+					{
+						window.close();
+
+						if(Wormholes.importExportService != null)
+						{
+							Wormholes.importExportService.exportToChat(p, LocalPortal.this);
+						}
+					})))
+			.setElement(1, 2, new UIElement("import-portal")
+					.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Import")
+					.addLore(ChatColor.GRAY + "Paste a portal code from another")
+					.addLore(ChatColor.GRAY + "server to link this gateway to it.")
+					.setMaterial(new MaterialBlock(Material.WRITABLE_BOOK))
+					.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () ->
+					{
+						window.close();
+						p.closeInventory();
+						p.sendMessage(ChatColor.AQUA + "Paste the portal code in chat (or 'cancel'):");
+						Wormholes.awaitChatInput(p, (text) ->
+						{
+							if(text == null || text.equalsIgnoreCase("cancel"))
+							{
+								uiOpenPortalMenu(p);
+								return;
+							}
+
+							if(Wormholes.importExportService != null)
+							{
+								Wormholes.importExportService.importCode(p, LocalPortal.this, text);
+							}
+						});
+					})));
+			//@done
+		}
 
 		return window;
 	}
@@ -1041,7 +1114,55 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			pos++;
 		}
 
+		if(isGateway() && Wormholes.remotePortalRegistry != null)
+		{
+			for(RemotePortal i : Wormholes.remotePortalRegistry.all())
+			{
+				if(i.getType() != PortalType.GATEWAY)
+				{
+					continue;
+				}
+
+				final RemotePortal target = i;
+				boolean linked = isLinkedToRemote(target);
+				//@builder
+				window.setElement(window.getPosition(pos), window.getRow(pos), new UIElement("remote-portal-" + pos)
+						.setMaterial(new MaterialBlock(Material.END_CRYSTAL))
+						.setEnchanted(linked)
+						.setName(ChatColor.LIGHT_PURPLE + "" + target.getName())
+						.addLore(ChatColor.GRAY + "on server " + ChatColor.WHITE + target.getServer().getName())
+						.addLore(ChatColor.GRAY + "at " + target.getOrigin().getBlockX() + ", " + target.getOrigin().getBlockY() + ", " + target.getOrigin().getBlockZ() + " in " + target.getServer().getWorld() + " Facing " + target.getDirection().toString())
+						.addLore(target.isOpen() ? ChatColor.GREEN + "Open" : ChatColor.RED + "Closed")
+						.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () -> {
+							window.close();
+
+							if(isLinkedToRemote(target))
+							{
+								tunnel = null;
+								save();
+							}
+							else
+							{
+								setDestination(target);
+							}
+						})));
+				//@done
+				pos++;
+			}
+		}
+
 		window.setVisible(true);
+	}
+
+	private boolean isLinkedToRemote(RemotePortal target)
+	{
+		if(!(tunnel instanceof UniversalTunnel universal))
+		{
+			return false;
+		}
+
+		return target.getServer().getName().equals(universal.getServerName())
+			&& target.getId().equals(universal.getDestinationId());
 	}
 
 	@Override
@@ -1367,6 +1488,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		Component subtitle = LegacyComponentSerializer.legacySection().deserialize(legacy);
 		Title.Times times = Title.Times.times(Duration.ZERO, Duration.ofMillis(100), Duration.ofMillis(150));
 		Title title = Title.title(Component.empty(), subtitle, times);
-		player.showTitle(title);
+		Wormholes.showTitle(player, title);
 	}
 }

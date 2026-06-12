@@ -5,22 +5,38 @@ import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.volmlib.util.scheduling.SchedulerBridge;
 import art.arcane.volmlib.util.scheduling.SchedulerRuntime;
 import art.arcane.wormholes.config.WormholesSettings;
+import art.arcane.wormholes.network.ImportExportService;
+import art.arcane.wormholes.network.NetworkManager;
+import art.arcane.wormholes.network.NetworkRouter;
+import art.arcane.wormholes.network.PlayerTransfer;
+import art.arcane.wormholes.network.PortalSyncService;
+import art.arcane.wormholes.network.RemotePortalRegistry;
+import art.arcane.wormholes.network.TransferGate;
+import art.arcane.wormholes.network.TraversalService;
+import art.arcane.wormholes.network.view.RemoteViewCache;
+import art.arcane.wormholes.network.view.ViewServer;
+import art.arcane.wormholes.network.view.ViewSubscriptionManager;
+import art.arcane.wormholes.util.J;
 import art.arcane.wormholes.service.WormholesCommandService;
+import art.arcane.wormholes.service.WormholesIntegrationService;
 import art.arcane.wormholes.util.common.SplashScreen;
 import art.arcane.wormholes.util.project.config.HotloadManager;
 import com.github.retrooper.packetevents.PacketEvents;
 import com.github.retrooper.packetevents.settings.PacketEventsSettings;
 import io.github.retrooper.packetevents.factory.spigot.SpigotPacketEventsBuilder;
-import io.papermc.paper.event.player.AsyncChatEvent;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import net.kyori.adventure.platform.bukkit.BukkitAudiences;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.title.Title;
 import org.bstats.bukkit.Metrics;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.UUID;
@@ -37,12 +53,21 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     public static String tag = ChatColor.DARK_GRAY + "[" + ChatColor.GRAY + "Wormholes" + ChatColor.DARK_GRAY + "] " + ChatColor.GRAY;
 
     public static volatile WormholesSettings settings;
+    private static volatile BukkitAudiences audiences;
     public static volatile BlockManager blockManager;
     public static volatile EffectManager effectManager;
     public static volatile ConstructionManager constructionManager;
     public static volatile PortalManager portalManager;
     public static volatile TraversableManager traversableManager;
     public static volatile ProjectionManager projectionManager;
+    public static volatile NetworkManager networkManager;
+    public static volatile RemotePortalRegistry remotePortalRegistry;
+    public static volatile PortalSyncService portalSyncService;
+    public static volatile TraversalService traversalService;
+    public static volatile RemoteViewCache remoteViewCache;
+    public static volatile ViewSubscriptionManager viewSubscriptions;
+    public static volatile ViewServer viewServer;
+    public static volatile ImportExportService importExportService;
 
     private static final ConcurrentHashMap<UUID, Consumer<String>> CHAT_INPUTS = new ConcurrentHashMap<>();
 
@@ -50,6 +75,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     private SchedulerRuntime schedulerRuntime;
     private Metrics metrics;
     private WormholesCommandService commandService;
+    private WormholesIntegrationService integrationService;
     private HotloadManager hotloadManager;
     private boolean packetEventsLoaded = false;
 
@@ -78,6 +104,8 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             PacketEvents.getAPI().init();
             packetEventsLoaded = true;
 
+            audiences = BukkitAudiences.create(this);
+
             blockManager = new BlockManager();
             effectManager = new EffectManager();
             constructionManager = new ConstructionManager();
@@ -93,8 +121,38 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             getServer().getPluginManager().registerEvents(projectionManager, this);
             getServer().getPluginManager().registerEvents(new ChatInputListener(), this);
 
+            remotePortalRegistry = new RemotePortalRegistry();
+            networkManager = new NetworkManager(getLogger(), settings.getNetwork(), Bukkit.getMinecraftVersion(), getPluginMeta().getVersion(), Bukkit.getPort());
+            importExportService = new ImportExportService(networkManager);
+            portalSyncService = new PortalSyncService(
+                networkManager,
+                () -> portalManager.getLocalPortals(),
+                runnable -> FoliaScheduler.runGlobal(this, runnable)
+            );
+            traversalService = new TraversalService(networkManager);
+            remoteViewCache = new RemoteViewCache();
+            viewSubscriptions = new ViewSubscriptionManager(networkManager, remoteViewCache);
+            viewServer = new ViewServer(networkManager);
+            NetworkRouter networkRouter = new NetworkRouter(remotePortalRegistry, portalSyncService, traversalService, viewServer, remoteViewCache, viewSubscriptions);
+            networkManager.setMessageSink(networkRouter::onMessage);
+            networkManager.setPeerStateSink(networkRouter::onPeerState);
+            getServer().getPluginManager().registerEvents(traversalService, this);
+            getServer().getPluginManager().registerEvents(viewServer, this);
+            getServer().getMessenger().registerOutgoingPluginChannel(this, PlayerTransfer.PROXY_CHANNEL);
+            PacketEvents.getAPI().getEventManager().registerListener(new TransferGate());
+            networkManager.start();
+            J.ar(() -> {
+                ViewSubscriptionManager subscriptions = viewSubscriptions;
+                if (subscriptions != null) {
+                    subscriptions.sweep();
+                }
+            }, 100);
+
             commandService = new WormholesCommandService(this);
             commandService.register();
+
+            integrationService = new WormholesIntegrationService();
+            integrationService.register();
 
             hotloadManager = new HotloadManager(getDataFolder().toPath(), getLogger(), this::onConfigHotReload);
             hotloadManager.start();
@@ -111,6 +169,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
 
     @Override
     public void onDisable() {
+        unregisterIntegrationService();
         if (schedulerRuntime != null) {
             schedulerRuntime.cancelPluginTasks();
         }
@@ -121,11 +180,19 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     @Override
     public void onPreUnload(ReloadAware.PreUnloadReason reason) {
         getLogger().info("BileTools pre-unload hook fired (" + reason + "). Tearing down Wormholes managers and PacketEvents.");
+        unregisterIntegrationService();
         if (schedulerRuntime != null) {
             schedulerRuntime.cancelPluginTasks();
         }
         FoliaScheduler.cancelTasks(this);
         drain();
+    }
+
+    private void unregisterIntegrationService() {
+        if (integrationService != null) {
+            integrationService.unregister();
+            integrationService = null;
+        }
     }
 
     public void reloadAll() {
@@ -166,6 +233,14 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
                 getLogger().log(Level.WARNING, "CommandService cache invalidation failed", ex);
             }
         }
+        NetworkManager activeNetwork = networkManager;
+        if (activeNetwork != null) {
+            try {
+                activeNetwork.applyConfig(reloaded.getNetwork());
+            } catch (Throwable ex) {
+                getLogger().log(Level.WARNING, "NetworkManager rejected hot-reload notification", ex);
+            }
+        }
         getLogger().info("Configuration hot-reloaded.");
     }
 
@@ -201,6 +276,10 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         return projectionManager;
     }
 
+    public NetworkManager getNetworkManager() {
+        return networkManager;
+    }
+
     public void registerListener(Listener listener) {
         getServer().getPluginManager().registerEvents(listener, this);
     }
@@ -233,6 +312,31 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         instance.getLogger().severe(message);
     }
 
+    public static BukkitAudiences audiences() {
+        return audiences;
+    }
+
+    public static void sendActionBar(Player player, Component component) {
+        BukkitAudiences a = audiences;
+        if (a != null && player != null && component != null) {
+            a.player(player).sendActionBar(component);
+        }
+    }
+
+    public static void showTitle(Player player, Title title) {
+        BukkitAudiences a = audiences;
+        if (a != null && player != null && title != null) {
+            a.player(player).showTitle(title);
+        }
+    }
+
+    public static void sendMessage(CommandSender sender, Component component) {
+        BukkitAudiences a = audiences;
+        if (a != null && sender != null && component != null) {
+            a.sender(sender).sendMessage(component);
+        }
+    }
+
     public static void awaitChatInput(Player player, Consumer<String> callback) {
         if (player == null || callback == null) {
             return;
@@ -242,15 +346,15 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
 
     private static final class ChatInputListener implements Listener {
         @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
-        public void onChat(AsyncChatEvent event) {
+        public void onChat(AsyncPlayerChatEvent event) {
             UUID id = event.getPlayer().getUniqueId();
             Consumer<String> consumer = CHAT_INPUTS.remove(id);
             if (consumer == null) {
                 return;
             }
             event.setCancelled(true);
-            String text = PlainTextComponentSerializer.plainText().serialize(event.message());
-            Bukkit.getScheduler().runTask(Wormholes.instance, () -> consumer.accept(text));
+            String text = event.getMessage();
+            FoliaScheduler.runEntity(Wormholes.instance, event.getPlayer(), () -> consumer.accept(text));
         }
     }
 
@@ -304,6 +408,22 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         }
 
         try {
+            if (viewServer != null) {
+                viewServer.shutdown();
+            }
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "Error during ViewServer shutdown", ex);
+        }
+
+        try {
+            if (networkManager != null) {
+                networkManager.stop();
+            }
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "Error during NetworkManager shutdown", ex);
+        }
+
+        try {
             if (projectionManager != null) {
                 projectionManager.shutdown();
             }
@@ -344,6 +464,15 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
                 getLogger().log(Level.WARNING, "Error during bStats shutdown", ex);
             }
             metrics = null;
+        }
+
+        if (audiences != null) {
+            try {
+                audiences.close();
+            } catch (Throwable ex) {
+                getLogger().log(Level.WARNING, "Error closing Adventure audiences", ex);
+            }
+            audiences = null;
         }
     }
 }

@@ -17,6 +17,7 @@ import art.arcane.volmlib.util.director.theme.DirectorThemes;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.commands.CommandWormholes;
 import art.arcane.wormholes.util.common.cache.AtomicCache;
+import net.kyori.adventure.platform.bukkit.BukkitAudiences;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
@@ -230,16 +231,10 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
         }
 
         Component component = MINI_MESSAGE.deserialize(miniMessage);
-        try {
-            sender.getClass().getMethod("sendRichMessage", String.class).invoke(sender, miniMessage);
+        BukkitAudiences audiences = Wormholes.audiences();
+        if (audiences != null) {
+            audiences.sender(sender).sendMessage(component);
             return;
-        } catch (Throwable ignored) {
-        }
-
-        try {
-            sender.getClass().getMethod("sendMessage", Component.class).invoke(sender, component);
-            return;
-        } catch (Throwable ignored) {
         }
 
         sender.sendMessage(LEGACY_SERIALIZER.serialize(component));

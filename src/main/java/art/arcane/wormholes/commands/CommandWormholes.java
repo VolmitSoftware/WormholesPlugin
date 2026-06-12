@@ -8,35 +8,18 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 
-@Director(name = "wormholes", aliases = {"wh", "wormhole", "worm", "whole", "portal", "w"}, description = "Wormholes command root")
+@Director(name = "wormholes", aliases = {"wh"}, description = "Wormholes command root")
 public class CommandWormholes {
     private final Wormholes plugin;
+    private CommandNetwork network = new CommandNetwork();
 
     public CommandWormholes(Wormholes plugin) {
         this.plugin = plugin;
     }
 
-    @Director(name = "wand", sync = true, description = "Give yourself a portal wand and one starter rune")
-    public void wand(@Param(name = "sender", contextual = true) CommandSender sender) {
-        if (!sender.hasPermission("wormholes.admin.items")) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
-            return;
-        }
-        if (!(sender instanceof Player player)) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Only players can receive items.");
-            return;
-        }
-        ItemStack wand = Wormholes.blockManager.getWand();
-        ItemStack wormholeRune = Wormholes.blockManager.getWormholeRune(1);
-        player.getInventory().addItem(wand, wormholeRune);
-        player.sendMessage(Wormholes.tag + ChatColor.GREEN + "Portal Wand and 1 Wormhole Rune granted.");
-        player.sendMessage(Wormholes.tag + ChatColor.GRAY + "Build TWO solid wormhole-rune rectangles, link them, and stand within 16 blocks to see the projection.");
-        player.sendMessage(Wormholes.tag + ChatColor.GRAY + "Run " + ChatColor.WHITE + "/wormholes info" + ChatColor.GRAY + " for the full step-by-step.");
-    }
-
-    @Director(name = "rune", aliases = {"runes"}, sync = true, description = "Give yourself portal runes")
-    public void rune(@Param(name = "sender", contextual = true) CommandSender sender,
-                     @Param(name = "type", description = "portal | wormhole | gateway") String type,
+    @Director(name = "wand", sync = true, description = "Give yourself the portal wand, or runes with rune=<type>")
+    public void wand(@Param(name = "sender", contextual = true) CommandSender sender,
+                     @Param(name = "rune", description = "portal | wormhole | gateway", defaultValue = "none") String rune,
                      @Param(name = "count", description = "How many runes (default 1)", defaultValue = "1") int count) {
         if (!sender.hasPermission("wormholes.admin.items")) {
             sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
@@ -47,26 +30,33 @@ public class CommandWormholes {
             return;
         }
 
-        int safeCount = Math.max(1, Math.min(count, 64));
-        ItemStack rune;
-        String typeLower = type == null ? "portal" : type.toLowerCase();
-        switch (typeLower) {
-            case "wormhole":
-                rune = Wormholes.blockManager.getWormholeRune(safeCount);
-                break;
-            case "gateway":
-                rune = Wormholes.blockManager.getGatewayRune(safeCount);
-                break;
-            case "portal":
-            default:
-                rune = Wormholes.blockManager.getPortalRune(safeCount);
-                break;
+        String runeType = rune == null ? "none" : rune.toLowerCase();
+        if (!runeType.equals("none")) {
+            int safeCount = Math.max(1, Math.min(count, 64));
+            ItemStack runes = switch (runeType) {
+                case "portal" -> Wormholes.blockManager.getPortalRune(safeCount);
+                case "wormhole" -> Wormholes.blockManager.getWormholeRune(safeCount);
+                case "gateway" -> Wormholes.blockManager.getGatewayRune(safeCount);
+                default -> null;
+            };
+            if (runes == null) {
+                sender.sendMessage(Wormholes.tag + ChatColor.RED + "Unknown rune type '" + runeType + "'. Use portal, wormhole, or gateway.");
+                return;
+            }
+            player.getInventory().addItem(runes);
+            player.sendMessage(Wormholes.tag + ChatColor.GREEN + "Granted " + ChatColor.WHITE + safeCount + " " + runeType + ChatColor.GREEN + " rune" + (safeCount == 1 ? "." : "s."));
+            return;
         }
-        player.getInventory().addItem(rune);
-        player.sendMessage(Wormholes.tag + ChatColor.GREEN + "Granted " + ChatColor.WHITE + safeCount + " " + typeLower + ChatColor.GREEN + " rune" + (safeCount == 1 ? "." : "s."));
+
+        ItemStack wand = Wormholes.blockManager.getWand();
+        ItemStack wormholeRune = Wormholes.blockManager.getWormholeRune(1);
+        player.getInventory().addItem(wand, wormholeRune);
+        player.sendMessage(Wormholes.tag + ChatColor.GREEN + "Portal Wand and 1 Wormhole Rune granted.");
+        player.sendMessage(Wormholes.tag + ChatColor.GRAY + "Build TWO solid wormhole-rune rectangles, link them, and stand within 16 blocks to see the projection.");
+        player.sendMessage(Wormholes.tag + ChatColor.GRAY + "Run " + ChatColor.WHITE + "/wormholes info" + ChatColor.GRAY + " for the full step-by-step.");
     }
 
-    @Director(name = "reload", aliases = {"rl"}, sync = true, description = "Reload Wormholes configuration")
+    @Director(name = "reload", sync = true, description = "Reload Wormholes configuration")
     public void reload(@Param(name = "sender", contextual = true) CommandSender sender) {
         if (!sender.hasPermission("wormholes.admin.reload")) {
             sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
@@ -76,37 +66,7 @@ public class CommandWormholes {
         sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Wormholes configuration reloaded.");
     }
 
-    @Director(name = "reset", aliases = {"deleteall", "delete-all", "clear"}, sync = true, description = "Delete every saved portal and clear active projections")
-    public void reset(@Param(name = "sender", contextual = true) CommandSender sender) {
-        if (!sender.hasPermission("wormholes.admin.reset")) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
-            return;
-        }
-        if (Wormholes.portalManager == null) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "PortalManager is not ready.");
-            return;
-        }
-        int removed = Wormholes.portalManager.deleteAllPortals();
-        sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Deleted " + ChatColor.WHITE + removed + ChatColor.GREEN + " portals and cleared projection state.");
-    }
-
-    @Director(name = "debug", sync = true, description = "Dump live projection diagnostics")
-    public void debug(@Param(name = "sender", contextual = true) CommandSender sender) {
-        if (!sender.hasPermission("wormholes.admin.reload")) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
-            return;
-        }
-        if (Wormholes.projectionManager == null) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "ProjectionManager is null.");
-            return;
-        }
-        String dump = Wormholes.projectionManager.dumpDiagnostics();
-        for (String line : dump.split("\n")) {
-            sender.sendMessage(ChatColor.GRAY + line);
-        }
-    }
-
-    @Director(name = "info", aliases = {"guide", "instructions"}, sync = true, description = "Show portal building instructions")
+    @Director(name = "info", sync = true, description = "Show portal building instructions")
     public void info(@Param(name = "sender", contextual = true) CommandSender sender) {
         sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "" + ChatColor.BOLD + "How to build a Wormhole");
         sender.sendMessage(ChatColor.DARK_GRAY + "1. " + ChatColor.GRAY + "Run " + ChatColor.WHITE + "/wormholes wand" + ChatColor.GRAY + " to receive the wand and 1 wormhole rune.");
@@ -120,7 +80,6 @@ public class CommandWormholes {
         sender.sendMessage(ChatColor.GRAY + "   Choose " + ChatColor.WHITE + "Link" + ChatColor.GRAY + " then click the other portal in the list. Repeat from the other side.");
         sender.sendMessage(ChatColor.GRAY + "   Sneak + click the portal opens the configs menu (Mode, Direction, Flip Face, rotation).");
         sender.sendMessage(ChatColor.DARK_GRAY + "6. " + ChatColor.GRAY + "Stand within 16 blocks of either portal — the destination world will project through the frame and walking in teleports you.");
-        sender.sendMessage(ChatColor.GRAY + "Need more runes? " + ChatColor.WHITE + "/wormholes rune <portal|wormhole|gateway> [count]");
-        sender.sendMessage(ChatColor.GRAY + "Admin reset: " + ChatColor.WHITE + "/wormholes reset" + ChatColor.GRAY + " deletes all saved portals.");
+        sender.sendMessage(ChatColor.GRAY + "Need more runes? " + ChatColor.WHITE + "/wormholes wand rune=<portal|wormhole|gateway> count=<n>");
     }
 }

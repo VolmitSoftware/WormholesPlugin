@@ -16,7 +16,7 @@ public final class HotloadManager {
     private static final long POLL_INTERVAL_MS = 200L;
     private static final long STABILITY_WINDOW_MS = 350L;
     private static final long STOP_JOIN_TIMEOUT_MS = 2_000L;
-    private static final String[] WATCHED_FILES = {"main.toml", "projection.toml", "render.toml", "advanced.toml"};
+    private static final String[] WATCHED_FILES = {"main.toml", "projection.toml", "render.toml", "advanced.toml", "network.toml"};
 
     private final Path dataFolder;
     private final Path configDir;

@@ -59,12 +59,15 @@ public final class TomlCodec {
 
         List<Field> simple = new ArrayList<>();
         List<Field> sections = new ArrayList<>();
+        List<Field> tableLists = new ArrayList<>();
         for (Field f : type.getDeclaredFields()) {
             if (Modifier.isStatic(f.getModifiers()) || Modifier.isTransient(f.getModifiers())) {
                 continue;
             }
             f.setAccessible(true);
-            if (isSection(f.getType())) {
+            if (isSectionList(f)) {
+                tableLists.add(f);
+            } else if (isSection(f.getType())) {
                 sections.add(f);
             } else {
                 simple.add(f);
@@ -95,6 +98,33 @@ public final class TomlCodec {
                     }
                     sf.setAccessible(true);
                     writeField(out, sf, section, "");
+                }
+            }
+            for (Field f : tableLists) {
+                String name = toTomlKey(f.getName());
+                out.append('\n');
+                ConfigDescription desc = f.getAnnotation(ConfigDescription.class);
+                if (desc != null) {
+                    for (String line : desc.value()) {
+                        out.append("# ").append(line).append('\n');
+                    }
+                }
+                List<?> entries = (List<?>) f.get(instance);
+                if (entries == null) {
+                    continue;
+                }
+                for (Object entry : entries) {
+                    if (entry == null) {
+                        continue;
+                    }
+                    out.append("[[").append(name).append("]]\n");
+                    for (Field ef : entry.getClass().getDeclaredFields()) {
+                        if (Modifier.isStatic(ef.getModifiers()) || Modifier.isTransient(ef.getModifiers())) {
+                            continue;
+                        }
+                        ef.setAccessible(true);
+                        writeField(out, ef, entry, "");
+                    }
                 }
             }
         } catch (IllegalAccessException e) {
@@ -190,6 +220,22 @@ public final class TomlCodec {
             }
             f.setAccessible(true);
             String key = toTomlKey(f.getName());
+
+            if (isSectionList(f)) {
+                List<Toml> tables = toml.getTables(key);
+                if (tables == null) {
+                    continue;
+                }
+                Class<?> elementType = sectionListElementType(f);
+                List<Object> entries = new ArrayList<>(tables.size());
+                for (Toml table : tables) {
+                    Object entry = elementType.getDeclaredConstructor().newInstance();
+                    applyTomlSection(table, entry);
+                    entries.add(entry);
+                }
+                f.set(target, entries);
+                continue;
+            }
 
             if (isSection(f.getType())) {
                 Toml sub = toml.getTable(key);
@@ -324,7 +370,29 @@ public final class TomlCodec {
         if (Number.class.isAssignableFrom(type) || type == Boolean.class) {
             return false;
         }
+        if (List.class.isAssignableFrom(type)) {
+            return false;
+        }
         return type.getPackageName().startsWith("art.arcane.wormholes");
+    }
+
+    private static boolean isSectionList(Field f) {
+        if (!List.class.isAssignableFrom(f.getType())) {
+            return false;
+        }
+        Class<?> elementType = sectionListElementType(f);
+        return elementType != null && isSection(elementType);
+    }
+
+    private static Class<?> sectionListElementType(Field f) {
+        if (!(f.getGenericType() instanceof java.lang.reflect.ParameterizedType parameterized)) {
+            return null;
+        }
+        java.lang.reflect.Type[] arguments = parameterized.getActualTypeArguments();
+        if (arguments.length != 1 || !(arguments[0] instanceof Class<?> element)) {
+            return null;
+        }
+        return element;
     }
 
     private static void atomicWrite(Path target, String content) throws IOException {

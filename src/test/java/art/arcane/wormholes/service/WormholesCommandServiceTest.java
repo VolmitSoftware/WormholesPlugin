@@ -9,34 +9,31 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 class WormholesCommandServiceTest {
     @Test
     void normalizeHelpArgsKeepsLegacyHelpSpellings() {
         assertArrayEquals(new String[]{"help=1"}, WormholesCommandService.normalizeHelpArgs(new String[]{"help"}));
         assertArrayEquals(new String[]{"help=2"}, WormholesCommandService.normalizeHelpArgs(new String[]{"?", "2"}));
-        assertArrayEquals(new String[]{"rune", "help=3"}, WormholesCommandService.normalizeHelpArgs(new String[]{"rune", "help", "3"}));
-        assertArrayEquals(new String[]{"rune", "portal"}, WormholesCommandService.normalizeHelpArgs(new String[]{"rune", "portal"}));
+        assertArrayEquals(new String[]{"wand", "help=3"}, WormholesCommandService.normalizeHelpArgs(new String[]{"wand", "help", "3"}));
+        assertArrayEquals(new String[]{"wand", "rune=portal"}, WormholesCommandService.normalizeHelpArgs(new String[]{"wand", "rune=portal"}));
     }
 
     @Test
-    void directorTreeIncludesRootAliasesAndFlatCommands() {
+    void directorTreeIncludesRootAliasAndFlatCommands() {
         DirectorRuntimeEngine engine = DirectorEngineFactory.create(new CommandWormholes(null));
         DirectorRuntimeNode root = engine.getRoot();
 
-        assertTrue(root.getDescriptor().getAliases().containsAll(List.of("wh", "wormhole", "worm", "whole", "portal", "w")));
+        assertEquals(List.of("wh"), List.copyOf(root.getDescriptor().getAliases()));
         assertNotNull(findChild(root, "wand"));
-        assertNotNull(findChild(root, "rune"));
         assertNotNull(findChild(root, "reload"));
-        assertNotNull(findChild(root, "reset"));
-        assertNotNull(findChild(root, "debug"));
         assertNotNull(findChild(root, "info"));
-
-        assertTrue(findChild(root, "rune").getDescriptor().getAliases().contains("runes"));
-        assertTrue(findChild(root, "reload").getDescriptor().getAliases().contains("rl"));
-        assertTrue(findChild(root, "info").getDescriptor().getAliases().containsAll(List.of("guide", "instructions")));
+        assertNull(findChild(root, "rune"));
+        assertNull(findChild(root, "reset"));
+        assertNull(findChild(root, "debug"));
     }
 
     private DirectorRuntimeNode findChild(DirectorRuntimeNode root, String name) {

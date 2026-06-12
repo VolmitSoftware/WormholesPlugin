@@ -2,6 +2,7 @@ package art.arcane.wormholes.config;
 
 import art.arcane.wormholes.config.toml.AdvancedConfig;
 import art.arcane.wormholes.config.toml.MainConfig;
+import art.arcane.wormholes.config.toml.NetworkConfig;
 import art.arcane.wormholes.config.toml.ProjectionConfig;
 import art.arcane.wormholes.config.toml.RenderConfig;
 import art.arcane.wormholes.util.project.config.TomlCodec;
@@ -14,12 +15,14 @@ public final class WormholesSettings {
     private final ProjectionConfig projection;
     private final RenderConfig render;
     private final AdvancedConfig advanced;
+    private final NetworkConfig network;
 
-    public WormholesSettings(MainConfig main, ProjectionConfig projection, RenderConfig render, AdvancedConfig advanced) {
+    public WormholesSettings(MainConfig main, ProjectionConfig projection, RenderConfig render, AdvancedConfig advanced, NetworkConfig network) {
         this.main = main;
         this.projection = projection;
         this.render = render;
         this.advanced = advanced;
+        this.network = network;
     }
 
     public static WormholesSettings loadAll(Path dataFolder) {
@@ -31,7 +34,8 @@ public final class WormholesSettings {
         ProjectionConfig projection = TomlCodec.loadOrCreate(new File(configDir, "projection.toml"), ProjectionConfig.class);
         RenderConfig render = TomlCodec.loadOrCreate(new File(configDir, "render.toml"), RenderConfig.class);
         AdvancedConfig advanced = TomlCodec.loadOrCreate(new File(configDir, "advanced.toml"), AdvancedConfig.class);
-        return new WormholesSettings(main, projection, render, advanced);
+        NetworkConfig network = TomlCodec.loadOrCreate(new File(configDir, "network.toml"), NetworkConfig.class);
+        return new WormholesSettings(main, projection, render, advanced, network);
     }
 
     public MainConfig getMain() {
@@ -48,5 +52,9 @@ public final class WormholesSettings {
 
     public AdvancedConfig getAdvanced() {
         return advanced;
+    }
+
+    public NetworkConfig getNetwork() {
+        return network;
     }
 }

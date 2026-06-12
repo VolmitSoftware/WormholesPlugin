@@ -68,4 +68,16 @@ public final class PortalCoordMap {
         out3[1] = y - 2.0D * dot * ny;
         out3[2] = z - 2.0D * dot * nz;
     }
+
+    public static boolean reflectionFlipsWorldUp(PortalFrame planeFrame) {
+        double ny = planeFrame.getNormal().y();
+        return 1.0D - (2.0D * ny * ny) < -0.5D;
+    }
+
+    public static boolean transformFlipsWorldUp(PortalFrame fromFrame, PortalFrame toFrame) {
+        double y = ((double) fromFrame.getRight().y() * toFrame.getRight().y())
+            + ((double) fromFrame.getUp().y() * toFrame.getUp().y())
+            + ((double) fromFrame.getNormal().y() * toFrame.getNormal().y());
+        return y < -0.5D;
+    }
 }

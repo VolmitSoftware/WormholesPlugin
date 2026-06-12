@@ -6,7 +6,6 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerUp
 import it.unimi.dsi.fastutil.ints.IntIterator;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.ints.IntSet;
-import it.unimi.dsi.fastutil.longs.Long2LongMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongIterator;
@@ -21,6 +20,7 @@ import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 
 import art.arcane.wormholes.Settings;
+import art.arcane.wormholes.render.view.ProjectionWorldView;
 
 public final class ProjectorLighting {
     private static final int SECTION_NIBBLE_BYTES = 2048;
@@ -67,7 +67,7 @@ public final class ProjectorLighting {
             if (selected.isEmpty()) {
                 continue;
             }
-            sendChunkLight(observer, localWorld, null, null, projectedClaims, chunkX, chunkZ, selected);
+            sendChunkLight(observer, localWorld, projectedClaims, chunkX, chunkZ, selected);
             recordSentSections(chunkKey, selected);
             removeSections(entry.getValue(), selected);
             remainingSections -= selected.size();
@@ -75,74 +75,6 @@ public final class ProjectorLighting {
                 iterator.remove();
             }
         }
-    }
-
-    public void apply(Player observer,
-                      World localWorld,
-                      World destWorld,
-                      LongSet projectedKeys,
-                      Long2LongMap projectedRemote,
-                      LongSet dirtyLocalKeys) {
-        apply(observer, localWorld, destWorld, projectedKeys, projectedRemote, dirtyLocalKeys, null);
-    }
-
-    public void apply(Player observer,
-                      World localWorld,
-                      World destWorld,
-                      LongSet projectedKeys,
-                      Long2LongMap projectedRemote,
-                      LongSet dirtyLocalKeys,
-                      LongSet currentChunkKeys) {
-        if (observer == null || !observer.isOnline()) {
-            return;
-        }
-        if (projectedKeys.isEmpty()) {
-            return;
-        }
-        if (dirtyLocalKeys != null && dirtyLocalKeys.isEmpty()) {
-            return;
-        }
-
-        projectedRemote.defaultReturnValue(NO_REMOTE_KEY);
-        LongSet currentChunks = currentChunkKeys == null ? collectCurrentChunkKeys(localWorld, projectedKeys) : currentChunkKeys;
-        revertStaleChunks(observer, localWorld, currentChunks);
-
-        LongSet dirtyKeys = dirtyLocalKeys == null ? projectedKeys : dirtyLocalKeys;
-        chunkToSections.clear();
-        collectDirtySections(localWorld, dirtyKeys, chunkToSections);
-        mergePendingSections(chunkToSections);
-
-        int remainingSections = lightingSectionBudget();
-        Iterator<Long2ObjectMap.Entry<IntOpenHashSet>> iterator = pendingChunkSections.long2ObjectEntrySet().iterator();
-        while (iterator.hasNext() && remainingSections > 0) {
-            Long2ObjectMap.Entry<IntOpenHashSet> entry = iterator.next();
-            long chunkKey = entry.getLongKey();
-            if (!currentChunks.contains(chunkKey)) {
-                iterator.remove();
-                continue;
-            }
-            int chunkX = (int) (chunkKey >> 32);
-            int chunkZ = (int) chunkKey;
-            IntOpenHashSet selected = selectSections(entry.getValue(), remainingSections);
-            if (selected.isEmpty()) {
-                continue;
-            }
-            sendChunkLight(observer, localWorld, destWorld, projectedRemote, null, chunkX, chunkZ, selected);
-            recordSentSections(chunkKey, selected);
-            removeSections(entry.getValue(), selected);
-            remainingSections -= selected.size();
-            if (entry.getValue().isEmpty()) {
-                iterator.remove();
-            }
-        }
-    }
-
-    public void apply(Player observer,
-                      World localWorld,
-                      World destWorld,
-                      LongSet projectedKeys,
-                      Long2LongMap projectedRemote) {
-        apply(observer, localWorld, destWorld, projectedKeys, projectedRemote, projectedKeys);
     }
 
     private LongOpenHashSet collectCurrentChunkKeys(World localWorld, LongSet projectedKeys) {
@@ -270,14 +202,10 @@ public final class ProjectorLighting {
 
     private void sendChunkLight(Player observer,
                                 World localWorld,
-                                World destWorld,
-                                Long2LongMap projectedRemote,
                                 Long2ObjectMap<ProjectedBlockClaim> projectedClaims,
                                 int chunkX, int chunkZ, IntSet dirtySections) {
         int minSec = localWorld.getMinHeight() >> 4;
         int maxSec = (localWorld.getMaxHeight() - 1) >> 4;
-        int destMinY = destWorld == null ? 0 : destWorld.getMinHeight();
-        int destMaxY = destWorld == null ? -1 : destWorld.getMaxHeight() - 1;
         int maskBitCount = (maxSec - minSec + 1) + 2;
         int sectionCount = countValidSections(dirtySections, minSec, maxSec);
         if (sectionCount == 0) {
@@ -314,30 +242,27 @@ public final class ProjectorLighting {
 
                         long localKey = packKey(x, y, z);
                         ProjectedBlockClaim claim = projectedClaims == null ? null : projectedClaims.get(localKey);
-                        long remoteKey = claim == null && projectedRemote != null ? projectedRemote.get(localKey) : claim == null ? NO_REMOTE_KEY : claim.getLightRemoteKey();
-                        World sourceWorld = claim == null ? destWorld : claim.getLightWorld();
+                        long remoteKey = claim == null ? NO_REMOTE_KEY : claim.getLightRemoteKey();
+                        ProjectionWorldView sourceView = claim == null ? null : claim.getLightView();
 
                         int sky;
                         int block;
-                        if (remoteKey != NO_REMOTE_KEY && sourceWorld != null) {
+                        int packedLight = ProjectionWorldView.LIGHT_UNAVAILABLE;
+                        if (remoteKey != NO_REMOTE_KEY && sourceView != null) {
                             int rx = unpackX(remoteKey);
                             int ry = unpackY(remoteKey);
                             int rz = unpackZ(remoteKey);
-                            int sourceMinY = claim == null ? destMinY : sourceWorld.getMinHeight();
-                            int sourceMaxY = claim == null ? destMaxY : sourceWorld.getMaxHeight() - 1;
-                            if (ry < sourceMinY || ry > sourceMaxY) {
-                                Block local = localWorld.getBlockAt(x, y, z);
-                                sky = local.getLightFromSky();
-                                block = local.getLightFromBlocks();
-                            } else {
-                                Block remote = sourceWorld.getBlockAt(rx, ry, rz);
-                                sky = remote.getLightFromSky();
-                                block = remote.getLightFromBlocks();
+                            if (ry >= sourceView.getMinHeight() && ry <= sourceView.getMaxHeight() - 1) {
+                                packedLight = sourceView.getLight(rx, ry, rz);
                             }
-                        } else {
+                        }
+                        if (packedLight == ProjectionWorldView.LIGHT_UNAVAILABLE) {
                             Block local = localWorld.getBlockAt(x, y, z);
                             sky = local.getLightFromSky();
                             block = local.getLightFromBlocks();
+                        } else {
+                            sky = ProjectionWorldView.unpackSkyLight(packedLight);
+                            block = ProjectionWorldView.unpackBlockLight(packedLight);
                         }
 
                         int nibbleIdx = (ly << 8) | (lz << 4) | lx;

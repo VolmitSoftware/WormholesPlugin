@@ -37,6 +37,7 @@ import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.ProjectionMode;
 import art.arcane.wormholes.render.ProjectionClaimArbiter;
 import art.arcane.wormholes.render.PortalProjector;
+import art.arcane.wormholes.service.WormholesTelemetry;
 import art.arcane.wormholes.util.AxisAlignedBB;
 import art.arcane.wormholes.util.Direction;
 import art.arcane.wormholes.util.J;
@@ -148,7 +149,18 @@ public class ProjectionManager implements Listener {
         }
 
         cleanupDeadPortals(active, plans);
+        WormholesTelemetry.setProjectionGauges(active.size(), plans.size(), countSpoofedEntities());
         emitDiagnostics(active);
+    }
+
+    private int countSpoofedEntities() {
+        int total = 0;
+        for (Map<UUID, PortalProjector> portalProjectors : projectors.values()) {
+            for (PortalProjector projector : portalProjectors.values()) {
+                total += projector.getSpoofedEntityCount();
+            }
+        }
+        return total;
     }
 
     private void emitDiagnostics(List<ILocalPortal> active) {
@@ -551,52 +563,6 @@ public class ProjectionManager implements Listener {
         return sb.toString();
     }
 
-    public String dumpDiagnostics() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("[ProjectionManager Diagnostics]\n");
-        sb.append("  tickCount=").append(tickCount).append('\n');
-        sb.append("  firstTickLogged=").append(firstTickLogged).append('\n');
-        sb.append("  PROJECTION_RANGE=").append(Settings.PROJECTION_RANGE).append('\n');
-        sb.append("  blockRefreshInterval=").append(Settings.PROJECTION_REFRESH_INTERVAL_TICKS).append('\n');
-        sb.append("  entityUpdateInterval=").append(Settings.ENTITY_UPDATE_INTERVAL_TICKS).append('\n');
-        sb.append("  foveatedUnrendering=").append(Settings.PROJECTION_FOVEATED_UNRENDERING).append('\n');
-        sb.append("  recursivePortalDepth=").append(Settings.PROJECTION_RECURSIVE_PORTAL_DEPTH).append('\n');
-        sb.append("  maxProjectorsPerTick=").append(Settings.PROJECTION_MAX_PROJECTORS_PER_TICK).append('\n');
-        sb.append("  maxPortalsPerObserverTick=").append(Settings.PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK).append('\n');
-        sb.append("  interestGraceTicks=").append(Settings.PROJECTION_INTEREST_GRACE_TICKS).append('\n');
-        sb.append("  lightingMaxSectionsPerPass=").append(Settings.LIGHTING_MAX_SECTIONS_PER_PASS).append('\n');
-        sb.append("  adaptiveLighting=").append(Settings.ADAPTIVE_LIGHTING).append('\n');
-        sb.append("  entityCandidateCacheTicks=").append(Settings.ENTITY_CANDIDATE_CACHE_TICKS).append('\n');
-        sb.append("  interestedObservers=").append(lastInterestedObservers).append('\n');
-        sb.append("  scheduledProjectors=").append(lastScheduledProjectors).append('\n');
-        sb.append("  deferredProjectors=").append(lastDeferredProjectors).append('\n');
-        sb.append("  ").append(claimArbiter.getDiagnostics()).append('\n');
-        if (Wormholes.portalManager != null) {
-            sb.append("  ").append(Wormholes.portalManager.getLoadDiagnostics()).append('\n');
-        }
-        sb.append("  projectorEntries=").append(projectors.size()).append('\n');
-        if (Wormholes.portalManager == null) {
-            sb.append("  portalManager=null\n");
-            return sb.toString();
-        }
-        sb.append("  totalPortals=").append(Wormholes.portalManager.getLocalPortals().size()).append('\n');
-        for (ILocalPortal portal : Wormholes.portalManager.getLocalPortals()) {
-            sb.append("    - ").append(describePortal(portal)).append('\n');
-            Map<UUID, PortalProjector> portalProjectors = projectors.get(portal.getId());
-            if (portalProjectors == null || portalProjectors.isEmpty()) {
-                sb.append("      observers: none\n");
-            } else {
-                for (PortalProjector projector : portalProjectors.values()) {
-                    sb.append("      observer=").append(projector.getObserver().getName())
-                            .append(' ').append(projector.getDiagnostics())
-                            .append(" closed=").append(projector.isClosed())
-                            .append('\n');
-                }
-            }
-        }
-        return sb.toString();
-    }
-
     public void removeProjector(ILocalPortal portal) {
         Map<UUID, PortalProjector> portalProjectors = projectors.remove(portal.getId());
         interestGraceUntil.entrySet().removeIf(entry -> entry.getKey().startsWith(portal.getId().toString() + "/"));
@@ -673,6 +639,17 @@ public class ProjectionManager implements Listener {
         if (entityId == null || type == null) {
             return;
         }
+        art.arcane.wormholes.network.view.ViewServer viewServer = Wormholes.viewServer;
+        if (viewServer != null) {
+            viewServer.forwardAnimation(entityId, type);
+        }
+        dispatchProjectedEntityAnimation(entityId, type);
+    }
+
+    public void dispatchProjectedEntityAnimation(UUID entityId, EntityAnimationType type) {
+        if (entityId == null || type == null) {
+            return;
+        }
         for (PortalProjector projector : snapshotProjectors()) {
             Player observer = projector.getObserver();
             if (observer == null || !observer.isOnline()) {
@@ -687,6 +664,17 @@ public class ProjectionManager implements Listener {
     }
 
     private void broadcastProjectedEntityHurt(UUID entityId, float yaw) {
+        if (entityId == null) {
+            return;
+        }
+        art.arcane.wormholes.network.view.ViewServer viewServer = Wormholes.viewServer;
+        if (viewServer != null) {
+            viewServer.forwardHurt(entityId, yaw);
+        }
+        dispatchProjectedEntityHurt(entityId, yaw);
+    }
+
+    public void dispatchProjectedEntityHurt(UUID entityId, float yaw) {
         if (entityId == null) {
             return;
         }

@@ -6,7 +6,6 @@ import java.util.Set;
 
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
-import org.bukkit.Chunk;
 import org.bukkit.GameMode;
 import org.bukkit.Keyed;
 import org.bukkit.Location;
@@ -99,27 +98,48 @@ public class BlockManager implements Listener
 	{
 		for(Player i : Bukkit.getOnlinePlayers())
 		{
-			try
+			FoliaScheduler.runEntity(Wormholes.instance, i, () -> animatePlacedBlocksFor(i));
+		}
+	}
+
+	private void animatePlacedBlocksFor(Player i)
+	{
+		try
+		{
+			Location at = i.getLocation();
+			if(at == null || at.getWorld() == null)
 			{
-				for(Chunk j : W.chunkRadius(i.getLocation().getChunk(), 2))
+				return;
+			}
+
+			String world = at.getWorld().getName();
+			int cx = at.getBlockX() >> 4;
+			int cz = at.getBlockZ() >> 4;
+
+			for(int dx = -1; dx <= 1; dx++)
+			{
+				for(int dz = -1; dz <= 1; dz++)
 				{
-					if(blocks.containsKey(new GChunk(j)))
+					KSet<PortalBlock> set = blocks.get(new GChunk(cx + dx, cz + dz, world));
+					if(set == null)
 					{
-						for(PortalBlock k : blocks.get(new GChunk(j)))
+						continue;
+					}
+
+					for(PortalBlock k : set)
+					{
+						if(M.r(0.35))
 						{
-							if(M.r(0.35))
-							{
-								k.animate(i);
-							}
+							k.animate(i);
 						}
 					}
 				}
 			}
+		}
 
-			catch(Throwable e)
-			{
+		catch(Throwable e)
+		{
 
-			}
 		}
 	}
 
@@ -139,11 +159,11 @@ public class BlockManager implements Listener
 
 		if(b == null)
 		{
-			e.getPlayer().sendActionBar(Component.text("That is not a placed rune. Place runes (Portal/Wormhole/Gateway) as one connected flat plane, then left-click one with the wand.", NamedTextColor.GOLD));
+			Wormholes.sendActionBar(e.getPlayer(),Component.text("That is not a placed rune. Place runes (Portal/Wormhole/Gateway) as one connected flat plane, then left-click one with the wand.", NamedTextColor.GOLD));
 			return;
 		}
 
-		e.getPlayer().sendActionBar(Component.text("Forming portal... shape must be one connected flat plane of " + b.getType().name().toLowerCase() + " runes.", NamedTextColor.AQUA));
+		Wormholes.sendActionBar(e.getPlayer(),Component.text("Forming portal... shape must be one connected flat plane of " + b.getType().name().toLowerCase() + " runes.", NamedTextColor.AQUA));
 		construct(e.getPlayer(), e.getClickedBlock());
 	}
 
@@ -231,7 +251,7 @@ public class BlockManager implements Listener
 		}
 
 		placeBlock(new PortalBlock(placedType, e.getBlock().getLocation()));
-		e.getPlayer().sendActionBar(Component.text("Rune placed. Build one connected flat plane, then left-click any rune with the Portal Wand.", NamedTextColor.AQUA));
+		Wormholes.sendActionBar(e.getPlayer(),Component.text("Rune placed. Build one connected flat plane, then left-click any rune with the Portal Wand.", NamedTextColor.AQUA));
 	}
 
 	@EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

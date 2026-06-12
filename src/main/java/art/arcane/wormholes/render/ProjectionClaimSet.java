@@ -5,6 +5,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.longs.LongIterator;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 
 import java.util.HashMap;
 import java.util.Iterator;
@@ -111,14 +112,6 @@ final class ProjectionClaimSet {
 
     ProjectedBlockClaim getWinningClaim(long key) {
         return winningClaims.get(key);
-    }
-
-    int getClaimedCellCount() {
-        return winningClaims.size();
-    }
-
-    int getPortalClaimCount() {
-        return portals.size();
     }
 
     private ProjectionClaimSetResult recomputeAffected(LongArrayList affected) {
@@ -289,6 +282,8 @@ final class ProjectionClaimSet {
     static final class ProjectionClaimSetResult {
         private final LongArrayList packetChangeKeys;
         private final LongArrayList dirtyLightingKeys;
+        private LongOpenHashSet mergedPacketChangeKeys;
+        private LongOpenHashSet mergedDirtyLightingKeys;
         private int conflicts;
         private int winnerChanges;
         private int reverts;
@@ -300,6 +295,8 @@ final class ProjectionClaimSet {
         ProjectionClaimSetResult(int expectedKeys) {
             this.packetChangeKeys = new LongArrayList(expectedKeys);
             this.dirtyLightingKeys = new LongArrayList(expectedKeys);
+            this.mergedPacketChangeKeys = null;
+            this.mergedDirtyLightingKeys = null;
             this.conflicts = 0;
             this.winnerChanges = 0;
             this.reverts = 0;
@@ -333,11 +330,45 @@ final class ProjectionClaimSet {
             if (other == null || other.isEmpty()) {
                 return;
             }
-            packetChangeKeys.addAll(other.packetChangeKeys);
-            dirtyLightingKeys.addAll(other.dirtyLightingKeys);
+            appendUniquePacketKeys(other.packetChangeKeys);
+            appendUniqueLightingKeys(other.dirtyLightingKeys);
             conflicts += other.conflicts;
             winnerChanges += other.winnerChanges;
             reverts += other.reverts;
+        }
+
+        private void appendUniquePacketKeys(LongArrayList keys) {
+            if (keys.isEmpty()) {
+                return;
+            }
+            if (mergedPacketChangeKeys == null) {
+                mergedPacketChangeKeys = new LongOpenHashSet(packetChangeKeys);
+            }
+            LongIterator iterator = keys.iterator();
+            while (iterator.hasNext()) {
+                long key = iterator.nextLong();
+                if (!mergedPacketChangeKeys.add(key)) {
+                    continue;
+                }
+                packetChangeKeys.add(key);
+            }
+        }
+
+        private void appendUniqueLightingKeys(LongArrayList keys) {
+            if (keys.isEmpty()) {
+                return;
+            }
+            if (mergedDirtyLightingKeys == null) {
+                mergedDirtyLightingKeys = new LongOpenHashSet(dirtyLightingKeys);
+            }
+            LongIterator iterator = keys.iterator();
+            while (iterator.hasNext()) {
+                long key = iterator.nextLong();
+                if (!mergedDirtyLightingKeys.add(key)) {
+                    continue;
+                }
+                dirtyLightingKeys.add(key);
+            }
         }
     }
 

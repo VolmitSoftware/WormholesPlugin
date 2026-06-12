@@ -112,7 +112,7 @@ public class EffectManager implements Listener
 	public void playNotificationFail(String message, Player p)
 	{
 		Component component = LegacyComponentSerializer.legacySection().deserialize(message).colorIfAbsent(NamedTextColor.RED);
-		p.sendActionBar(component);
+		Wormholes.sendActionBar(p, component);
 	}
 
 	public void playNotificationFail(String message, Location l)
@@ -134,13 +134,13 @@ public class EffectManager implements Listener
 	public void playNotificationSuccess(String message, Player p)
 	{
 		Component component = LegacyComponentSerializer.legacySection().deserialize(message).colorIfAbsent(NamedTextColor.GREEN);
-		p.sendActionBar(component);
+		Wormholes.sendActionBar(p, component);
 	}
 
 	public void playNotification(ItemStack is, String message, Player p)
 	{
 		Component component = LegacyComponentSerializer.legacySection().deserialize(message);
-		p.sendActionBar(component);
+		Wormholes.sendActionBar(p, component);
 	}
 
 	public void playPortalBlockPlaced(Block block)

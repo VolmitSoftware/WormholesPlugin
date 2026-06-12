@@ -1,7 +1,10 @@
 package art.arcane.wormholes.portal;
 
+import java.util.UUID;
+
 import org.bukkit.Location;
 import org.bukkit.World;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.Listener;
 
@@ -35,6 +38,10 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 
 	public void receive(Traversive t);
 
+	public Location computeExitTarget(Traversive t);
+
+	public void completeRemoteArrival(Entity entity, Traversive t);
+
 	public void setDirection(Direction d);
 
 	public void setFrame(PortalFrame frame);
@@ -44,6 +51,8 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 	public boolean hasTunnel();
 
 	public void setDestination(IPortal portal);
+
+	public void linkRemote(String serverName, UUID portalId);
 
 	public void destroy();
 

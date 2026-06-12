@@ -113,6 +113,21 @@ public class Traversive
 		return inPoint.clone().subtract(inOrigin);
 	}
 
+	public Vector getInOrigin()
+	{
+		return inOrigin;
+	}
+
+	public Vector getInPoint()
+	{
+		return inPoint;
+	}
+
+	public boolean isFrontSide()
+	{
+		return frontSide;
+	}
+
 	public Object getObject()
 	{
 		return object;

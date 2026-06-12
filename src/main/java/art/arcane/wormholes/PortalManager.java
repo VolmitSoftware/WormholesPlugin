@@ -276,6 +276,12 @@ public class PortalManager implements Listener
 		if(portal.needsSaving())
 		{
 			portal.willSave();
+
+			if(Wormholes.portalSyncService != null)
+			{
+				Wormholes.portalSyncService.broadcastPortal(portal);
+			}
+
 			FoliaScheduler.runAsync(Wormholes.instance, () ->
 			{
 				try
@@ -316,6 +322,11 @@ public class PortalManager implements Listener
 		{
 			portals.put(portal.getId(), portal);
 			Wormholes.instance.registerListener(portal);
+
+			if(Wormholes.portalSyncService != null)
+			{
+				Wormholes.portalSyncService.broadcastPortal(portal);
+			}
 		}
 	}
 
@@ -324,6 +335,11 @@ public class PortalManager implements Listener
 		if(portals.containsKey(portal))
 		{
 			Wormholes.instance.unregisterListener(portals.get(portal));
+
+			if(Wormholes.portalSyncService != null)
+			{
+				Wormholes.portalSyncService.broadcastRemove(portal);
+			}
 		}
 
 		portals.remove(portal);
@@ -337,47 +353,6 @@ public class PortalManager implements Listener
 	public int getTotalPortalCount()
 	{
 		return getLocalPortals().size();
-	}
-
-	public String getLoadDiagnostics()
-	{
-		return "portalLoad loaded=" + loadedPortalFiles
-			+ " pendingWorld=" + pendingPortalFiles.size()
-			+ " pendingSeen=" + pendingWorldPortalFiles
-			+ " failed=" + failedPortalFiles
-			+ " unresolvedTunnels=" + unresolvedTunnelCount
-			+ " initialComplete=" + initialLoadComplete;
-	}
-
-	public int deleteAllPortals()
-	{
-		KList<ILocalPortal> existing = new KList<>(portals.v());
-		int removed = existing.size();
-
-		for(ILocalPortal portal : existing)
-		{
-			try
-			{
-				if(Wormholes.projectionManager != null)
-				{
-					Wormholes.projectionManager.removeProjector(portal);
-				}
-				Wormholes.instance.unregisterListener(portal);
-				portal.close();
-				portal.deleteData();
-			}
-			catch(Throwable e)
-			{
-				Wormholes.w("Failed to delete portal " + portal.getId());
-				e.printStackTrace();
-			}
-		}
-
-		portals.clear();
-		pendingPortalFiles.clear();
-		refreshUnresolvedTunnelCount();
-		deletePortalFolder();
-		return removed;
 	}
 
 	public int getAccessableCount(PortalType t)
@@ -408,38 +383,6 @@ public class PortalManager implements Listener
 	public File getSaveFile(UUID id)
 	{
 		return new File(new File(new File(new File(Wormholes.instance.getDataFolder(), "portals"), id.toString().split("-")[1]), id.toString().split("-")[0]), id.toString() + ".json");
-	}
-
-	private void deletePortalFolder()
-	{
-		File portalFolder = new File(Wormholes.instance.getDataFolder(), "portals");
-		deleteRecursively(portalFolder);
-		portalFolder.mkdirs();
-	}
-
-	private void deleteRecursively(File file)
-	{
-		if(file == null || !file.exists())
-		{
-			return;
-		}
-
-		if(file.isDirectory())
-		{
-			File[] children = file.listFiles();
-			if(children != null)
-			{
-				for(File child : children)
-				{
-					deleteRecursively(child);
-				}
-			}
-		}
-
-		if(!file.delete() && file.exists())
-		{
-			Wormholes.w("Failed to delete " + file.getAbsolutePath());
-		}
 	}
 
 	public void shutDown()

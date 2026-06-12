@@ -1,19 +1,20 @@
 package art.arcane.wormholes.render;
 
-import org.bukkit.World;
 import org.bukkit.block.data.BlockData;
+
+import art.arcane.wormholes.render.view.ProjectionWorldView;
 
 final class ProjectedBlockClaim {
     static final long NO_REMOTE_KEY = Long.MIN_VALUE;
 
     private final BlockData data;
-    private final World lightWorld;
+    private final ProjectionWorldView lightView;
     private final long lightRemoteKey;
     private final boolean maskAir;
 
-    ProjectedBlockClaim(BlockData data, World lightWorld, long lightRemoteKey, boolean maskAir) {
+    ProjectedBlockClaim(BlockData data, ProjectionWorldView lightView, long lightRemoteKey, boolean maskAir) {
         this.data = data;
-        this.lightWorld = lightWorld;
+        this.lightView = lightView;
         this.lightRemoteKey = lightRemoteKey;
         this.maskAir = maskAir;
     }
@@ -22,8 +23,8 @@ final class ProjectedBlockClaim {
         return data;
     }
 
-    World getLightWorld() {
-        return lightWorld;
+    ProjectionWorldView getLightView() {
+        return lightView;
     }
 
     long getLightRemoteKey() {
@@ -35,7 +36,7 @@ final class ProjectedBlockClaim {
     }
 
     boolean hasRemoteLight() {
-        return lightWorld != null && lightRemoteKey != NO_REMOTE_KEY;
+        return lightView != null && lightRemoteKey != NO_REMOTE_KEY;
     }
 
     boolean sameLightSource(ProjectedBlockClaim other) {
@@ -45,9 +46,9 @@ final class ProjectedBlockClaim {
         if (lightRemoteKey != other.lightRemoteKey) {
             return false;
         }
-        if (lightWorld == null) {
-            return other.lightWorld == null;
+        if (lightView == null) {
+            return other.lightView == null;
         }
-        return lightWorld.equals(other.lightWorld);
+        return lightView.equals(other.lightView);
     }
 }

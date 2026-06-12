@@ -1,0 +1,49 @@
+package art.arcane.wormholes.network;
+
+import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.config.toml.NetworkConfig;
+
+import org.bukkit.entity.Player;
+
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.util.Locale;
+
+public final class PlayerTransfer {
+    public static final String PROXY_CHANNEL = "BungeeCord";
+
+    private PlayerTransfer() {
+    }
+
+    public static boolean send(Player player, NetworkConfig.PeerEntry peer, String transferMode) {
+        String mode = transferMode == null ? "auto" : transferMode.toLowerCase(Locale.ROOT);
+        if (mode.equals("proxy")) {
+            return sendViaProxy(player, peer);
+        }
+        return sendViaTransferPacket(player, peer);
+    }
+
+    private static boolean sendViaTransferPacket(Player player, NetworkConfig.PeerEntry peer) {
+        if (peer.publicHost == null || peer.publicHost.isBlank()) {
+            Wormholes.w("net: peer " + peer.name + " has no public-host configured; cannot transfer " + player.getName());
+            return false;
+        }
+        player.transfer(peer.publicHost, peer.publicPort);
+        return true;
+    }
+
+    private static boolean sendViaProxy(Player player, NetworkConfig.PeerEntry peer) {
+        try {
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream(64);
+            DataOutputStream out = new DataOutputStream(buffer);
+            out.writeUTF("Connect");
+            out.writeUTF(peer.name);
+            player.sendPluginMessage(Wormholes.instance, PROXY_CHANNEL, buffer.toByteArray());
+            return true;
+        } catch (IOException e) {
+            Wormholes.w("net: proxy transfer of " + player.getName() + " to " + peer.name + " failed: " + e.getMessage());
+            return false;
+        }
+    }
+}

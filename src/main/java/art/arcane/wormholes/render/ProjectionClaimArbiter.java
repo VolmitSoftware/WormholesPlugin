@@ -1,6 +1,5 @@
 package art.arcane.wormholes.render;
 
-import io.papermc.paper.math.Position;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongIterator;
@@ -10,6 +9,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
+import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.data.BlockData;
@@ -17,22 +17,15 @@ import org.bukkit.entity.Player;
 
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.portal.ILocalPortal;
+import art.arcane.wormholes.service.WormholesTelemetry;
 
 public final class ProjectionClaimArbiter {
     private final Map<UUID, ObserverClaims> observers;
     private final Map<UUID, ObserverFrame> frames;
-    private int lastConflicts;
-    private int lastWinnerChanges;
-    private int lastReverts;
-    private int lastBlockChanges;
 
     public ProjectionClaimArbiter() {
         this.observers = new HashMap<UUID, ObserverClaims>();
         this.frames = new HashMap<UUID, ObserverFrame>();
-        this.lastConflicts = 0;
-        this.lastWinnerChanges = 0;
-        this.lastReverts = 0;
-        this.lastBlockChanges = 0;
     }
 
     public synchronized void beginFrame(Player observer, World localWorld, boolean allowLightingUpdate) {
@@ -136,30 +129,15 @@ public final class ProjectionClaimArbiter {
         return observerClaims != null && !observerClaims.pendingLightingKeys.isEmpty();
     }
 
-    public synchronized String getDiagnostics() {
-        int observerCount = observers.size();
-        int claimedCells = 0;
-        int portalClaims = 0;
-        for (ObserverClaims observerClaims : observers.values()) {
-            claimedCells += observerClaims.claimSet.getClaimedCellCount();
-            portalClaims += observerClaims.claimSet.getPortalClaimCount();
-        }
-        return "projectionClaims observers=" + observerCount
-            + " portals=" + portalClaims
-            + " cells=" + claimedCells
-            + " conflicts=" + lastConflicts
-            + " winnerChanges=" + lastWinnerChanges
-            + " reverts=" + lastReverts
-            + " blockChanges=" + lastBlockChanges;
-    }
-
     private ClaimUpdateResult applyResult(Player observer,
                                           World localWorld,
                                           ObserverClaims observerClaims,
                                           ProjectionClaimSet.ProjectionClaimSetResult setResult,
                                           boolean allowLightingUpdate) {
         boolean canSend = observer != null && observer.isOnline() && localWorld != null && localWorld.equals(observer.getWorld());
-        Map<Position, BlockData> blockChanges = new HashMap<Position, BlockData>(setResult.getPacketChangeKeys().size());
+        int expectedChanges = setResult.getPacketChangeKeys().size();
+        int mapCapacity = expectedChanges <= 2 ? 4 : (expectedChanges * 4 / 3) + 2;
+        Long2ObjectMap<BlockData> blockChanges = new Long2ObjectOpenHashMap<BlockData>(mapCapacity);
         if (canSend) {
             LongIterator packetIterator = setResult.getPacketChangeKeys().iterator();
             while (packetIterator.hasNext()) {
@@ -179,7 +157,7 @@ public final class ProjectionClaimArbiter {
                     if (sentData.equals(localData)) {
                         continue;
                     }
-                    blockChanges.put(Position.block(x, y, z), localData);
+                    blockChanges.put(key, localData);
                 } else {
                     BlockData sentData = observerClaims.sentBlocks.get(key);
                     BlockData winnerData = winner.getData();
@@ -187,24 +165,23 @@ public final class ProjectionClaimArbiter {
                         continue;
                     }
                     observerClaims.sentBlocks.put(key, winnerData);
-                    blockChanges.put(Position.block(unpackX(key), unpackY(key), unpackZ(key)), winnerData);
+                    blockChanges.put(key, winnerData);
                 }
             }
             if (!blockChanges.isEmpty()) {
-                observer.sendMultiBlockChange(blockChanges);
+                for (Long2ObjectMap.Entry<BlockData> change : blockChanges.long2ObjectEntrySet()) {
+                    long k = change.getLongKey();
+                    observer.sendBlockChange(new Location(localWorld, unpackX(k), unpackY(k), unpackZ(k)), change.getValue());
+                    WormholesTelemetry.countBlockChange();
+                }
             }
         }
 
         observerClaims.pendingLightingKeys.addAll(setResult.getDirtyLightingKeys());
         applyLighting(observer, localWorld, observerClaims, canSend, allowLightingUpdate);
 
-        ClaimUpdateResult result = new ClaimUpdateResult(blockChanges.size(), setResult.getConflicts(),
+        return new ClaimUpdateResult(blockChanges.size(), setResult.getConflicts(),
             setResult.getWinnerChanges(), setResult.getReverts());
-        lastConflicts = result.getConflicts();
-        lastWinnerChanges = result.getWinnerChanges();
-        lastReverts = result.getReverts();
-        lastBlockChanges = result.getBlockChanges();
-        return result;
     }
 
     private void applyLighting(Player observer, World localWorld, ObserverClaims observerClaims, boolean canSend, boolean allowLightingUpdate) {
