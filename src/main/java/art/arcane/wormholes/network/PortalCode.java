@@ -12,15 +12,16 @@ import java.util.UUID;
 
 public record PortalCode(
     String serverName,
+    String role,
     String advertiseHost,
     List<String> fallbackHosts,
     int wormholePort,
     int gamePort,
-    String sharedSecret,
+    String publicKey,
     UUID portalId,
     String portalName
 ) {
-    public static final String PREFIX = "WHP2.";
+    public static final String PREFIX = "WHP4.";
     private static final int MAX_CODE_LENGTH = 2048;
     private static final int MAX_FALLBACK_HOSTS = 4;
 
@@ -29,6 +30,7 @@ public record PortalCode(
             ByteArrayOutputStream buffer = new ByteArrayOutputStream(192);
             DataOutputStream out = new DataOutputStream(buffer);
             out.writeUTF(serverName);
+            out.writeUTF(role);
             out.writeUTF(advertiseHost);
             out.writeByte(Math.min(fallbackHosts.size(), MAX_FALLBACK_HOSTS));
             for (int i = 0; i < Math.min(fallbackHosts.size(), MAX_FALLBACK_HOSTS); i++) {
@@ -36,7 +38,7 @@ public record PortalCode(
             }
             out.writeShort(wormholePort);
             out.writeShort(gamePort);
-            out.writeUTF(sharedSecret);
+            out.writeUTF(publicKey);
             out.writeLong(portalId.getMostSignificantBits());
             out.writeLong(portalId.getLeastSignificantBits());
             out.writeUTF(portalName);
@@ -58,6 +60,7 @@ public record PortalCode(
             byte[] data = Base64.getUrlDecoder().decode(trimmed.substring(PREFIX.length()));
             DataInputStream in = new DataInputStream(new ByteArrayInputStream(data));
             String serverName = in.readUTF();
+            String role = in.readUTF();
             String advertiseHost = in.readUTF();
             int fallbackCount = in.readUnsignedByte();
             if (fallbackCount > MAX_FALLBACK_HOSTS) {
@@ -69,13 +72,13 @@ public record PortalCode(
             }
             int wormholePort = in.readUnsignedShort();
             int gamePort = in.readUnsignedShort();
-            String sharedSecret = in.readUTF();
+            String publicKey = in.readUTF();
             UUID portalId = new UUID(in.readLong(), in.readLong());
             String portalName = in.readUTF();
-            if (serverName.isBlank() || advertiseHost.isBlank() || wormholePort <= 0 || sharedSecret.isBlank()) {
+            if (serverName.isBlank() || role.isBlank() || advertiseHost.isBlank() || wormholePort <= 0 || Handshake.decodePublicKeyText(publicKey) == null) {
                 return null;
             }
-            return new PortalCode(serverName, advertiseHost, List.copyOf(fallbackHosts), wormholePort, gamePort, sharedSecret, portalId, portalName);
+            return new PortalCode(serverName, role, advertiseHost, List.copyOf(fallbackHosts), wormholePort, gamePort, publicKey, portalId, portalName);
         } catch (IllegalArgumentException | IOException e) {
             return null;
         }

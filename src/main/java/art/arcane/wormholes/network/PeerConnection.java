@@ -20,7 +20,7 @@ public final class PeerConnection {
     }
 
     public interface Listener {
-        boolean approvePeer(PeerConnection connection, String peerName, String mcVersion, String pluginVersion);
+        boolean approvePeer(PeerConnection connection, String peerName, String mcVersion, String pluginVersion, byte[] publicKey);
 
         void onReady(PeerConnection connection);
 
@@ -37,6 +37,7 @@ public final class PeerConnection {
     private final Socket socket;
     private final boolean dialer;
     private final LocalIdentity identity;
+    private final byte[] expectedPeerPublicKey;
     private final Listener listener;
     private final LinkedBlockingQueue<byte[]> writeQueue = new LinkedBlockingQueue<>(WRITE_QUEUE_CAPACITY);
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -47,16 +48,18 @@ public final class PeerConnection {
     private volatile String peerName;
     private volatile String expectedPeerName;
     private volatile String peerAdvertiseHost;
+    private volatile byte[] peerPublicKey;
     private volatile int peerWormholePort = -1;
     private volatile int peerGamePort = -1;
     private Thread readerThread;
     private Thread writerThread;
 
-    public PeerConnection(Socket socket, boolean dialer, LocalIdentity identity, String expectedPeerName, Listener listener) {
+    public PeerConnection(Socket socket, boolean dialer, LocalIdentity identity, String expectedPeerName, byte[] expectedPeerPublicKey, Listener listener) {
         this.socket = socket;
         this.dialer = dialer;
         this.identity = identity;
         this.expectedPeerName = expectedPeerName;
+        this.expectedPeerPublicKey = expectedPeerPublicKey == null ? null : expectedPeerPublicKey.clone();
         this.peerName = expectedPeerName;
         this.listener = listener;
     }
@@ -132,6 +135,10 @@ public final class PeerConnection {
         return peerGamePort;
     }
 
+    public byte[] getPeerPublicKey() {
+        return peerPublicKey == null ? null : peerPublicKey.clone();
+    }
+
     public long getLastInboundMillis() {
         return lastInboundMillis.get();
     }
@@ -186,7 +193,7 @@ public final class PeerConnection {
     private void handshakeAsDialer(DataInputStream in) throws IOException, HandshakeException {
         byte[] dialerNonce = Handshake.newNonce();
         sendNow(new WireMessage.Hello(WireCodec.PROTOCOL_VERSION, identity.mcVersion(), identity.pluginVersion(), identity.serverName(),
-            identity.advertiseHost(), identity.wormholePort(), identity.gamePort(), dialerNonce));
+            identity.advertiseHost(), identity.wormholePort(), identity.gamePort(), dialerNonce, identity.publicKey()));
 
         WireMessage response = WireCodec.readFrame(in);
         if (!(response instanceof WireMessage.Challenge challenge)) {
@@ -195,13 +202,19 @@ public final class PeerConnection {
         if (expectedPeerName != null && !expectedPeerName.equals(challenge.serverName())) {
             throw new HandshakeException("Peer identified as '" + challenge.serverName() + "', expected '" + expectedPeerName + "'");
         }
-        byte[] expectedMac = Handshake.mac(identity.secret(), Handshake.ROLE_ACCEPTOR, challenge.serverName(), dialerNonce, challenge.nonce());
-        if (!Handshake.verify(expectedMac, challenge.mac())) {
-            throw new HandshakeException("Peer failed authentication (bad shared secret?)");
+        if (expectedPeerPublicKey != null && !Handshake.sameKey(expectedPeerPublicKey, challenge.publicKey())) {
+            throw new HandshakeException("Peer '" + challenge.serverName() + "' used an unexpected public key");
+        }
+        if (!Handshake.verify(challenge.publicKey(), challenge.signature(), Handshake.ROLE_ACCEPTOR, challenge.serverName(), identity.serverName(), dialerNonce, challenge.nonce(), challenge.publicKey(), identity.publicKey())) {
+            throw new HandshakeException("Peer failed authentication");
         }
         peerName = challenge.serverName();
+        peerPublicKey = challenge.publicKey();
+        if (expectedPeerPublicKey == null && !listener.approvePeer(this, challenge.serverName(), identity.mcVersion(), identity.pluginVersion(), challenge.publicKey())) {
+            throw new HandshakeException("Peer '" + challenge.serverName() + "' rejected");
+        }
 
-        sendNow(new WireMessage.Auth(Handshake.mac(identity.secret(), Handshake.ROLE_DIALER, identity.serverName(), dialerNonce, challenge.nonce())));
+        sendNow(new WireMessage.Auth(Handshake.sign(identity.privateKey(), Handshake.ROLE_DIALER, identity.serverName(), challenge.serverName(), dialerNonce, challenge.nonce(), identity.publicKey(), challenge.publicKey())));
 
         WireMessage ready = WireCodec.readFrame(in);
         if (!(ready instanceof WireMessage.Ready)) {
@@ -223,24 +236,25 @@ public final class PeerConnection {
         if (!identity.pluginVersion().equals(hello.pluginVersion())) {
             throw new HandshakeException("Wormholes version mismatch: peer " + hello.pluginVersion() + ", local " + identity.pluginVersion());
         }
-        if (!listener.approvePeer(this, hello.serverName(), hello.mcVersion(), hello.pluginVersion())) {
-            throw new HandshakeException("Peer '" + hello.serverName() + "' rejected");
-        }
         peerName = hello.serverName();
         peerAdvertiseHost = hello.advertiseHost();
+        peerPublicKey = hello.publicKey();
         peerWormholePort = hello.wormholePort();
         peerGamePort = hello.gamePort();
 
         byte[] acceptorNonce = Handshake.newNonce();
-        sendNow(new WireMessage.Challenge(identity.serverName(), acceptorNonce, Handshake.mac(identity.secret(), Handshake.ROLE_ACCEPTOR, identity.serverName(), hello.nonce(), acceptorNonce)));
+        sendNow(new WireMessage.Challenge(identity.serverName(), acceptorNonce, identity.publicKey(),
+            Handshake.sign(identity.privateKey(), Handshake.ROLE_ACCEPTOR, identity.serverName(), hello.serverName(), hello.nonce(), acceptorNonce, identity.publicKey(), hello.publicKey())));
 
         WireMessage second = WireCodec.readFrame(in);
         if (!(second instanceof WireMessage.Auth auth)) {
             throw new HandshakeException("Expected AUTH, got " + second.type());
         }
-        byte[] expectedMac = Handshake.mac(identity.secret(), Handshake.ROLE_DIALER, hello.serverName(), hello.nonce(), acceptorNonce);
-        if (!Handshake.verify(expectedMac, auth.mac())) {
-            throw new HandshakeException("Peer failed authentication (bad shared secret?)");
+        if (!Handshake.verify(hello.publicKey(), auth.signature(), Handshake.ROLE_DIALER, hello.serverName(), identity.serverName(), hello.nonce(), acceptorNonce, hello.publicKey(), identity.publicKey())) {
+            throw new HandshakeException("Peer failed authentication");
+        }
+        if (!listener.approvePeer(this, hello.serverName(), hello.mcVersion(), hello.pluginVersion(), hello.publicKey())) {
+            throw new HandshakeException("Peer '" + hello.serverName() + "' rejected");
         }
 
         sendNow(new WireMessage.Ready());

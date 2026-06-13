@@ -7,6 +7,7 @@ public enum WireMessageType {
     READY(3),
     PING(4),
     PONG(5),
+    ROUTED(6),
     PORTAL_DIRECTORY(10),
     PORTAL_UPSERT(11),
     PORTAL_REMOVE(12),

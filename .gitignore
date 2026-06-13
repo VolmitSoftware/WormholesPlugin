@@ -12,3 +12,7 @@ run/
 # Legacy Maven leftovers
 target/
 dependency-reduced-pom.xml
+
+.codegraph/
+
+docs/

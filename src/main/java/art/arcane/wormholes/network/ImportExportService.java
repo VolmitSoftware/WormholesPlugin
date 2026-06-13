@@ -16,14 +16,11 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
 import java.io.File;
-import java.security.SecureRandom;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
 
 public final class ImportExportService {
     private static final int CHAT_SAFE_CODE_LENGTH = 250;
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final NetworkManager network;
 
@@ -42,12 +39,8 @@ public final class ImportExportService {
 
     private void exportNow(Player player, ILocalPortal portal) {
         NetworkConfig config = Wormholes.settings.getNetwork();
-        boolean configChanged = pinAdvertiseHost(player, config);
-        if (config.sharedSecret == null || config.sharedSecret.isBlank()) {
-            config.sharedSecret = generateSecret();
-            configChanged = true;
-            Wormholes.sendMessage(player, Component.text("Generated a shared secret for this server.", NamedTextColor.GRAY));
-        }
+        String advertiseHost = resolveAdvertiseHost(player, config);
+        boolean configChanged = false;
         if (!config.enabled) {
             config.enabled = true;
             configChanged = true;
@@ -61,11 +54,12 @@ public final class ImportExportService {
 
         PortalCode code = new PortalCode(
             network.getLocalName(),
-            network.getAdvertiseHost(),
-            alternateHosts(network.getAdvertiseHost()),
+            config.role,
+            advertiseHost,
+            alternateHosts(advertiseHost),
             config.listenPort,
             Bukkit.getPort(),
-            config.sharedSecret,
+            network.getPublicKey(),
             portal.getId(),
             portal.getName()
         );
@@ -75,7 +69,7 @@ public final class ImportExportService {
             .clickEvent(ClickEvent.copyToClipboard(encoded))
             .hoverEvent(HoverEvent.showText(Component.text("Click to copy. Paste it on the other server:\nportal menu > Import, or /wh network import <code>", NamedTextColor.GRAY)));
         Wormholes.sendMessage(player, message);
-        Wormholes.sendMessage(player, Component.text("Contains this server's address and shared secret - share it only with servers you trust.", NamedTextColor.DARK_GRAY));
+        Wormholes.sendMessage(player, Component.text("Contains this server's address and public key fingerprint " + network.getPublicKeyFingerprint() + ".", NamedTextColor.DARK_GRAY));
         if (encoded.length() > CHAT_SAFE_CODE_LENGTH) {
             Wormholes.sendMessage(player, Component.text("This code is too long to paste into chat - use /wh network import <code> on the other server instead.", NamedTextColor.YELLOW));
         }
@@ -89,31 +83,19 @@ public final class ImportExportService {
         }
 
         NetworkConfig config = Wormholes.settings.getNetwork();
-        boolean configChanged = pinAdvertiseHost(sender, config);
 
         if (code.serverName().equals(network.getLocalName())) {
             boolean ownPortal = Wormholes.portalManager != null && Wormholes.portalManager.getLocalPortal(code.portalId()) != null;
             if (ownPortal) {
                 Wormholes.sendMessage(sender, Component.text("That code is from this server.", NamedTextColor.RED));
             } else {
-                Wormholes.sendMessage(sender, Component.text("Both servers resolved the same address (" + code.serverName() + "). Set advertise-host in network.toml on one of them to something unique, re-export, and import again.", NamedTextColor.RED));
-            }
-            if (configChanged) {
-                persistConfig(config);
+                Wormholes.sendMessage(sender, Component.text("That code resolved to this server identity (" + code.serverName() + "). Re-export from the other server after both servers restart with their own Wormholes identity.", NamedTextColor.RED));
             }
             return;
         }
 
-        if (config.sharedSecret == null || config.sharedSecret.isBlank()) {
-            config.sharedSecret = code.sharedSecret();
-            Wormholes.sendMessage(sender, Component.text("Adopted the shared secret from " + code.serverName() + ".", NamedTextColor.GRAY));
-        } else if (!config.sharedSecret.equals(code.sharedSecret())) {
-            Wormholes.sendMessage(sender, Component.text("This server already has a different shared-secret than " + code.serverName() + ". Align shared-secret in network.toml on both servers, then re-export.", NamedTextColor.RED));
-            return;
-        }
+        network.trustPeer(code.serverName(), code.publicKey());
 
-        List<NetworkConfig.PeerEntry> peers = new ArrayList<>(config.peers);
-        peers.removeIf(peer -> peer.name.equals(code.serverName()));
         NetworkConfig.PeerEntry entry = new NetworkConfig.PeerEntry();
         entry.name = code.serverName();
         entry.host = code.advertiseHost();
@@ -121,10 +103,13 @@ public final class ImportExportService {
         entry.port = code.wormholePort();
         entry.publicHost = code.advertiseHost();
         entry.publicPort = code.gamePort() > 0 ? code.gamePort() : 25565;
-        peers.add(entry);
-        config.peers = peers;
-        config.enabled = true;
-        persistConfig(config);
+        entry.relationship = code.role();
+        network.savePeer(entry);
+
+        if (!config.enabled) {
+            config.enabled = true;
+            persistConfig(config);
+        }
 
         if (!network.isRunning()) {
             network.start();
@@ -140,19 +125,20 @@ public final class ImportExportService {
                 .append(Component.text(code.serverName(), NamedTextColor.WHITE))
                 .append(Component.text(". It opens once the servers connect.", NamedTextColor.GREEN)));
         } else {
-            Wormholes.sendMessage(sender, Component.text("Saved peer " + code.serverName() + ". '" + code.portalName() + "' will appear in gateway Link menus once connected.", NamedTextColor.GREEN));
+            Wormholes.sendMessage(sender, Component.text("Saved route to " + code.serverName() + " with public key " + Handshake.fingerprint(Handshake.decodePublicKeyText(code.publicKey())) + ". '" + code.portalName() + "' will appear in gateway Link menus once connected.", NamedTextColor.GREEN));
         }
         Wormholes.sendMessage(sender, Component.text("Check /wh network status for the connection state.", NamedTextColor.DARK_GRAY));
     }
 
-    private boolean pinAdvertiseHost(CommandSender sender, NetworkConfig config) {
+    private String resolveAdvertiseHost(CommandSender sender, NetworkConfig config) {
         if (config.advertiseHost != null && !config.advertiseHost.isBlank()) {
-            return false;
+            return config.advertiseHost;
         }
         String publicIp = AddressResolver.detectPublicAddress();
-        config.advertiseHost = publicIp != null ? publicIp : network.getAdvertiseHost();
-        Wormholes.sendMessage(sender, Component.text("Using " + config.advertiseHost + " as this server's address (advertise-host in network.toml - set a domain there if you have one).", NamedTextColor.GRAY));
-        return true;
+        String resolved = publicIp != null ? publicIp : network.getAdvertiseHost();
+        network.setInferredAdvertiseHost(resolved);
+        Wormholes.sendMessage(sender, Component.text("Using " + resolved + " in this portal code. Set advertise-host in network.toml only if that address is wrong.", NamedTextColor.GRAY));
+        return resolved;
     }
 
     private static List<String> alternateHosts(String identityHost) {
@@ -189,9 +175,4 @@ public final class ImportExportService {
         });
     }
 
-    private static String generateSecret() {
-        byte[] bytes = new byte[18];
-        RANDOM.nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-    }
 }

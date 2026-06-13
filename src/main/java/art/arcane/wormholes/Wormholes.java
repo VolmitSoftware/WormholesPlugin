@@ -22,6 +22,7 @@ import art.arcane.wormholes.service.WormholesIntegrationService;
 import art.arcane.wormholes.util.common.SplashScreen;
 import art.arcane.wormholes.util.project.config.HotloadManager;
 import com.github.retrooper.packetevents.PacketEvents;
+import com.github.retrooper.packetevents.event.PacketListenerCommon;
 import com.github.retrooper.packetevents.settings.PacketEventsSettings;
 import io.github.retrooper.packetevents.factory.spigot.SpigotPacketEventsBuilder;
 import net.kyori.adventure.platform.bukkit.BukkitAudiences;
@@ -39,6 +40,12 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.IOException;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -77,6 +84,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     private WormholesCommandService commandService;
     private WormholesIntegrationService integrationService;
     private HotloadManager hotloadManager;
+    private PacketListenerCommon statusBridgeListener;
     private boolean packetEventsLoaded = false;
 
     @Override
@@ -122,7 +130,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             getServer().getPluginManager().registerEvents(new ChatInputListener(), this);
 
             remotePortalRegistry = new RemotePortalRegistry();
-            networkManager = new NetworkManager(getLogger(), settings.getNetwork(), Bukkit.getMinecraftVersion(), getPluginMeta().getVersion(), Bukkit.getPort());
+            networkManager = new NetworkManager(getLogger(), settings.getNetwork(), Bukkit.getMinecraftVersion(), getPluginMeta().getVersion(), Bukkit.getPort(), getDataFolder().toPath());
             importExportService = new ImportExportService(networkManager);
             portalSyncService = new PortalSyncService(
                 networkManager,
@@ -136,6 +144,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             NetworkRouter networkRouter = new NetworkRouter(remotePortalRegistry, portalSyncService, traversalService, viewServer, remoteViewCache, viewSubscriptions);
             networkManager.setMessageSink(networkRouter::onMessage);
             networkManager.setPeerStateSink(networkRouter::onPeerState);
+            registerStatusBridgeListener(networkManager);
             getServer().getPluginManager().registerEvents(traversalService, this);
             getServer().getPluginManager().registerEvents(viewServer, this);
             getServer().getMessenger().registerOutgoingPluginChannel(this, PlayerTransfer.PROXY_CHANNEL);
@@ -145,6 +154,10 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
                 ViewSubscriptionManager subscriptions = viewSubscriptions;
                 if (subscriptions != null) {
                     subscriptions.sweep();
+                }
+                ViewServer activeViewServer = viewServer;
+                if (activeViewServer != null) {
+                    activeViewServer.syncGatewayTickets();
                 }
             }, 100);
 
@@ -200,6 +213,38 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         applyReloadedSettings(reloaded);
     }
 
+    public int deleteAllPortalsNow() {
+        PortalManager activePortalManager = portalManager;
+        if (activePortalManager == null) {
+            return 0;
+        }
+        return activePortalManager.deleteAllPortals();
+    }
+
+    public ResetResult resetEverythingNow() throws IOException {
+        stopHotloadManager();
+        int deletedPortals = deleteAllPortalsNow();
+        resetNetworkRuntime();
+        CHAT_INPUTS.clear();
+        Path dataFolder = getDataFolder().toPath();
+        deletePathTree(dataFolder.resolve("config"));
+        deletePathTree(dataFolder.resolve("identity"));
+        deletePathTree(dataFolder.resolve("routes"));
+        deletePathTree(dataFolder.resolve("trust"));
+        deletePathTree(dataFolder.resolve("portals"));
+        WormholesSettings defaults = WormholesSettings.loadAll(dataFolder);
+        settings = defaults;
+        Settings.refresh(defaults);
+        rebuildNetworkRuntime(defaults);
+        WormholesCommandService activeService = commandService;
+        if (activeService != null) {
+            activeService.invalidateCache();
+        }
+        hotloadManager = new HotloadManager(getDataFolder().toPath(), getLogger(), this::onConfigHotReload);
+        hotloadManager.start();
+        return new ResetResult(deletedPortals);
+    }
+
     private void onConfigHotReload(WormholesSettings reloaded) {
         applyReloadedSettings(reloaded);
     }
@@ -242,6 +287,101 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             }
         }
         getLogger().info("Configuration hot-reloaded.");
+    }
+
+    private void resetNetworkRuntime() {
+        unregisterStatusBridgeListener();
+        if (viewServer != null) {
+            try {
+                viewServer.shutdown();
+            } catch (Throwable ex) {
+                getLogger().log(Level.WARNING, "Error during ViewServer reset", ex);
+            }
+            HandlerList.unregisterAll(viewServer);
+        }
+        if (traversalService != null) {
+            HandlerList.unregisterAll(traversalService);
+        }
+        if (networkManager != null) {
+            try {
+                networkManager.stop();
+            } catch (Throwable ex) {
+                getLogger().log(Level.WARNING, "Error during NetworkManager reset", ex);
+            }
+        }
+        remotePortalRegistry = new RemotePortalRegistry();
+        portalSyncService = null;
+        traversalService = null;
+        remoteViewCache = new RemoteViewCache();
+        viewSubscriptions = null;
+        viewServer = null;
+        importExportService = null;
+        networkManager = null;
+    }
+
+    private void rebuildNetworkRuntime(WormholesSettings activeSettings) {
+        remotePortalRegistry = new RemotePortalRegistry();
+        networkManager = new NetworkManager(getLogger(), activeSettings.getNetwork(), Bukkit.getMinecraftVersion(), getPluginMeta().getVersion(), Bukkit.getPort(), getDataFolder().toPath());
+        importExportService = new ImportExportService(networkManager);
+        portalSyncService = new PortalSyncService(
+            networkManager,
+            () -> portalManager.getLocalPortals(),
+            runnable -> FoliaScheduler.runGlobal(this, runnable)
+        );
+        traversalService = new TraversalService(networkManager);
+        remoteViewCache = new RemoteViewCache();
+        viewSubscriptions = new ViewSubscriptionManager(networkManager, remoteViewCache);
+        viewServer = new ViewServer(networkManager);
+        NetworkRouter networkRouter = new NetworkRouter(remotePortalRegistry, portalSyncService, traversalService, viewServer, remoteViewCache, viewSubscriptions);
+        networkManager.setMessageSink(networkRouter::onMessage);
+        networkManager.setPeerStateSink(networkRouter::onPeerState);
+        registerStatusBridgeListener(networkManager);
+        getServer().getPluginManager().registerEvents(traversalService, this);
+        getServer().getPluginManager().registerEvents(viewServer, this);
+        networkManager.start();
+    }
+
+    private void registerStatusBridgeListener(NetworkManager manager) {
+        unregisterStatusBridgeListener();
+        statusBridgeListener = PacketEvents.getAPI().getEventManager().registerListener(manager.statusBridge());
+    }
+
+    private void unregisterStatusBridgeListener() {
+        PacketListenerCommon listener = statusBridgeListener;
+        statusBridgeListener = null;
+        if (listener != null && PacketEvents.getAPI() != null) {
+            PacketEvents.getAPI().getEventManager().unregisterListener(listener);
+        }
+    }
+
+    private void stopHotloadManager() {
+        HotloadManager activeHotload = hotloadManager;
+        hotloadManager = null;
+        if (activeHotload != null) {
+            activeHotload.stop();
+        }
+    }
+
+    private static void deletePathTree(Path path) throws IOException {
+        if (!Files.exists(path)) {
+            return;
+        }
+        Files.walkFileTree(path, new SimpleFileVisitor<Path>() {
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                Files.deleteIfExists(file);
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
+                if (exc != null) {
+                    throw exc;
+                }
+                Files.deleteIfExists(dir);
+                return FileVisitResult.CONTINUE;
+            }
+        });
     }
 
     public WormholesSettings getSettings() {
@@ -344,6 +484,9 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         CHAT_INPUTS.put(player.getUniqueId(), callback);
     }
 
+    public record ResetResult(int deletedPortals) {
+    }
+
     private static final class ChatInputListener implements Listener {
         @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
         public void onChat(AsyncPlayerChatEvent event) {
@@ -421,6 +564,12 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             }
         } catch (Throwable ex) {
             getLogger().log(Level.WARNING, "Error during NetworkManager shutdown", ex);
+        }
+
+        try {
+            unregisterStatusBridgeListener();
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "Error unregistering status bridge listener", ex);
         }
 
         try {

@@ -21,7 +21,7 @@ String jitpackAuthToken = authTokenProperty ?: providers.gradleProperty('jitpack
 def shadowJarTask = tasks.named('shadowJar', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar)
 
 // ADD YOURSELF AS A NEW LINE IF YOU WANT YOUR OWN BUILD TASK GENERATED
-// ======================== WINDOWS =============================
+// ======================== WIfffsDOWS =============================
 registerCustomOutputTask(
     'Cyberpwn',
     'C://Users/cyberpwn/Documents/development/server/plugins'

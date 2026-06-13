@@ -30,6 +30,7 @@ import org.bukkit.util.Vector;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -43,6 +44,8 @@ public final class ViewServer implements Listener {
 
     private final NetworkManager network;
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
+    private final Map<UUID, TicketLease> gatewayTickets = new ConcurrentHashMap<>();
+    private final Map<ChunkTicketKey, TicketHold> chunkTickets = new HashMap<>();
     private final Map<BlockData, String> blockDataStrings = new ConcurrentHashMap<>();
     private final AtomicBoolean taskRunning = new AtomicBoolean(false);
     private long tickCounter;
@@ -64,9 +67,9 @@ public final class ViewServer implements Listener {
         private final Map<Long, ViewSlice> latestSlices = new ConcurrentHashMap<>();
         private final AtomicInteger captureCountdown = new AtomicInteger(0);
         private final AtomicBoolean entityCaptureRunning = new AtomicBoolean(false);
+        private volatile TicketLease ticketLease;
         private volatile List<EntityVisual> lastVisuals = List.of();
         private volatile int lastSkyDarken = -1;
-        private volatile boolean ticketsHeld;
 
         private Session(UUID portalId, World world, ViewBox box, int centerChunkX, int centerChunkZ) {
             this.portalId = portalId;
@@ -74,12 +77,47 @@ public final class ViewServer implements Listener {
             this.box = box;
             this.centerChunkX = centerChunkX;
             this.centerChunkZ = centerChunkZ;
-            this.columns = new ArrayList<>();
-            for (int cx = box.minX() >> 4; cx <= box.maxX() >> 4; cx++) {
-                for (int cz = box.minZ() >> 4; cz <= box.maxZ() >> 4; cz++) {
-                    columns.add(new long[]{cx, cz});
-                }
-            }
+            this.columns = columnsFor(box);
+        }
+    }
+
+    private record ChunkTicketKey(UUID worldId, int chunkX, int chunkZ) {
+    }
+
+    private static final class TicketHold {
+        private final World world;
+        private final int chunkX;
+        private final int chunkZ;
+        private int references;
+        private boolean applied;
+        private boolean applying;
+
+        private TicketHold(World world, int chunkX, int chunkZ) {
+            this.world = world;
+            this.chunkX = chunkX;
+            this.chunkZ = chunkZ;
+            this.references = 1;
+            this.applied = false;
+            this.applying = false;
+        }
+    }
+
+    private static final class TicketLease {
+        private final UUID portalId;
+        private final World world;
+        private final ViewBox box;
+        private final List<long[]> columns;
+        private final AtomicBoolean released = new AtomicBoolean(false);
+
+        private TicketLease(UUID portalId, World world, ViewBox box) {
+            this.portalId = portalId;
+            this.world = world;
+            this.box = box;
+            this.columns = columnsFor(box);
+        }
+
+        private boolean matches(World candidateWorld, ViewBox candidateBox) {
+            return world.equals(candidateWorld) && box.equals(candidateBox);
         }
     }
 
@@ -118,6 +156,7 @@ public final class ViewServer implements Listener {
             ((int) Math.floor(portal.getOrigin().getX())) >> 4,
             ((int) Math.floor(portal.getOrigin().getZ())) >> 4
         ));
+        retainSessionTickets(session);
         session.peers.add(peerName);
         session.pendingFullPeers.add(peerName);
         session.sentProfiles.clear();
@@ -136,7 +175,7 @@ public final class ViewServer implements Listener {
         session.pendingFullPeers.remove(peerName);
         if (session.peers.isEmpty()) {
             sessions.remove(portalId);
-            releaseTickets(session);
+            releaseSessionTickets(session);
         }
     }
 
@@ -148,9 +187,28 @@ public final class ViewServer implements Listener {
 
     public void shutdown() {
         for (Session session : sessions.values()) {
-            releaseTickets(session);
+            releaseSessionTickets(session);
         }
         sessions.clear();
+        releaseAllGatewayTickets();
+        releaseAllChunkTickets();
+    }
+
+    public void syncGatewayTickets() {
+        if (Wormholes.settings == null || Wormholes.portalManager == null || !Wormholes.settings.getNetwork().enabled) {
+            releaseAllGatewayTickets();
+            return;
+        }
+        NetworkConfig config = Wormholes.settings.getNetwork();
+        Set<UUID> active = new HashSet<>();
+        for (ILocalPortal portal : Wormholes.portalManager.getLocalPortals()) {
+            if (!isTicketedGateway(portal)) {
+                continue;
+            }
+            active.add(portal.getId());
+            retainGatewayTickets(portal, config);
+        }
+        releaseMissingGatewayTickets(active);
     }
 
     @EventHandler(ignoreCancelled = true)
@@ -203,7 +261,7 @@ public final class ViewServer implements Listener {
         for (Session session : sessions.values()) {
             if (Wormholes.portalManager == null || Wormholes.portalManager.getLocalPortal(session.portalId) == null) {
                 sessions.remove(session.portalId);
-                releaseTickets(session);
+                releaseSessionTickets(session);
                 continue;
             }
             if (entitiesDue && session.entityCaptureRunning.compareAndSet(false, true)) {
@@ -372,7 +430,6 @@ public final class ViewServer implements Listener {
                 }
                 return;
             }
-            holdTicket(session, chunk);
             ChunkSnapshot snapshot = chunk.getChunkSnapshot(false, false, false);
             FoliaScheduler.runAsync(Wormholes.instance, () -> {
                 encodeAndSend(session, chunkX, chunkZ, snapshot);
@@ -383,26 +440,219 @@ public final class ViewServer implements Listener {
         });
     }
 
-    private void holdTicket(Session session, Chunk chunk) {
-        if (!session.ticketsHeld) {
-            session.ticketsHeld = true;
+    private void retainGatewayTickets(ILocalPortal portal, NetworkConfig config) {
+        World world = portal.getStructure().getWorld();
+        ViewBox box = computeBox(portal, config.viewDepth, config.viewLateralPad);
+        TicketLease previous;
+        TicketLease next;
+        synchronized (gatewayTickets) {
+            previous = gatewayTickets.get(portal.getId());
+            if (previous != null && previous.matches(world, box)) {
+                ensureTicketLease(previous);
+                return;
+            }
+            next = retainTicketLease(portal.getId(), world, box);
+            gatewayTickets.put(portal.getId(), next);
         }
-        chunk.addPluginChunkTicket(Wormholes.instance);
+        if (previous != null) {
+            releaseTicketLease(previous);
+        }
     }
 
-    private void releaseTickets(Session session) {
-        if (!session.ticketsHeld) {
+    private void releaseMissingGatewayTickets(Set<UUID> active) {
+        List<TicketLease> removed = new ArrayList<>();
+        synchronized (gatewayTickets) {
+            for (Map.Entry<UUID, TicketLease> entry : gatewayTickets.entrySet()) {
+                if (active.contains(entry.getKey())) {
+                    continue;
+                }
+                removed.add(entry.getValue());
+            }
+            for (TicketLease lease : removed) {
+                gatewayTickets.remove(lease.portalId, lease);
+            }
+        }
+        for (TicketLease lease : removed) {
+            releaseTicketLease(lease);
+        }
+    }
+
+    private void retainSessionTickets(Session session) {
+        synchronized (session) {
+            if (session.ticketLease != null) {
+                ensureTicketLease(session.ticketLease);
+                return;
+            }
+            session.ticketLease = retainTicketLease(session.portalId, session.world, session.box);
+        }
+    }
+
+    private void releaseSessionTickets(Session session) {
+        TicketLease lease;
+        synchronized (session) {
+            lease = session.ticketLease;
+            session.ticketLease = null;
+        }
+        if (lease != null) {
+            releaseTicketLease(lease);
+        }
+    }
+
+    private TicketLease retainTicketLease(UUID portalId, World world, ViewBox box) {
+        TicketLease lease = new TicketLease(portalId, world, box);
+        for (long[] column : lease.columns) {
+            retainChunkTicket(world, (int) column[0], (int) column[1]);
+        }
+        return lease;
+    }
+
+    private void releaseTicketLease(TicketLease lease) {
+        if (!lease.released.compareAndSet(false, true)) {
             return;
         }
-        for (long[] column : session.columns) {
+        for (long[] column : lease.columns) {
             int chunkX = (int) column[0];
             int chunkZ = (int) column[1];
-            FoliaScheduler.runRegion(Wormholes.instance, session.world, chunkX, chunkZ, () -> {
-                if (session.world.isChunkLoaded(chunkX, chunkZ)) {
-                    session.world.getChunkAt(chunkX, chunkZ).removePluginChunkTicket(Wormholes.instance);
+            releaseChunkTicket(lease.world, chunkX, chunkZ);
+        }
+    }
+
+    private void retainChunkTicket(World world, int chunkX, int chunkZ) {
+        ChunkTicketKey key = new ChunkTicketKey(world.getUID(), chunkX, chunkZ);
+        synchronized (chunkTickets) {
+            TicketHold existing = chunkTickets.get(key);
+            if (existing != null) {
+                existing.references++;
+                return;
+            }
+            TicketHold hold = new TicketHold(world, chunkX, chunkZ);
+            chunkTickets.put(key, hold);
+            hold.applying = true;
+            applyChunkTicket(key, hold);
+        }
+    }
+
+    private void ensureTicketLease(TicketLease lease) {
+        for (long[] column : lease.columns) {
+            ensureChunkTicket(lease.world, (int) column[0], (int) column[1]);
+        }
+    }
+
+    private void ensureChunkTicket(World world, int chunkX, int chunkZ) {
+        ChunkTicketKey key = new ChunkTicketKey(world.getUID(), chunkX, chunkZ);
+        TicketHold hold;
+        synchronized (chunkTickets) {
+            hold = chunkTickets.get(key);
+            if (hold == null || hold.applied || hold.applying || hold.references <= 0) {
+                return;
+            }
+            hold.applying = true;
+        }
+        applyChunkTicket(key, hold);
+    }
+
+    private void applyChunkTicket(ChunkTicketKey key, TicketHold hold) {
+        hold.world.getChunkAtAsync(hold.chunkX, hold.chunkZ).whenComplete((chunk, error) -> {
+            if (error != null || chunk == null) {
+                synchronized (chunkTickets) {
+                    hold.applying = false;
+                    if (chunkTickets.get(key) == hold && hold.references <= 0) {
+                        chunkTickets.remove(key);
+                    }
+                }
+                return;
+            }
+            FoliaScheduler.runRegion(Wormholes.instance, hold.world, hold.chunkX, hold.chunkZ, () -> {
+                synchronized (chunkTickets) {
+                    if (chunkTickets.get(key) != hold || hold.references <= 0) {
+                        return;
+                    }
+                }
+                chunk.addPluginChunkTicket(Wormholes.instance);
+                boolean keepTicket;
+                synchronized (chunkTickets) {
+                    keepTicket = chunkTickets.get(key) == hold && hold.references > 0;
+                    if (keepTicket) {
+                        hold.applied = true;
+                    }
+                    hold.applying = false;
+                }
+                if (!keepTicket) {
+                    chunk.removePluginChunkTicket(Wormholes.instance);
+                }
+            });
+        });
+    }
+
+    private void releaseChunkTicket(World world, int chunkX, int chunkZ) {
+        ChunkTicketKey key = new ChunkTicketKey(world.getUID(), chunkX, chunkZ);
+        boolean removeTicket = false;
+        synchronized (chunkTickets) {
+            TicketHold hold = chunkTickets.get(key);
+            if (hold == null) {
+                return;
+            }
+            hold.references--;
+            if (hold.references > 0) {
+                return;
+            }
+            chunkTickets.remove(key);
+            removeTicket = hold.applied;
+        }
+        if (removeTicket) {
+            FoliaScheduler.runRegion(Wormholes.instance, world, chunkX, chunkZ, () -> {
+                if (world.isChunkLoaded(chunkX, chunkZ)) {
+                    world.getChunkAt(chunkX, chunkZ).removePluginChunkTicket(Wormholes.instance);
                 }
             });
         }
+    }
+
+    private void releaseAllGatewayTickets() {
+        List<TicketLease> leases;
+        synchronized (gatewayTickets) {
+            leases = new ArrayList<>(gatewayTickets.values());
+            gatewayTickets.clear();
+        }
+        for (TicketLease lease : leases) {
+            releaseTicketLease(lease);
+        }
+    }
+
+    private void releaseAllChunkTickets() {
+        List<TicketHold> holds;
+        synchronized (chunkTickets) {
+            holds = new ArrayList<>(chunkTickets.values());
+            chunkTickets.clear();
+        }
+        for (TicketHold hold : holds) {
+            if (!hold.applied) {
+                continue;
+            }
+            FoliaScheduler.runRegion(Wormholes.instance, hold.world, hold.chunkX, hold.chunkZ, () -> {
+                if (hold.world.isChunkLoaded(hold.chunkX, hold.chunkZ)) {
+                    hold.world.getChunkAt(hold.chunkX, hold.chunkZ).removePluginChunkTicket(Wormholes.instance);
+                }
+            });
+        }
+    }
+
+    private static boolean isTicketedGateway(ILocalPortal portal) {
+        return portal != null
+            && portal.isGateway()
+            && portal.getStructure() != null
+            && portal.getStructure().getWorld() != null
+            && portal.getStructure().getArea() != null;
+    }
+
+    private static List<long[]> columnsFor(ViewBox box) {
+        List<long[]> columns = new ArrayList<>();
+        for (int cx = box.minX() >> 4; cx <= box.maxX() >> 4; cx++) {
+            for (int cz = box.minZ() >> 4; cz <= box.maxZ() >> 4; cz++) {
+                columns.add(new long[]{cx, cz});
+            }
+        }
+        return columns;
     }
 
     private void completeFullCaptureColumn(Session session) {

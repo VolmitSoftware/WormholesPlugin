@@ -10,9 +10,9 @@ softdepend:
   - PlaceholderAPI
 commands:
   wormholes:
-    aliases: [ wh ]
+    aliases: [ wh, wormhole ]
     description: Wormholes base command.
-    usage: /wormholes [wand|info|reload]
+    usage: /wormholes [wand|info|reload|network|admin]
     permission: wormholes.admin
 permissions:
   wormholes.*:
@@ -28,11 +28,19 @@ permissions:
     children:
       wormholes.admin.reload: true
       wormholes.admin.items: true
+      wormholes.admin.network: true
+      wormholes.admin.reset: true
   wormholes.admin.reload:
     description: Allows reloading Wormholes configuration.
     default: op
   wormholes.admin.items:
     description: Allows spawning in Wormholes items (wand, runes).
+    default: op
+  wormholes.admin.network:
+    description: Allows managing Wormholes network links.
+    default: op
+  wormholes.admin.reset:
+    description: Allows deleting portals and resetting Wormholes data.
     default: op
   wormholes.gateway:
     description: Allows creating and modifying gateway portals.

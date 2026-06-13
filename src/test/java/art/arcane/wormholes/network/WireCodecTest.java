@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -19,33 +21,37 @@ class WireCodecTest {
     }
 
     @Test
-    void helloRoundTripPreservesAllFields() throws IOException {
+    void helloRoundTripPreservesAllFields() throws Exception {
         byte[] nonce = Handshake.newNonce();
-        WireMessage.Hello hello = new WireMessage.Hello(WireCodec.PROTOCOL_VERSION, "1.26.1", "1.0.0", "alpha", "10.0.0.5", 8901, 25565, nonce);
+        byte[] publicKey = publicKey();
+        WireMessage.Hello hello = new WireMessage.Hello(WireCodec.PROTOCOL_VERSION, "1.26.1", "1.0.0", "alpha", "10.0.0.5", 8901, 25565, nonce, publicKey);
         WireMessage.Hello decoded = assertInstanceOf(WireMessage.Hello.class, roundTrip(hello));
         assertEquals(WireCodec.PROTOCOL_VERSION, decoded.protocolVersion());
         assertEquals("1.26.1", decoded.mcVersion());
         assertEquals("1.0.0", decoded.pluginVersion());
         assertEquals("alpha", decoded.serverName());
         assertArrayEquals(nonce, decoded.nonce());
+        assertArrayEquals(publicKey, decoded.publicKey());
     }
 
     @Test
-    void challengeRoundTripPreservesAllFields() throws IOException {
+    void challengeRoundTripPreservesAllFields() throws Exception {
         byte[] nonce = Handshake.newNonce();
-        byte[] mac = Handshake.mac("secret", Handshake.ROLE_ACCEPTOR, "beta", nonce, nonce);
-        WireMessage.Challenge challenge = new WireMessage.Challenge("beta", nonce, mac);
+        byte[] publicKey = publicKey();
+        byte[] signature = new byte[] {1, 2, 3, 4};
+        WireMessage.Challenge challenge = new WireMessage.Challenge("beta", nonce, publicKey, signature);
         WireMessage.Challenge decoded = assertInstanceOf(WireMessage.Challenge.class, roundTrip(challenge));
         assertEquals("beta", decoded.serverName());
         assertArrayEquals(nonce, decoded.nonce());
-        assertArrayEquals(mac, decoded.mac());
+        assertArrayEquals(publicKey, decoded.publicKey());
+        assertArrayEquals(signature, decoded.signature());
     }
 
     @Test
     void authReadyPingPongRoundTrip() throws IOException {
-        byte[] mac = Handshake.mac("secret", Handshake.ROLE_DIALER, "alpha", Handshake.newNonce(), Handshake.newNonce());
-        WireMessage.Auth auth = assertInstanceOf(WireMessage.Auth.class, roundTrip(new WireMessage.Auth(mac)));
-        assertArrayEquals(mac, auth.mac());
+        byte[] signature = new byte[] {5, 6, 7, 8};
+        WireMessage.Auth auth = assertInstanceOf(WireMessage.Auth.class, roundTrip(new WireMessage.Auth(signature)));
+        assertArrayEquals(signature, auth.signature());
 
         assertInstanceOf(WireMessage.Ready.class, roundTrip(new WireMessage.Ready()));
 
@@ -57,9 +63,9 @@ class WireCodecTest {
     }
 
     @Test
-    void largePayloadIsCompressedAndRoundTrips() throws IOException {
+    void largePayloadIsCompressedAndRoundTrips() throws Exception {
         String bigVersion = "x".repeat(50_000);
-        WireMessage.Hello hello = new WireMessage.Hello(1, "1.26.1", bigVersion, "alpha", "10.0.0.5", 8901, 25565, Handshake.newNonce());
+        WireMessage.Hello hello = new WireMessage.Hello(1, "1.26.1", bigVersion, "alpha", "10.0.0.5", 8901, 25565, Handshake.newNonce(), publicKey());
         byte[] frame = WireCodec.encodeFrame(hello);
         assertTrue(frame.length < 10_000, "highly repetitive payload should deflate well, frame was " + frame.length);
         WireMessage.Hello decoded = assertInstanceOf(WireMessage.Hello.class, WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(frame))));
@@ -96,5 +102,11 @@ class WireCodecTest {
 
         DataInputStream in = new DataInputStream(new ByteArrayInputStream(buffer.toByteArray()));
         assertThrows(IOException.class, () -> WireCodec.readByteArray(in, 255));
+    }
+
+    private static byte[] publicKey() throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("Ed25519");
+        KeyPair keyPair = generator.generateKeyPair();
+        return keyPair.getPublic().getEncoded();
     }
 }

@@ -8,9 +8,10 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 
-@Director(name = "wormholes", aliases = {"wh"}, description = "Wormholes command root")
+@Director(name = "wormholes", aliases = {"wh", "wormhole"}, description = "Wormholes command root")
 public class CommandWormholes {
     private final Wormholes plugin;
+    private CommandAdmin admin = new CommandAdmin();
     private CommandNetwork network = new CommandNetwork();
 
     public CommandWormholes(Wormholes plugin) {

@@ -21,7 +21,17 @@ public final class PlayerTransfer {
         if (mode.equals("proxy")) {
             return sendViaProxy(player, peer);
         }
+        if (mode.equals("auto") && shouldUseProxy(peer)) {
+            return sendViaProxy(player, peer);
+        }
         return sendViaTransferPacket(player, peer);
+    }
+
+    private static boolean shouldUseProxy(NetworkConfig.PeerEntry peer) {
+        if (peer.publicHost == null || peer.publicHost.isBlank()) {
+            return true;
+        }
+        return peer.relationship != null && peer.relationship.equalsIgnoreCase("boat");
     }
 
     private static boolean sendViaTransferPacket(Player player, NetworkConfig.PeerEntry peer) {

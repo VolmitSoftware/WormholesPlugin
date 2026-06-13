@@ -21,10 +21,14 @@ class TomlCodecNetworkTest {
     void networkConfigWithPeersRoundTripsThroughFile() throws Exception {
         NetworkConfig original = new NetworkConfig();
         original.enabled = true;
+        original.serverName = "anchor";
+        original.role = "anchor";
+        original.listenEnabled = true;
         original.advertiseHost = "10.0.0.1";
         original.listenHost = "10.0.0.1";
         original.listenPort = 9100;
-        original.sharedSecret = "topsecret";
+        original.trustOnFirstUse = false;
+        original.relayEnabled = true;
         original.transferMode = "packet";
         original.handoffTimeoutMs = 3000L;
 
@@ -34,6 +38,7 @@ class TomlCodecNetworkTest {
         hub.port = 9101;
         hub.publicHost = "play.example.com";
         hub.publicPort = 25565;
+        hub.relationship = "anchor";
         original.peers.add(hub);
 
         NetworkConfig.PeerEntry creative = new NetworkConfig.PeerEntry();
@@ -52,10 +57,14 @@ class TomlCodecNetworkTest {
 
         NetworkConfig loaded = TomlCodec.loadOrCreate(file, NetworkConfig.class);
         assertEquals(true, loaded.enabled);
+        assertEquals("anchor", loaded.serverName);
+        assertEquals("anchor", loaded.role);
+        assertEquals(true, loaded.listenEnabled);
         assertEquals("10.0.0.1", loaded.advertiseHost);
         assertEquals("10.0.0.1", loaded.listenHost);
         assertEquals(9100, loaded.listenPort);
-        assertEquals("topsecret", loaded.sharedSecret);
+        assertEquals(false, loaded.trustOnFirstUse);
+        assertEquals(true, loaded.relayEnabled);
         assertEquals("packet", loaded.transferMode);
         assertEquals(3000L, loaded.handoffTimeoutMs);
         assertEquals(2, loaded.peers.size());
@@ -64,6 +73,7 @@ class TomlCodecNetworkTest {
         assertEquals(9101, loaded.peers.get(0).port);
         assertEquals("play.example.com", loaded.peers.get(0).publicHost);
         assertEquals(25565, loaded.peers.get(0).publicPort);
+        assertEquals("anchor", loaded.peers.get(0).relationship);
         assertEquals("creative", loaded.peers.get(1).name);
         assertEquals(25566, loaded.peers.get(1).publicPort);
     }
@@ -73,6 +83,7 @@ class TomlCodecNetworkTest {
         File file = tempDir.resolve("network.toml").toFile();
         NetworkConfig loaded = TomlCodec.loadOrCreate(file, NetworkConfig.class);
         assertEquals(false, loaded.enabled);
+        assertEquals("minecraft:air", loaded.viewFallbackBlock);
         assertEquals(0, loaded.peers.size());
         assertTrue(file.isFile());
     }

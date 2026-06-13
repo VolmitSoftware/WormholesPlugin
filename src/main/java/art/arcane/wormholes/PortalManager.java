@@ -2,6 +2,11 @@ package art.arcane.wormholes;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -21,6 +26,7 @@ import art.arcane.wormholes.portal.PortalType;
 import art.arcane.volmlib.util.collection.KList;
 import art.arcane.volmlib.util.collection.KMap;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
+import art.arcane.wormholes.network.view.ViewServer;
 import art.arcane.wormholes.util.J;
 import art.arcane.wormholes.util.JSONObject;
 import art.arcane.wormholes.util.VIO;
@@ -327,6 +333,7 @@ public class PortalManager implements Listener
 			{
 				Wormholes.portalSyncService.broadcastPortal(portal);
 			}
+			syncGatewayTickets();
 		}
 	}
 
@@ -343,11 +350,45 @@ public class PortalManager implements Listener
 		}
 
 		portals.remove(portal);
+		syncGatewayTickets();
 	}
 
 	public void removeLocalPortal(IPortal portal)
 	{
 		removeLocalPortal(portal.getId());
+	}
+
+	public int deleteAllPortals()
+	{
+		List<ILocalPortal> snapshot = new ArrayList<ILocalPortal>();
+		for(ILocalPortal portal : portals.v())
+		{
+			snapshot.add(portal);
+		}
+
+		for(ILocalPortal portal : snapshot)
+		{
+			if(Wormholes.projectionManager != null)
+			{
+				Wormholes.projectionManager.removeProjector(portal);
+			}
+			Wormholes.instance.unregisterListener(portal);
+			if(Wormholes.portalSyncService != null)
+			{
+				Wormholes.portalSyncService.broadcastRemove(portal.getId());
+			}
+		}
+
+		portals.clear();
+		pendingPortalFiles.clear();
+		initialLoadComplete = true;
+		loadedPortalFiles = 0;
+		pendingWorldPortalFiles = 0;
+		failedPortalFiles = 0;
+		unresolvedTunnelCount = 0;
+		deletePortalFolder();
+		syncGatewayTickets();
+		return snapshot.size();
 	}
 
 	public int getTotalPortalCount()
@@ -404,6 +445,51 @@ public class PortalManager implements Listener
 			}
 		}
 		unresolvedTunnelCount = unresolved;
+	}
+
+	private void syncGatewayTickets()
+	{
+		ViewServer activeViewServer = Wormholes.viewServer;
+		if(activeViewServer != null)
+		{
+			activeViewServer.syncGatewayTickets();
+		}
+	}
+
+	private void deletePortalFolder()
+	{
+		Path path = new File(Wormholes.instance.getDataFolder(), "portals").toPath();
+		if(!Files.exists(path))
+		{
+			return;
+		}
+		try
+		{
+			Files.walkFileTree(path, new SimpleFileVisitor<Path>()
+			{
+				@Override
+				public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException
+				{
+					Files.deleteIfExists(file);
+					return FileVisitResult.CONTINUE;
+				}
+
+				@Override
+				public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException
+				{
+					if(exc != null)
+					{
+						throw exc;
+					}
+					Files.deleteIfExists(dir);
+					return FileVisitResult.CONTINUE;
+				}
+			});
+		}
+		catch(IOException e)
+		{
+			throw new IllegalStateException("Could not delete Wormholes portal data", e);
+		}
 	}
 
 	private enum PortalLoadResult

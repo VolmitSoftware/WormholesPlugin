@@ -171,6 +171,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 
 		save();
+		syncGatewayTickets();
 	}
 
 	@Override
@@ -620,6 +621,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	{
 		applyFrame(getFrame().withNormal(d));
 		save();
+		syncGatewayTickets();
 	}
 
 	@Override
@@ -627,6 +629,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	{
 		applyFrame(frame);
 		save();
+		syncGatewayTickets();
 	}
 
 	@Override
@@ -1318,6 +1321,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			return;
 		}
 		this.projectionMode = normalized;
+		if(Wormholes.projectionManager != null)
+		{
+			Wormholes.projectionManager.removeProjector(this);
+		}
 		save();
 	}
 
@@ -1328,6 +1335,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			return ProjectionMode.fromName(j.getString("projectionMode"));
 		}
 		return ProjectionMode.ON;
+	}
+
+	private void syncGatewayTickets()
+	{
+		if(Wormholes.viewServer != null)
+		{
+			Wormholes.viewServer.syncGatewayTickets();
+		}
 	}
 
 	public boolean isInboundDisabledByOneWay()

@@ -2,48 +2,47 @@ package art.arcane.wormholes.network;
 
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class HandshakeTest {
     @Test
-    void macIsDeterministicForSameInputs() {
+    void signatureVerifiesForMatchingInputs() throws Exception {
+        KeyPair signer = keyPair();
+        KeyPair peer = keyPair();
         byte[] nonceA = Handshake.newNonce();
         byte[] nonceB = Handshake.newNonce();
-        byte[] first = Handshake.mac("secret", Handshake.ROLE_ACCEPTOR, "hub", nonceA, nonceB);
-        byte[] second = Handshake.mac("secret", Handshake.ROLE_ACCEPTOR, "hub", nonceA, nonceB);
-        assertArrayEquals(first, second);
-        assertEquals(Handshake.MAC_LENGTH, first.length);
+        byte[] signature = Handshake.sign(signer.getPrivate(), Handshake.ROLE_ACCEPTOR, "hub", "boat", nonceA, nonceB, signer.getPublic().getEncoded(), peer.getPublic().getEncoded());
+
+        assertTrue(Handshake.verify(signer.getPublic().getEncoded(), signature, Handshake.ROLE_ACCEPTOR, "hub", "boat", nonceA, nonceB, signer.getPublic().getEncoded(), peer.getPublic().getEncoded()));
     }
 
     @Test
-    void macDiffersWhenAnyInputDiffers() {
+    void signatureRejectsChangedInputs() throws Exception {
+        KeyPair signer = keyPair();
+        KeyPair peer = keyPair();
         byte[] nonceA = Handshake.newNonce();
         byte[] nonceB = Handshake.newNonce();
-        byte[] base = Handshake.mac("secret", Handshake.ROLE_ACCEPTOR, "hub", nonceA, nonceB);
+        byte[] signature = Handshake.sign(signer.getPrivate(), Handshake.ROLE_ACCEPTOR, "hub", "boat", nonceA, nonceB, signer.getPublic().getEncoded(), peer.getPublic().getEncoded());
 
-        assertFalse(Handshake.verify(base, Handshake.mac("other", Handshake.ROLE_ACCEPTOR, "hub", nonceA, nonceB)));
-        assertFalse(Handshake.verify(base, Handshake.mac("secret", Handshake.ROLE_DIALER, "hub", nonceA, nonceB)));
-        assertFalse(Handshake.verify(base, Handshake.mac("secret", Handshake.ROLE_ACCEPTOR, "spoke", nonceA, nonceB)));
-        assertFalse(Handshake.verify(base, Handshake.mac("secret", Handshake.ROLE_ACCEPTOR, "hub", nonceB, nonceA)));
+        assertFalse(Handshake.verify(signer.getPublic().getEncoded(), signature, Handshake.ROLE_DIALER, "hub", "boat", nonceA, nonceB, signer.getPublic().getEncoded(), peer.getPublic().getEncoded()));
+        assertFalse(Handshake.verify(signer.getPublic().getEncoded(), signature, Handshake.ROLE_ACCEPTOR, "spoke", "boat", nonceA, nonceB, signer.getPublic().getEncoded(), peer.getPublic().getEncoded()));
+        assertFalse(Handshake.verify(signer.getPublic().getEncoded(), signature, Handshake.ROLE_ACCEPTOR, "hub", "boat", nonceB, nonceA, signer.getPublic().getEncoded(), peer.getPublic().getEncoded()));
+        assertFalse(Handshake.verify(peer.getPublic().getEncoded(), signature, Handshake.ROLE_ACCEPTOR, "hub", "boat", nonceA, nonceB, signer.getPublic().getEncoded(), peer.getPublic().getEncoded()));
     }
 
     @Test
-    void verifyAcceptsMatchingMacs() {
-        byte[] nonceA = Handshake.newNonce();
-        byte[] nonceB = Handshake.newNonce();
-        byte[] mac = Handshake.mac("secret", Handshake.ROLE_DIALER, "alpha", nonceA, nonceB);
-        assertTrue(Handshake.verify(mac, Handshake.mac("secret", Handshake.ROLE_DIALER, "alpha", nonceA, nonceB)));
-    }
-
-    @Test
-    void verifyRejectsNullAndLengthMismatch() {
-        byte[] mac = Handshake.mac("secret", Handshake.ROLE_DIALER, "alpha", Handshake.newNonce(), Handshake.newNonce());
-        assertFalse(Handshake.verify(mac, null));
-        assertFalse(Handshake.verify(null, mac));
-        assertFalse(Handshake.verify(mac, new byte[16]));
+    void publicKeyTextRoundTrips() throws Exception {
+        KeyPair keyPair = keyPair();
+        String encoded = Handshake.encodePublicKey(keyPair.getPublic().getEncoded());
+        byte[] decoded = Handshake.decodePublicKeyText(encoded);
+        assertNotNull(decoded);
+        assertTrue(Handshake.sameKey(keyPair.getPublic().getEncoded(), decoded));
     }
 
     @Test
@@ -51,6 +50,11 @@ class HandshakeTest {
         byte[] first = Handshake.newNonce();
         byte[] second = Handshake.newNonce();
         assertEquals(Handshake.NONCE_LENGTH, first.length);
-        assertFalse(Handshake.verify(first, second));
+        assertFalse(Handshake.sameKey(first, second));
+    }
+
+    private static KeyPair keyPair() throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("Ed25519");
+        return generator.generateKeyPair();
     }
 }

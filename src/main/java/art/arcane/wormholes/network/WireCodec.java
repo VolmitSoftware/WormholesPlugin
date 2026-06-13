@@ -9,7 +9,7 @@ import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 
 public final class WireCodec {
-    public static final int PROTOCOL_VERSION = 4;
+    public static final int PROTOCOL_VERSION = 5;
     public static final int MAX_FRAME_BYTES = 4 * 1024 * 1024;
     public static final int MAX_INFLATED_BYTES = 16 * 1024 * 1024;
     private static final int COMPRESS_THRESHOLD_BYTES = 1024;
@@ -19,11 +19,7 @@ public final class WireCodec {
     }
 
     public static byte[] encodeFrame(WireMessage message) throws IOException {
-        ByteArrayOutputStream payloadBuffer = new ByteArrayOutputStream(256);
-        DataOutputStream payloadOut = new DataOutputStream(payloadBuffer);
-        message.write(payloadOut);
-        payloadOut.flush();
-        byte[] payload = payloadBuffer.toByteArray();
+        byte[] payload = encodePayload(message);
 
         byte flags = 0;
         if (payload.length >= COMPRESS_THRESHOLD_BYTES) {
@@ -47,6 +43,14 @@ public final class WireCodec {
         frameOut.write(payload);
         frameOut.flush();
         return frameBuffer.toByteArray();
+    }
+
+    public static byte[] encodePayload(WireMessage message) throws IOException {
+        ByteArrayOutputStream payloadBuffer = new ByteArrayOutputStream(256);
+        DataOutputStream payloadOut = new DataOutputStream(payloadBuffer);
+        message.write(payloadOut);
+        payloadOut.flush();
+        return payloadBuffer.toByteArray();
     }
 
     public static WireMessage readFrame(DataInputStream in) throws IOException {
@@ -78,6 +82,7 @@ public final class WireCodec {
             case READY -> WireMessage.Ready.read(in);
             case PING -> WireMessage.Ping.read(in);
             case PONG -> WireMessage.Pong.read(in);
+            case ROUTED -> WireMessage.Routed.read(in);
             case PORTAL_DIRECTORY -> WireMessage.PortalDirectory.read(in);
             case PORTAL_UPSERT -> WireMessage.PortalUpsert.read(in);
             case PORTAL_REMOVE -> WireMessage.PortalRemove.read(in);

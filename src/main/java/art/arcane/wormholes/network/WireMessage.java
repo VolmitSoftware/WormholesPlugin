@@ -16,7 +16,7 @@ public sealed interface WireMessage {
 
     void write(DataOutputStream out) throws IOException;
 
-    record Hello(int protocolVersion, String mcVersion, String pluginVersion, String serverName, String advertiseHost, int wormholePort, int gamePort, byte[] nonce) implements WireMessage {
+    record Hello(int protocolVersion, String mcVersion, String pluginVersion, String serverName, String advertiseHost, int wormholePort, int gamePort, byte[] nonce, byte[] publicKey) implements WireMessage {
         @Override
         public WireMessageType type() {
             return WireMessageType.HELLO;
@@ -32,6 +32,7 @@ public sealed interface WireMessage {
             out.writeShort(wormholePort);
             out.writeShort(gamePort);
             WireCodec.writeFixedBytes(out, nonce, Handshake.NONCE_LENGTH);
+            WireCodec.writeByteArray(out, publicKey, Handshake.PUBLIC_KEY_MAX_LENGTH);
         }
 
         public static Hello read(DataInputStream in) throws IOException {
@@ -43,11 +44,12 @@ public sealed interface WireMessage {
             int wormholePort = in.readUnsignedShort();
             int gamePort = in.readUnsignedShort();
             byte[] nonce = WireCodec.readFixedBytes(in, Handshake.NONCE_LENGTH);
-            return new Hello(protocolVersion, mcVersion, pluginVersion, serverName, advertiseHost, wormholePort, gamePort, nonce);
+            byte[] publicKey = WireCodec.readByteArray(in, Handshake.PUBLIC_KEY_MAX_LENGTH);
+            return new Hello(protocolVersion, mcVersion, pluginVersion, serverName, advertiseHost, wormholePort, gamePort, nonce, publicKey);
         }
     }
 
-    record Challenge(String serverName, byte[] nonce, byte[] mac) implements WireMessage {
+    record Challenge(String serverName, byte[] nonce, byte[] publicKey, byte[] signature) implements WireMessage {
         @Override
         public WireMessageType type() {
             return WireMessageType.CHALLENGE;
@@ -57,18 +59,20 @@ public sealed interface WireMessage {
         public void write(DataOutputStream out) throws IOException {
             out.writeUTF(serverName);
             WireCodec.writeFixedBytes(out, nonce, Handshake.NONCE_LENGTH);
-            WireCodec.writeFixedBytes(out, mac, Handshake.MAC_LENGTH);
+            WireCodec.writeByteArray(out, publicKey, Handshake.PUBLIC_KEY_MAX_LENGTH);
+            WireCodec.writeByteArray(out, signature, Handshake.SIGNATURE_MAX_LENGTH);
         }
 
         public static Challenge read(DataInputStream in) throws IOException {
             String serverName = in.readUTF();
             byte[] nonce = WireCodec.readFixedBytes(in, Handshake.NONCE_LENGTH);
-            byte[] mac = WireCodec.readFixedBytes(in, Handshake.MAC_LENGTH);
-            return new Challenge(serverName, nonce, mac);
+            byte[] publicKey = WireCodec.readByteArray(in, Handshake.PUBLIC_KEY_MAX_LENGTH);
+            byte[] signature = WireCodec.readByteArray(in, Handshake.SIGNATURE_MAX_LENGTH);
+            return new Challenge(serverName, nonce, publicKey, signature);
         }
     }
 
-    record Auth(byte[] mac) implements WireMessage {
+    record Auth(byte[] signature) implements WireMessage {
         @Override
         public WireMessageType type() {
             return WireMessageType.AUTH;
@@ -76,11 +80,11 @@ public sealed interface WireMessage {
 
         @Override
         public void write(DataOutputStream out) throws IOException {
-            WireCodec.writeFixedBytes(out, mac, Handshake.MAC_LENGTH);
+            WireCodec.writeByteArray(out, signature, Handshake.SIGNATURE_MAX_LENGTH);
         }
 
         public static Auth read(DataInputStream in) throws IOException {
-            return new Auth(WireCodec.readFixedBytes(in, Handshake.MAC_LENGTH));
+            return new Auth(WireCodec.readByteArray(in, Handshake.SIGNATURE_MAX_LENGTH));
         }
     }
 
@@ -128,6 +132,34 @@ public sealed interface WireMessage {
 
         public static Pong read(DataInputStream in) throws IOException {
             return new Pong(in.readLong());
+        }
+    }
+
+    record Routed(String sourceServer, String targetServer, int ttl, WireMessageType innerType, byte[] payload) implements WireMessage {
+        @Override
+        public WireMessageType type() {
+            return WireMessageType.ROUTED;
+        }
+
+        @Override
+        public void write(DataOutputStream out) throws IOException {
+            out.writeUTF(sourceServer);
+            out.writeUTF(targetServer);
+            out.writeByte(ttl);
+            out.writeByte(innerType.id());
+            WireCodec.writeByteArray(out, payload, WireCodec.MAX_FRAME_BYTES);
+        }
+
+        public static Routed read(DataInputStream in) throws IOException {
+            String sourceServer = in.readUTF();
+            String targetServer = in.readUTF();
+            int ttl = in.readUnsignedByte();
+            WireMessageType innerType = WireMessageType.byId(in.readByte());
+            if (innerType == null || innerType == WireMessageType.ROUTED) {
+                throw new IOException("Invalid routed message type");
+            }
+            byte[] payload = WireCodec.readByteArray(in, WireCodec.MAX_FRAME_BYTES);
+            return new Routed(sourceServer, targetServer, ttl, innerType, payload);
         }
     }
 

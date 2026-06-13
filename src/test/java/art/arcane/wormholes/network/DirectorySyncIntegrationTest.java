@@ -5,9 +5,11 @@ import art.arcane.wormholes.portal.RemotePortal;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.net.ServerSocket;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -20,6 +22,11 @@ import static org.junit.jupiter.api.Assertions.fail;
 @Timeout(30)
 class DirectorySyncIntegrationTest {
     private static final Logger LOGGER = Logger.getLogger("DirectorySyncIntegrationTest");
+    private static final String ALPHA_NAME = "alpha";
+    private static final String BETA_NAME = "beta";
+
+    @TempDir
+    Path tempDir;
 
     private final List<NetworkManager> managers = new ArrayList<>();
 
@@ -53,13 +60,13 @@ class DirectorySyncIntegrationTest {
         fail("Timed out waiting for: " + what);
     }
 
-    private static NetworkConfig config(int listenPort, String peerName, int peerPort) {
+    private static NetworkConfig config(int listenPort, String serverName, String peerName, int peerPort) {
         NetworkConfig config = new NetworkConfig();
         config.enabled = true;
+        config.serverName = serverName;
         config.listenHost = "127.0.0.1";
         config.advertiseHost = "127.0.0.1";
         config.listenPort = listenPort;
-        config.sharedSecret = "s3cret";
         NetworkConfig.PeerEntry peer = new NetworkConfig.PeerEntry();
         peer.name = peerName;
         peer.host = "127.0.0.1";
@@ -93,8 +100,8 @@ class DirectorySyncIntegrationTest {
         int portA = freePort();
         int portB = freePort();
 
-        NetworkManager alpha = new NetworkManager(LOGGER, config(portA, "127.0.0.1:25566", portB), "1.26.1", "test", 25565);
-        NetworkManager beta = new NetworkManager(LOGGER, config(portB, "127.0.0.1", portA), "1.26.1", "test", 25566);
+        NetworkManager alpha = new NetworkManager(LOGGER, config(portA, ALPHA_NAME, BETA_NAME, portB), "1.26.1", "test", 25565, tempDir.resolve("alpha"));
+        NetworkManager beta = new NetworkManager(LOGGER, config(portB, BETA_NAME, ALPHA_NAME, portA), "1.26.1", "test", 25566, tempDir.resolve("beta"));
         managers.add(alpha);
         managers.add(beta);
 
@@ -110,31 +117,31 @@ class DirectorySyncIntegrationTest {
 
         alpha.start();
         beta.start();
-        awaitTrue("peers connected", () -> alpha.isPeerReady("127.0.0.1:25566") && beta.isPeerReady("127.0.0.1"), 10_000L);
-        awaitTrue("connect-time directories exchanged", () -> betaRegistry.hasPeer("127.0.0.1") && alphaRegistry.hasPeer("127.0.0.1:25566"), 10_000L);
+        awaitTrue("peers connected", () -> alpha.isPeerReady(BETA_NAME) && beta.isPeerReady(ALPHA_NAME), 10_000L);
+        awaitTrue("connect-time directories exchanged", () -> betaRegistry.hasPeer(ALPHA_NAME) && alphaRegistry.hasPeer(BETA_NAME), 10_000L);
 
         UUID portalId = UUID.randomUUID();
-        alpha.send("127.0.0.1:25566", new WireMessage.PortalUpsert(sampleInfo(portalId, true)));
+        alpha.send(BETA_NAME, new WireMessage.PortalUpsert(sampleInfo(portalId, true)));
         awaitTrue("upsert applied on beta", () -> {
-            RemotePortal portal = betaRegistry.get("127.0.0.1", portalId);
+            RemotePortal portal = betaRegistry.get(ALPHA_NAME, portalId);
             return portal != null && portal.isOpen();
         }, 5_000L);
 
-        alpha.send("127.0.0.1:25566", new WireMessage.PortalUpsert(sampleInfo(portalId, false)));
+        alpha.send(BETA_NAME, new WireMessage.PortalUpsert(sampleInfo(portalId, false)));
         awaitTrue("re-upsert applied on beta", () -> {
-            RemotePortal portal = betaRegistry.get("127.0.0.1", portalId);
+            RemotePortal portal = betaRegistry.get(ALPHA_NAME, portalId);
             return portal != null && !portal.isOpen();
         }, 5_000L);
 
         UUID replacementId = UUID.randomUUID();
-        alpha.send("127.0.0.1:25566", new WireMessage.PortalDirectory(List.of(sampleInfo(replacementId, true))));
+        alpha.send(BETA_NAME, new WireMessage.PortalDirectory(List.of(sampleInfo(replacementId, true))));
         awaitTrue("directory replaces beta's view of alpha", () -> {
-            RemotePortal replacement = betaRegistry.get("127.0.0.1", replacementId);
-            return replacement != null && betaRegistry.get("127.0.0.1", portalId) == null;
+            RemotePortal replacement = betaRegistry.get(ALPHA_NAME, replacementId);
+            return replacement != null && betaRegistry.get(ALPHA_NAME, portalId) == null;
         }, 5_000L);
 
-        alpha.send("127.0.0.1:25566", new WireMessage.PortalRemove(replacementId));
-        awaitTrue("remove applied on beta", () -> betaRegistry.get("127.0.0.1", replacementId) == null, 5_000L);
-        assertNull(alphaRegistry.get("127.0.0.1:25566", portalId));
+        alpha.send(BETA_NAME, new WireMessage.PortalRemove(replacementId));
+        awaitTrue("remove applied on beta", () -> betaRegistry.get(ALPHA_NAME, replacementId) == null, 5_000L);
+        assertNull(alphaRegistry.get(BETA_NAME, portalId));
     }
 }

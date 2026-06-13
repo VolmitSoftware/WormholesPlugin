@@ -27,10 +27,16 @@ class WormholesCommandServiceTest {
         DirectorRuntimeEngine engine = DirectorEngineFactory.create(new CommandWormholes(null));
         DirectorRuntimeNode root = engine.getRoot();
 
-        assertEquals(List.of("wh"), List.copyOf(root.getDescriptor().getAliases()));
+        assertEquals(List.of("wh", "wormhole"), List.copyOf(root.getDescriptor().getAliases()));
         assertNotNull(findChild(root, "wand"));
         assertNotNull(findChild(root, "reload"));
         assertNotNull(findChild(root, "info"));
+        DirectorRuntimeNode network = findChild(root, "network");
+        assertNotNull(network);
+        assertNotNull(findChild(network, "status"));
+        assertNotNull(findChild(network, "doctor"));
+        assertNotNull(findChild(network, "import"));
+        assertNotNull(findChild(root, "admin"));
         assertNull(findChild(root, "rune"));
         assertNull(findChild(root, "reset"));
         assertNull(findChild(root, "debug"));

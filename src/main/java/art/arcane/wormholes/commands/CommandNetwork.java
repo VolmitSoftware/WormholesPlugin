@@ -12,7 +12,7 @@ import java.util.List;
 
 @Director(name = "network", description = "Cross-server wormhole network")
 public class CommandNetwork {
-    @Director(name = "import", sync = true, description = "Import a portal code from another server (saves the peer; link via a gateway's Link menu)")
+    @Director(name = "import", sync = true, description = "Import a portal code from another server (saves an internal route; link via a gateway's Link menu)")
     public void importCode(@Param(name = "sender", contextual = true) CommandSender sender,
                            @Param(name = "code", description = "Portal code from the other server's Export button") String code) {
         if (!sender.hasPermission("wormholes.admin.network")) {
@@ -39,13 +39,18 @@ public class CommandNetwork {
             return;
         }
         if (!network.isRunning()) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Networking is enabled but not running. Check shared-secret and the listen port.");
+            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Networking is enabled but not running. Check the identity store and network port.");
             return;
         }
-        sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "This server: " + ChatColor.WHITE + network.getLocalName() + ChatColor.GRAY + " listening on " + ChatColor.WHITE + config.listenHost + ":" + config.listenPort);
+        if (config.listenEnabled) {
+            sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "This server: " + ChatColor.WHITE + network.getLocalName() + ChatColor.GRAY + " listening on " + ChatColor.WHITE + network.getListenAddress());
+        } else {
+            sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "This server: " + ChatColor.WHITE + network.getLocalName() + ChatColor.GRAY + " outbound-only Boat mode");
+        }
+        sender.sendMessage(Wormholes.tag + ChatColor.DARK_GRAY + "Public key: " + network.getPublicKeyFingerprint());
         List<NetworkManager.PeerStatus> statuses = network.status();
         if (statuses.isEmpty()) {
-            sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "No peers configured.");
+            sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "No peer routes linked yet.");
             return;
         }
         for (NetworkManager.PeerStatus status : statuses) {
@@ -59,6 +64,44 @@ public class CommandNetwork {
             if (status.lastError() != null && !status.state().equals("CONNECTED")) {
                 sender.sendMessage(Wormholes.tag + ChatColor.DARK_GRAY + "  last attempt: " + status.lastError());
             }
+        }
+        if (hasUnconnectedPeer(statuses)) {
+            printDiagnostics(sender, network);
+        }
+    }
+
+    @Director(name = "doctor", sync = true, description = "Explain why network peers are not connecting")
+    public void doctor(@Param(name = "sender", contextual = true) CommandSender sender) {
+        if (!sender.hasPermission("wormholes.admin.network")) {
+            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
+            return;
+        }
+        NetworkManager network = Wormholes.networkManager;
+        if (network == null) {
+            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Networking is not initialized.");
+            return;
+        }
+        printDiagnostics(sender, network);
+    }
+
+    private static boolean hasUnconnectedPeer(List<NetworkManager.PeerStatus> statuses) {
+        for (NetworkManager.PeerStatus status : statuses) {
+            if (!status.state().equals("CONNECTED")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void printDiagnostics(CommandSender sender, NetworkManager network) {
+        List<String> diagnostics = network.diagnostics();
+        if (diagnostics.isEmpty()) {
+            sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "No network setup issues detected.");
+            return;
+        }
+        sender.sendMessage(Wormholes.tag + ChatColor.YELLOW + "Network doctor:");
+        for (String diagnostic : diagnostics) {
+            sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "- " + diagnostic);
         }
     }
 }
