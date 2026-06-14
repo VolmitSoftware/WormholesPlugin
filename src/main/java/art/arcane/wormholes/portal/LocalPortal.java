@@ -3,14 +3,19 @@ package art.arcane.wormholes.portal;
 import java.io.File;
 import java.io.IOException;
 import java.util.Iterator;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.IntConsumer;
+import java.util.function.IntSupplier;
 
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Sound;
 import org.bukkit.World;
+import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -58,6 +63,12 @@ import net.md_5.bungee.api.ChatColor;
 public class LocalPortal extends Portal implements ILocalPortal, IProgressivePortal, IFXPortal, IOwnablePortal, Listener
 {
 	private static final long TELEPORT_COOLDOWN_MILLIS = 1000L;
+	private static final int DEFAULT_NETWORK_VIEW_DEPTH = 32;
+	private static final int DEFAULT_NETWORK_VIEW_LATERAL_PAD = 8;
+	private static final int DEFAULT_NETWORK_VIEW_HEARTBEAT_TICKS = 60;
+	private static final int DEFAULT_NETWORK_VIEW_ENTITY_INTERVAL_TICKS = 10;
+	private static final int DEFAULT_NETWORK_VIEW_UNSUBSCRIBE_GRACE_SECONDS = 30;
+	private static final String DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK = "minecraft:air";
 	private static final ParticleEffect.OrdinaryColor OUTLINE_PARTICLE_COLOR = new ParticleEffect.OrdinaryColor(150, 80, 255);
 	private static final ConcurrentHashMap<UUID, Long> TELEPORT_COOLDOWNS = new ConcurrentHashMap<UUID, Long>();
 
@@ -76,6 +87,15 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private ProjectionMode projectionMode;
 	private AxisAlignedBB view;
 	private double viewRange;
+	private PortalPermissionMode permissionMode;
+	private boolean outgoingTraversalsEnabled;
+	private boolean incomingTraversalsEnabled;
+	private int networkViewDepth;
+	private int networkViewLateralPad;
+	private int networkViewHeartbeatTicks;
+	private int networkViewEntityIntervalTicks;
+	private int networkViewUnsubscribeGraceSeconds;
+	private String networkViewFallbackBlock;
 
 	public LocalPortal(UUID id, PortalType type, PortalStructure structure)
 	{
@@ -94,8 +114,17 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		setName(F.capitalize(getType().name().toLowerCase()) + " " + id.toString().substring(0, 4));
 		needsSaving = false;
 		projectionMode = ProjectionMode.ON;
-		view = computeView();
-	}
+			permissionMode = PortalPermissionMode.BLACKLIST;
+			outgoingTraversalsEnabled = true;
+			incomingTraversalsEnabled = true;
+			networkViewDepth = DEFAULT_NETWORK_VIEW_DEPTH;
+			networkViewLateralPad = DEFAULT_NETWORK_VIEW_LATERAL_PAD;
+			networkViewHeartbeatTicks = DEFAULT_NETWORK_VIEW_HEARTBEAT_TICKS;
+			networkViewEntityIntervalTicks = DEFAULT_NETWORK_VIEW_ENTITY_INTERVAL_TICKS;
+			networkViewUnsubscribeGraceSeconds = DEFAULT_NETWORK_VIEW_UNSUBSCRIBE_GRACE_SECONDS;
+			networkViewFallbackBlock = DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK;
+			view = computeView();
+		}
 
 	@Override
 	public void saveJSON(JSONObject j)
@@ -105,6 +134,15 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		j.put("type", type.name());
 		j.put("owner", getOwner().toString());
 		j.put("projectionMode", projectionMode.name());
+			j.put("permissionMode", permissionMode.name());
+			j.put("outgoingTraversalsEnabled", outgoingTraversalsEnabled);
+			j.put("incomingTraversalsEnabled", incomingTraversalsEnabled);
+			j.put("networkViewDepth", networkViewDepth);
+			j.put("networkViewLateralPad", networkViewLateralPad);
+			j.put("networkViewHeartbeatTicks", networkViewHeartbeatTicks);
+			j.put("networkViewEntityIntervalTicks", networkViewEntityIntervalTicks);
+			j.put("networkViewUnsubscribeGraceSeconds", networkViewUnsubscribeGraceSeconds);
+			j.put("networkViewFallbackBlock", networkViewFallbackBlock);
 
 		if(tunnel != null)
 		{
@@ -125,7 +163,16 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		type = PortalType.valueOf(j.getString("type"));
 		owner = UUID.fromString(j.getString("owner"));
 		projectionMode = resolveProjectionMode(j);
-		view = computeView();
+			permissionMode = resolvePermissionMode(j);
+			outgoingTraversalsEnabled = !j.has("outgoingTraversalsEnabled") || j.getBoolean("outgoingTraversalsEnabled");
+			incomingTraversalsEnabled = !j.has("incomingTraversalsEnabled") || j.getBoolean("incomingTraversalsEnabled");
+			networkViewDepth = readNetworkViewInt(j, "networkViewDepth", DEFAULT_NETWORK_VIEW_DEPTH, 1, 128);
+			networkViewLateralPad = readNetworkViewInt(j, "networkViewLateralPad", DEFAULT_NETWORK_VIEW_LATERAL_PAD, 0, 64);
+			networkViewHeartbeatTicks = readNetworkViewInt(j, "networkViewHeartbeatTicks", DEFAULT_NETWORK_VIEW_HEARTBEAT_TICKS, 2, 600);
+			networkViewEntityIntervalTicks = readNetworkViewInt(j, "networkViewEntityIntervalTicks", DEFAULT_NETWORK_VIEW_ENTITY_INTERVAL_TICKS, 2, 600);
+			networkViewUnsubscribeGraceSeconds = readNetworkViewInt(j, "networkViewUnsubscribeGraceSeconds", DEFAULT_NETWORK_VIEW_UNSUBSCRIBE_GRACE_SECONDS, 5, 600);
+			networkViewFallbackBlock = normalizeNetworkViewFallbackBlock(j.optString("networkViewFallbackBlock", DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK));
+			view = computeView();
 
 		if(j.has("tunnel"))
 		{
@@ -237,7 +284,13 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			}
 
 			markTeleportCooldown(i.getUniqueId(), now);
-			getTunnel().push(traversive);
+			if(!canUseTunnel(i))
+			{
+				rejectTraversal(i, traversive);
+				continue;
+			}
+
+			pushTraversive(traversive);
 		}
 	}
 
@@ -268,6 +321,71 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			}
 		};
 		return f[0];
+	}
+
+	private boolean canUseTunnel(Entity entity)
+	{
+		if(!canDepart(entity))
+		{
+			return false;
+		}
+		if(!hasTunnel())
+		{
+			return false;
+		}
+		IPortal destination = getTunnel().getDestination();
+		if(destination instanceof ILocalPortal localDestination)
+		{
+			return localDestination.canArrive(entity);
+		}
+		return true;
+	}
+
+	private void pushTraversive(Traversive traversive)
+	{
+		if(getTunnel() instanceof UniversalTunnel universal && Wormholes.traversalService != null && traversive.getObject() instanceof Entity entity)
+		{
+			if(entity instanceof Player player)
+			{
+				Wormholes.traversalService.beginPlayerHandoff(player, universal, traversive, this);
+				return;
+			}
+			Wormholes.traversalService.beginEntityTransfer(entity, universal, traversive, this);
+			return;
+		}
+
+		getTunnel().push(traversive);
+	}
+
+	private void rejectTraversal(Entity entity, Traversive traversive)
+	{
+		Vector bounce = traversive.getInVelocity().clone().multiply(-2.0D);
+		if(bounce.lengthSquared() < 0.01D)
+		{
+			double side = traversive.isFrontSide() ? 1.0D : -1.0D;
+			bounce = getFrame().getNormal().toVector().normalize().multiply(side);
+		}
+		entity.setVelocity(bounce);
+		markTeleportCooldown(entity.getUniqueId(), System.currentTimeMillis());
+		playEffect(PortalEffect.REJECT, traversive.getInPoint().toLocation(getStructure().getWorld()));
+		notifyPortalDenied(entity);
+	}
+
+	private boolean allowsPortalPermission(Entity entity)
+	{
+		if(!(entity instanceof Player player))
+		{
+			return true;
+		}
+		return permissionMode.allows(player, getPermissionNode());
+	}
+
+	private void notifyPortalDenied(Entity entity)
+	{
+		if(entity instanceof Player player)
+		{
+			Wormholes.sendActionBar(player, Component.text("Portal access denied"));
+		}
 	}
 
 	@Override
@@ -472,6 +590,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				location.getWorld().playSound(location, MSound.ENDERMAN_TELEPORT.bukkitSound(), 0.5f, 1.3f + (float) (Math.random() * 0.2));
 
 				break;
+			case REJECT:
+				ParticleEffect.SMOKE.display(0.08f, 24, location, 32);
+				ParticleEffect.REDSTONE.display(new ParticleEffect.OrdinaryColor(255, 70, 70), location, 32);
+				location.getWorld().playSound(location, MSound.ANVIL_LAND.bukkitSound(), 0.7f, 1.8f);
+				location.getWorld().playSound(location, MSound.GLASS.bukkitSound(), 0.6f, 0.7f);
+				break;
 			case AMBIENT_CLOSED:
 				for(int i = 0; i < 1; i++)
 				{
@@ -638,6 +762,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		if(t.getType().equals(TraversableType.PLAYER) || t.getType().equals(TraversableType.ENTITY))
 		{
 			Entity p = (Entity) t.getObject();
+			if(!canArrive(p))
+			{
+				rejectTraversal(p, t);
+				return;
+			}
 			Vector outVelocity = t.getOutVelocity(getFrame());
 			Vector outLook = t.getOutLook(getFrame());
 			Vector outOffset = t.getOutOffset(getFrame());
@@ -681,11 +810,66 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void completeRemoteArrival(Entity entity, Traversive t)
 	{
+		if(!canArrive(entity))
+		{
+			rejectRemoteArrival(entity, t);
+			return;
+		}
 		Vector outVelocity = t.getOutVelocity(getFrame());
 		entity.setVelocity(outVelocity);
 		markTeleportCooldown(entity.getUniqueId(), System.currentTimeMillis());
 		art.arcane.wormholes.service.WormholesTelemetry.countTraversal();
 		playEffect(PortalEffect.PUSH, entity.getLocation());
+	}
+
+	@Override
+	public void rejectDeparture(Entity entity, Traversive t)
+	{
+		rejectTraversal(entity, t);
+	}
+
+	@Override
+	public void rejectRemoteArrival(Entity entity, Traversive t)
+	{
+		Location target = computeExitTarget(t);
+		if(entity instanceof Player player)
+		{
+			player.teleportAsync(target, PlayerTeleportEvent.TeleportCause.PLUGIN).thenAccept(success ->
+			{
+				if(success)
+				{
+					FoliaScheduler.runEntity(Wormholes.instance, player, () -> finishRejectedRemoteArrival(entity, t, target));
+				}
+			});
+			return;
+		}
+		entity.teleport(target, PlayerTeleportEvent.TeleportCause.PLUGIN);
+		finishRejectedRemoteArrival(entity, t, target);
+	}
+
+	private void finishRejectedRemoteArrival(Entity entity, Traversive t, Location target)
+	{
+		Vector outVelocity = t.getOutVelocity(getFrame());
+		if(outVelocity.lengthSquared() < 0.01D)
+		{
+			outVelocity = getFrame().getNormal().toVector().normalize();
+		}
+		entity.setVelocity(outVelocity.multiply(2.0D));
+		markTeleportCooldown(entity.getUniqueId(), System.currentTimeMillis());
+		playEffect(PortalEffect.REJECT, target);
+		notifyPortalDenied(entity);
+	}
+
+	@Override
+	public boolean canDepart(Entity entity)
+	{
+		return outgoingTraversalsEnabled && allowsPortalPermission(entity);
+	}
+
+	@Override
+	public boolean canArrive(Entity entity)
+	{
+		return incomingTraversalsEnabled && allowsPortalPermission(entity);
 	}
 
 	static boolean isTeleportCoolingDown(UUID entityId, long now)
@@ -923,6 +1107,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				.addLore(ChatColor.GRAY + "Current Mode " + ChatColor.YELLOW + "" + ChatColor.BOLD + F.capitalize(getType().name().toLowerCase()))
 				.setMaterial(new MaterialBlock(Material.BEACON))
 				.onLeftClick((e) -> uiChooseMode(p)))
+		.setElement(-1, 0, permissionElement(window))
+		.setElement(1, 0, outgoingTransfersElement(window))
 		.setElement(-1, 1, new UIElement("set-direction")
 				.setName(ChatColor.BLUE + "" + ChatColor.BOLD + "Direction")
 				.addLore(ChatColor.GRAY + "Change the portal facing direction.")
@@ -933,8 +1119,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					uiChangeDirection(p);
 					window.close();
 				}))
-		.setElement(1, 1, new UIElement("flip-face")
-				.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Flip Face")
+		.setElement(0, 1, incomingTransfersElement(window))
+			.setElement(1, 1, new UIElement("flip-face")
+					.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Flip Face")
 				.addLore(ChatColor.GRAY + "Reverse the portal face direction.")
 				.addLore(ChatColor.GRAY + "Screen rotation stays aligned.")
 				.addLore(ChatColor.GRAY + "Current Roll Up " + ChatColor.AQUA + "" + ChatColor.BOLD + getFrame().getUp().toString())
@@ -943,11 +1130,22 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				{
 					setFrame(getFrame().flipNormal());
 					Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s face flipped to " + getDirection().toString() + ".", getStructure().getCenter());
-					window.close();
-					uiOpenConfigMenu(p);
-				}))
-		.setElement(-1, 2, new UIElement("rotate-counter-clockwise")
-				.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Counterclockwise")
+						window.close();
+						uiOpenConfigMenu(p);
+					}))
+			.setElement(0, 2, new UIElement("network-view-settings")
+					.setName(ChatColor.DARK_AQUA + "" + ChatColor.BOLD + "Network View")
+					.addLore(ChatColor.GRAY + "Tune this gateway's streamed")
+					.addLore(ChatColor.GRAY + "cross-server projection volume.")
+					.addLore(ChatColor.GRAY + "Depth " + ChatColor.AQUA + networkViewDepth + ChatColor.GRAY + ", Entities " + ChatColor.AQUA + networkViewEntityIntervalTicks + "t")
+					.setMaterial(new MaterialBlock(Material.SPYGLASS))
+					.onLeftClick((e) ->
+					{
+						window.close();
+						uiOpenNetworkViewMenu(p);
+					}))
+			.setElement(-1, 2, new UIElement("rotate-counter-clockwise")
+					.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Counterclockwise")
 				.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees")
 				.addLore(ChatColor.GRAY + "without changing the face.")
 				.addLore(ChatColor.GRAY + "Current Up " + ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + getFrame().getUp().toString())
@@ -974,12 +1172,128 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				}));
 		//@done
 
-		return window;
-	}
+			return window;
+		}
 
-	@Override
-	public void uiChooseMode(Player p)
-	{
+		private void uiOpenNetworkViewMenu(Player p)
+		{
+			Window w = uiCreateNetworkViewMenu(p);
+			w.setVisible(true);
+		}
+
+		private Window uiCreateNetworkViewMenu(Player p)
+		{
+			Window window = new UIWindow(Wormholes.instance, p)
+					.setTitle(getRouter(true))
+					.setResolution(WindowResolution.W3_H3)
+					.setViewportHeight(3)
+					.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
+			window.setElement(-1, 0, networkViewNumberElement(window, "network-view-depth", "Depth", Material.SPYGLASS, () -> getNetworkViewDepth(), (value) -> setNetworkViewDepth(value), 4, 16))
+					.setElement(0, 0, networkViewNumberElement(window, "network-view-pad", "Lateral Pad", Material.MAP, () -> getNetworkViewLateralPad(), (value) -> setNetworkViewLateralPad(value), 1, 8))
+					.setElement(1, 0, networkViewNumberElement(window, "network-view-heartbeat", "Full Refresh", Material.CLOCK, () -> getNetworkViewHeartbeatTicks(), (value) -> setNetworkViewHeartbeatTicks(value), 10, 60))
+					.setElement(-1, 1, networkViewNumberElement(window, "network-view-entities", "Entity Update", Material.ENDER_EYE, () -> getNetworkViewEntityIntervalTicks(), (value) -> setNetworkViewEntityIntervalTicks(value), 2, 20))
+					.setElement(0, 1, networkViewNumberElement(window, "network-view-grace", "Unsubscribe Grace", Material.REDSTONE, () -> getNetworkViewUnsubscribeGraceSeconds(), (value) -> setNetworkViewUnsubscribeGraceSeconds(value), 5, 30))
+					.setElement(1, 1, networkViewFallbackElement(p, window))
+					.setElement(0, 2, new UIElement("back")
+							.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Back")
+							.addLore(ChatColor.GRAY + "Return to portal configs.")
+							.setMaterial(new MaterialBlock(Material.ARROW))
+							.onLeftClick((e) ->
+							{
+								window.close();
+								uiOpenConfigMenu(p);
+							}));
+			return window;
+		}
+
+		private Element networkViewNumberElement(Window window, String id, String label, Material material, IntSupplier getter, IntConsumer setter, int step, int largeStep)
+		{
+			UIElement element = new UIElement(id);
+			element.onLeftClick((e) ->
+			{
+				setter.accept(getter.getAsInt() + step);
+				applyNetworkViewNumberElement(element, label, material, getter);
+				window.updateInventory();
+			});
+			element.onRightClick((e) ->
+			{
+				setter.accept(getter.getAsInt() - step);
+				applyNetworkViewNumberElement(element, label, material, getter);
+				window.updateInventory();
+			});
+			element.onShiftLeftClick((e) ->
+			{
+				setter.accept(getter.getAsInt() + largeStep);
+				applyNetworkViewNumberElement(element, label, material, getter);
+				window.updateInventory();
+			});
+			element.onShiftRightClick((e) ->
+			{
+				setter.accept(getter.getAsInt() - largeStep);
+				applyNetworkViewNumberElement(element, label, material, getter);
+				window.updateInventory();
+			});
+			applyNetworkViewNumberElement(element, label, material, getter);
+			return element;
+		}
+
+		private void applyNetworkViewNumberElement(Element element, String label, Material material, IntSupplier getter)
+		{
+			element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + label + " " + getter.getAsInt());
+			element.setMaterial(new MaterialBlock(material));
+			KList<String> lore = element.getLore();
+			lore.clear();
+			lore.add(ChatColor.GRAY + "Left/right adjust.");
+			lore.add(ChatColor.GRAY + "Shift-left/right adjust faster.");
+			lore.add(" ");
+			lore.add(ChatColor.DARK_GRAY + "Saved per portal.");
+		}
+
+		private Element networkViewFallbackElement(Player p, Window window)
+		{
+			UIElement element = new UIElement("network-view-fallback");
+			element.onLeftClick((e) ->
+			{
+				window.close();
+				p.closeInventory();
+				p.sendMessage(ChatColor.AQUA + "Enter a block state for this portal's network view edge, or 'cancel':");
+				Wormholes.awaitChatInput(p, (text) ->
+				{
+					if(text == null || text.equalsIgnoreCase("cancel"))
+					{
+						uiOpenNetworkViewMenu(p);
+						return;
+					}
+					String normalized = normalizeNetworkViewFallbackBlock(text);
+					setNetworkViewFallbackBlock(normalized);
+					uiOpenNetworkViewMenu(p);
+				});
+			});
+			element.onRightClick((e) ->
+			{
+				setNetworkViewFallbackBlock(DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK);
+				applyNetworkViewFallbackElement(element);
+				window.updateInventory();
+			});
+			applyNetworkViewFallbackElement(element);
+			return element;
+		}
+
+		private void applyNetworkViewFallbackElement(Element element)
+		{
+			element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Fallback Block");
+			element.setMaterial(new MaterialBlock(Material.GLASS));
+			KList<String> lore = element.getLore();
+			lore.clear();
+			lore.add(ChatColor.GRAY + getNetworkViewFallbackBlock());
+			lore.add(" ");
+			lore.add(ChatColor.DARK_GRAY + "Left to enter block state.");
+			lore.add(ChatColor.DARK_GRAY + "Right resets to air.");
+		}
+
+		@Override
+		public void uiChooseMode(Player p)
+		{
 		//@builder
 		Window window = new UIWindow(Wormholes.instance, p)
 				.setTitle(getRouter(true))
@@ -1019,6 +1333,87 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		lore.add(ChatColor.GRAY + mode.getLoreLine2());
 		lore.add(" ");
 		lore.add(ChatColor.DARK_GRAY + "Click to cycle: " + ChatColor.GRAY + "Off > On > One-Way > Mirror");
+	}
+
+	private Element permissionElement(Window window)
+	{
+		UIElement element = new UIElement("permission-mode");
+		element.onLeftClick((e) ->
+		{
+			setPermissionMode(getPermissionMode().next());
+			applyPermissionElement(element);
+			window.updateInventory();
+		});
+		applyPermissionElement(element);
+		return element;
+	}
+
+	private void applyPermissionElement(Element element)
+	{
+		PortalPermissionMode mode = getPermissionMode();
+		element.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Access " + mode.getDisplayName());
+		element.setEnchanted(mode == PortalPermissionMode.WHITELIST);
+		element.setMaterial(new MaterialBlock(mode == PortalPermissionMode.WHITELIST ? Material.GOLDEN_HELMET : Material.IRON_HELMET));
+		KList<String> lore = element.getLore();
+		lore.clear();
+		lore.add(ChatColor.GRAY + mode.getLoreLine());
+		lore.add(ChatColor.GRAY + "Node " + ChatColor.WHITE + getPermissionNode());
+		lore.add(" ");
+		lore.add(ChatColor.DARK_GRAY + "Click to toggle blacklist/whitelist");
+	}
+
+	private Element outgoingTransfersElement(Window window)
+	{
+		UIElement element = new UIElement("outgoing-transfers");
+		element.onLeftClick((e) ->
+		{
+			setOutgoingTraversalsEnabled(!isOutgoingTraversalsEnabled());
+			applyOutgoingTransfersElement(element);
+			window.updateInventory();
+		});
+		applyOutgoingTransfersElement(element);
+		return element;
+	}
+
+	private void applyOutgoingTransfersElement(Element element)
+	{
+		boolean enabled = isOutgoingTraversalsEnabled();
+		element.setName((enabled ? ChatColor.GREEN : ChatColor.RED) + "" + ChatColor.BOLD + "Send Transfers " + (enabled ? "On" : "Off"));
+		element.setEnchanted(enabled);
+		element.setMaterial(new MaterialBlock(enabled ? Material.ENDER_PEARL : Material.BARRIER));
+		KList<String> lore = element.getLore();
+		lore.clear();
+		lore.add(ChatColor.GRAY + "Controls players, entities, and items");
+		lore.add(ChatColor.GRAY + "entering this portal from here.");
+		lore.add(" ");
+		lore.add(ChatColor.DARK_GRAY + "Click to toggle");
+	}
+
+	private Element incomingTransfersElement(Window window)
+	{
+		UIElement element = new UIElement("incoming-transfers");
+		element.onLeftClick((e) ->
+		{
+			setIncomingTraversalsEnabled(!isIncomingTraversalsEnabled());
+			applyIncomingTransfersElement(element);
+			window.updateInventory();
+		});
+		applyIncomingTransfersElement(element);
+		return element;
+	}
+
+	private void applyIncomingTransfersElement(Element element)
+	{
+		boolean enabled = isIncomingTraversalsEnabled();
+		element.setName((enabled ? ChatColor.GREEN : ChatColor.RED) + "" + ChatColor.BOLD + "Receive Transfers " + (enabled ? "On" : "Off"));
+		element.setEnchanted(enabled);
+		element.setMaterial(new MaterialBlock(enabled ? Material.CHEST : Material.BARRIER));
+		KList<String> lore = element.getLore();
+		lore.clear();
+		lore.add(ChatColor.GRAY + "Controls players, entities, and items");
+		lore.add(ChatColor.GRAY + "arriving through this portal.");
+		lore.add(" ");
+		lore.add(ChatColor.DARK_GRAY + "Click to toggle");
 	}
 
 	private Element modeOption(PortalType target, Player p, Window window)
@@ -1335,6 +1730,260 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			return ProjectionMode.fromName(j.getString("projectionMode"));
 		}
 		return ProjectionMode.ON;
+	}
+
+	private static PortalPermissionMode resolvePermissionMode(JSONObject j)
+	{
+		if(j.has("permissionMode"))
+		{
+			return PortalPermissionMode.fromName(j.getString("permissionMode"));
+		}
+		return PortalPermissionMode.BLACKLIST;
+	}
+
+	@Override
+	public PortalPermissionMode getPermissionMode()
+	{
+		return permissionMode;
+	}
+
+	@Override
+	public void setPermissionMode(PortalPermissionMode mode)
+	{
+		PortalPermissionMode normalized = mode == null ? PortalPermissionMode.BLACKLIST : mode;
+		if(permissionMode == normalized)
+		{
+			return;
+		}
+		permissionMode = normalized;
+		save();
+	}
+
+	@Override
+	public String getPermissionNode()
+	{
+		return "wormholes.portal." + sanitizePermissionName(getName());
+	}
+
+	@Override
+	public boolean isOutgoingTraversalsEnabled()
+	{
+		return outgoingTraversalsEnabled;
+	}
+
+	@Override
+	public void setOutgoingTraversalsEnabled(boolean enabled)
+	{
+		if(outgoingTraversalsEnabled == enabled)
+		{
+			return;
+		}
+		outgoingTraversalsEnabled = enabled;
+		save();
+	}
+
+	@Override
+	public boolean isIncomingTraversalsEnabled()
+	{
+		return incomingTraversalsEnabled;
+	}
+
+	@Override
+		public void setIncomingTraversalsEnabled(boolean enabled)
+		{
+			if(incomingTraversalsEnabled == enabled)
+			{
+				return;
+		}
+			incomingTraversalsEnabled = enabled;
+			save();
+		}
+
+		@Override
+		public int getNetworkViewDepth()
+		{
+			return networkViewDepth;
+		}
+
+		@Override
+		public void setNetworkViewDepth(int depth)
+		{
+			int normalized = clampNetworkViewInt(depth, 1, 128);
+			if(networkViewDepth == normalized)
+			{
+				return;
+			}
+			networkViewDepth = normalized;
+			networkViewSettingsChanged();
+		}
+
+		@Override
+		public int getNetworkViewLateralPad()
+		{
+			return networkViewLateralPad;
+		}
+
+		@Override
+		public void setNetworkViewLateralPad(int lateralPad)
+		{
+			int normalized = clampNetworkViewInt(lateralPad, 0, 64);
+			if(networkViewLateralPad == normalized)
+			{
+				return;
+			}
+			networkViewLateralPad = normalized;
+			networkViewSettingsChanged();
+		}
+
+		@Override
+		public int getNetworkViewHeartbeatTicks()
+		{
+			return networkViewHeartbeatTicks;
+		}
+
+		@Override
+		public void setNetworkViewHeartbeatTicks(int ticks)
+		{
+			int normalized = clampNetworkViewInt(ticks, 2, 600);
+			if(networkViewHeartbeatTicks == normalized)
+			{
+				return;
+			}
+			networkViewHeartbeatTicks = normalized;
+			networkViewSettingsChanged();
+		}
+
+		@Override
+		public int getNetworkViewEntityIntervalTicks()
+		{
+			return networkViewEntityIntervalTicks;
+		}
+
+		@Override
+		public void setNetworkViewEntityIntervalTicks(int ticks)
+		{
+			int normalized = clampNetworkViewInt(ticks, 2, 600);
+			if(networkViewEntityIntervalTicks == normalized)
+			{
+				return;
+			}
+			networkViewEntityIntervalTicks = normalized;
+			networkViewSettingsChanged();
+		}
+
+		@Override
+		public int getNetworkViewUnsubscribeGraceSeconds()
+		{
+			return networkViewUnsubscribeGraceSeconds;
+		}
+
+		@Override
+		public void setNetworkViewUnsubscribeGraceSeconds(int seconds)
+		{
+			int normalized = clampNetworkViewInt(seconds, 5, 600);
+			if(networkViewUnsubscribeGraceSeconds == normalized)
+			{
+				return;
+			}
+			networkViewUnsubscribeGraceSeconds = normalized;
+			networkViewSettingsChanged();
+		}
+
+		@Override
+		public String getNetworkViewFallbackBlock()
+		{
+			return networkViewFallbackBlock;
+		}
+
+		@Override
+		public void setNetworkViewFallbackBlock(String blockState)
+		{
+			String normalized = normalizeNetworkViewFallbackBlock(blockState);
+			if(networkViewFallbackBlock.equals(normalized))
+			{
+				return;
+			}
+			networkViewFallbackBlock = normalized;
+			networkViewSettingsChanged();
+		}
+
+		private void networkViewSettingsChanged()
+		{
+			save();
+			if(Wormholes.viewServer != null)
+			{
+				Wormholes.viewServer.refreshPortal(this);
+			}
+			if(Wormholes.projectionManager != null)
+			{
+				Wormholes.projectionManager.removeProjector(this);
+			}
+		}
+
+		private static int readNetworkViewInt(JSONObject j, String key, int defaultValue, int min, int max)
+		{
+			int value = j.has(key) ? j.optInt(key, defaultValue) : defaultValue;
+			return clampNetworkViewInt(value, min, max);
+		}
+
+		private static int clampNetworkViewInt(int value, int min, int max)
+		{
+			return Math.max(min, Math.min(max, value));
+		}
+
+		private static String normalizeNetworkViewFallbackBlock(String blockState)
+		{
+			String normalized = blockState == null || blockState.isBlank() ? DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK : blockState.trim();
+			try
+			{
+				BlockData data = Bukkit.createBlockData(normalized);
+				return data.getAsString();
+			}
+			catch(IllegalArgumentException e)
+			{
+				return DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK;
+			}
+		}
+
+		static String sanitizePermissionName(String name)
+		{
+		String source = name == null || name.isBlank() ? "unnamed" : name.toLowerCase(Locale.ROOT);
+		StringBuilder builder = new StringBuilder(source.length());
+		boolean previousSeparator = false;
+		for(int i = 0; i < source.length(); i++)
+		{
+			char c = source.charAt(i);
+			boolean allowed = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
+			if(allowed)
+			{
+				builder.append(c);
+				previousSeparator = false;
+				continue;
+			}
+			if(!previousSeparator)
+			{
+				builder.append('_');
+				previousSeparator = true;
+			}
+		}
+
+		String sanitized = trimPermissionSeparators(builder.toString());
+		return sanitized.isEmpty() ? "unnamed" : sanitized;
+	}
+
+	private static String trimPermissionSeparators(String value)
+	{
+		int start = 0;
+		int end = value.length();
+		while(start < end && value.charAt(start) == '_')
+		{
+			start++;
+		}
+		while(end > start && value.charAt(end - 1) == '_')
+		{
+			end--;
+		}
+		return value.substring(start, end);
 	}
 
 	private void syncGatewayTickets()

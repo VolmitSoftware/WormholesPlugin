@@ -28,13 +28,16 @@ class ViewSliceTest {
         int sizeZ = 16;
         int cells = sizeX * sizeY * sizeZ;
         List<String> palette = List.of("minecraft:air", "minecraft:stone", "minecraft:oak_log[axis=y]", "minecraft:water[level=0]");
+        List<String> biomePalette = List.of("minecraft:plains", "minecraft:desert", "minecraft:swamp");
         short[] indices = new short[cells];
         byte[] light = new byte[cells];
+        short[] biomes = new short[cells];
         for (int i = 0; i < cells; i++) {
             indices[i] = (short) random.nextInt(palette.size());
             light[i] = (byte) random.nextInt(256);
+            biomes[i] = (short) random.nextInt(biomePalette.size());
         }
-        return new ViewSlice(minX, 60, minZ, sizeX, sizeY, sizeZ, palette, indices, light);
+        return new ViewSlice(minX, 60, minZ, sizeX, sizeY, sizeZ, palette, indices, light, biomePalette, biomes);
     }
 
     @Test
@@ -50,6 +53,8 @@ class ViewSliceTest {
         assertEquals(original.palette(), decoded.palette());
         assertArrayEquals(original.indices(), decoded.indices());
         assertArrayEquals(original.light(), decoded.light());
+        assertEquals(original.biomePalette(), decoded.biomePalette());
+        assertArrayEquals(original.biomes(), decoded.biomes());
         assertEquals(original.contentHash(), decoded.contentHash());
     }
 
@@ -61,6 +66,10 @@ class ViewSliceTest {
 
         second.indices()[100] = (short) ((second.indices()[100] + 1) % 4);
         assertNotEquals(first.contentHash(), second.contentHash());
+
+        ViewSlice third = randomSlice(7L, 0, 0);
+        third.biomes()[100] = (short) ((third.biomes()[100] + 1) % 3);
+        assertNotEquals(first.contentHash(), third.contentHash());
     }
 
     @Test

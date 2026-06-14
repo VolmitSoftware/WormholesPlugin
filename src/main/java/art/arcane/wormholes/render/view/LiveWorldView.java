@@ -42,6 +42,14 @@ public final class LiveWorldView implements ProjectionWorldView {
     }
 
     @Override
+    public String sampleBiome(int x, int y, int z) {
+        if (y < world.getMinHeight() || y > world.getMaxHeight() - 1) {
+            return null;
+        }
+        return world.getBiome(x, y, z).getKey().asString();
+    }
+
+    @Override
     public int getLight(int x, int y, int z) {
         if (y < world.getMinHeight() || y > world.getMaxHeight() - 1) {
             return LIGHT_UNAVAILABLE;

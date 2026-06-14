@@ -15,6 +15,8 @@ public interface ProjectionWorldView {
 
     BlockData sampleBlockData(int x, int y, int z);
 
+    String sampleBiome(int x, int y, int z);
+
     int getLight(int x, int y, int z);
 
     int getSkyDarken();

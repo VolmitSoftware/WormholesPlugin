@@ -90,37 +90,6 @@ public class NetworkConfig {
     public String entityTransferDenyTypes = "";
 
     @ConfigDescription({
-        "How many blocks behind (and in front of) a gateway this server captures and streams to peers",
-        "so their players can see through the portal. Larger values stream and load more chunks."
-    })
-    public int viewDepth = 32;
-
-    @ConfigDescription("Lateral padding in blocks around the gateway frame included in the streamed view volume.")
-    public int viewLateralPad = 8;
-
-    @ConfigDescription({
-        "Full view refresh cadence in ticks (catches fluid flow, pistons, growth and other quiet changes).",
-        "Block breaks/places inside the view are streamed within a couple of ticks regardless.",
-        "Unchanged view sections are never re-sent, so an idle scene costs no bandwidth."
-    })
-    public int viewHeartbeatTicks = 60;
-
-    @ConfigDescription("Seconds without any local observer before this server unsubscribes from a peer's portal view.")
-    public int viewUnsubscribeGraceSeconds = 30;
-
-    @ConfigDescription({
-        "How often (in ticks) entity positions near a watched gateway are sampled and streamed to peers.",
-        "Unchanged entity sets are not re-sent. Lower is smoother through-portal motion, higher is cheaper."
-    })
-    public int viewEntityIntervalTicks = 10;
-
-    @ConfigDescription({
-        "Block rendered where the remote view volume ends (beyond view-depth / lateral padding).",
-        "Any block-state string works. Use minecraft:air to leave the edge transparent."
-    })
-    public String viewFallbackBlock = "minecraft:air";
-
-    @ConfigDescription({
         "Advanced static peer routes only. Portal-code imports are stored under plugin data/routes instead.",
         "One manual block per remote server, for example:",
         "[[peers]]",

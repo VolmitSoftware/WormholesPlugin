@@ -28,8 +28,10 @@ public final class RemoteViewCache {
         private final BlockData[] palette;
         private final short[] indices;
         private final byte[] light;
+        private final String[] biomePalette;
+        private final short[] biomes;
 
-        private DecodedSlice(ViewSlice slice, BlockData[] palette) {
+        private DecodedSlice(ViewSlice slice, BlockData[] palette, String[] biomePalette) {
             this.minX = slice.minX();
             this.minY = slice.minY();
             this.minZ = slice.minZ();
@@ -39,6 +41,8 @@ public final class RemoteViewCache {
             this.palette = palette;
             this.indices = slice.indices();
             this.light = slice.light();
+            this.biomePalette = biomePalette;
+            this.biomes = slice.biomes();
         }
 
         public BlockData blockAt(int x, int y, int z) {
@@ -48,6 +52,15 @@ public final class RemoteViewCache {
             }
             int paletteIndex = indices[index] & 0xFFFF;
             return paletteIndex < palette.length ? palette[paletteIndex] : null;
+        }
+
+        public String biomeAt(int x, int y, int z) {
+            int index = (((y - minY) * sizeZ + (z - minZ)) * sizeX) + (x - minX);
+            if (index < 0 || index >= biomes.length) {
+                return null;
+            }
+            int paletteIndex = biomes[index] & 0xFFFF;
+            return paletteIndex < biomePalette.length ? biomePalette[paletteIndex] : null;
         }
 
         public int lightAt(int x, int y, int z) {
@@ -244,7 +257,8 @@ public final class RemoteViewCache {
         for (int i = 0; i < palette.length; i++) {
             palette[i] = parseBlockData(slice.palette().get(i));
         }
-        return new DecodedSlice(slice, palette);
+        String[] biomePalette = slice.biomePalette().toArray(new String[0]);
+        return new DecodedSlice(slice, palette, biomePalette);
     }
 
     private BlockData parseBlockData(String stateString) {

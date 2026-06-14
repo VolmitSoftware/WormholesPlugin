@@ -56,6 +56,19 @@ public final class RemoteWorldView implements ProjectionWorldView {
     }
 
     @Override
+    public String sampleBiome(int x, int y, int z) {
+        ViewBox box = view.getBox();
+        if (box == null || !box.contains(x, y, z)) {
+            return null;
+        }
+        RemoteViewCache.DecodedSlice slice = view.sliceAt(x, z);
+        if (slice == null) {
+            return null;
+        }
+        return slice.biomeAt(x, y, z);
+    }
+
+    @Override
     public int getLight(int x, int y, int z) {
         ViewBox box = view.getBox();
         if (box == null || !box.contains(x, y, z)) {

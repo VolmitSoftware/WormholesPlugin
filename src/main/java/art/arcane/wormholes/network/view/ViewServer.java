@@ -6,7 +6,6 @@ import com.github.retrooper.packetevents.PacketEvents;
 import com.github.retrooper.packetevents.protocol.player.TextureProperty;
 import com.github.retrooper.packetevents.protocol.player.UserProfile;
 import art.arcane.wormholes.Wormholes;
-import art.arcane.wormholes.config.toml.NetworkConfig;
 import art.arcane.wormholes.network.NetworkManager;
 import art.arcane.wormholes.network.WireMessage;
 import art.arcane.wormholes.portal.ILocalPortal;
@@ -17,6 +16,7 @@ import org.bukkit.Chunk;
 import org.bukkit.ChunkSnapshot;
 import org.bukkit.Location;
 import org.bukkit.World;
+import org.bukkit.block.Biome;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
@@ -148,11 +148,10 @@ public final class ViewServer implements Listener {
         if (portal == null || portal.getStructure() == null || portal.getStructure().getWorld() == null) {
             return;
         }
-        NetworkConfig config = Wormholes.settings.getNetwork();
         Session session = sessions.computeIfAbsent(portalId, id -> new Session(
             id,
             portal.getStructure().getWorld(),
-            computeBox(portal, config.viewDepth, config.viewLateralPad),
+            computeBox(portal, portal.getNetworkViewDepth(), portal.getNetworkViewLateralPad()),
             ((int) Math.floor(portal.getOrigin().getX())) >> 4,
             ((int) Math.floor(portal.getOrigin().getZ())) >> 4
         ));
@@ -179,6 +178,25 @@ public final class ViewServer implements Listener {
         }
     }
 
+    public void refreshPortal(ILocalPortal portal) {
+        if (portal == null || portal.getId() == null) {
+            return;
+        }
+        Session removed = sessions.remove(portal.getId());
+        List<String> peers = new ArrayList<>();
+        if (removed != null) {
+            peers.addAll(removed.peers);
+            releaseSessionTickets(removed);
+        }
+        releaseGatewayTicket(portal.getId());
+        if (isTicketedGateway(portal)) {
+            retainGatewayTickets(portal);
+        }
+        for (String peer : peers) {
+            onSubscribe(peer, portal.getId());
+        }
+    }
+
     public void onPeerDisconnected(String peerName) {
         for (Session session : sessions.values()) {
             onUnsubscribe(peerName, session.portalId);
@@ -199,14 +217,13 @@ public final class ViewServer implements Listener {
             releaseAllGatewayTickets();
             return;
         }
-        NetworkConfig config = Wormholes.settings.getNetwork();
         Set<UUID> active = new HashSet<>();
         for (ILocalPortal portal : Wormholes.portalManager.getLocalPortals()) {
             if (!isTicketedGateway(portal)) {
                 continue;
             }
             active.add(portal.getId());
-            retainGatewayTickets(portal, config);
+            retainGatewayTickets(portal);
         }
         releaseMissingGatewayTickets(active);
     }
@@ -252,21 +269,19 @@ public final class ViewServer implements Listener {
 
     private void tick() {
         tickCounter += DIRTY_DRAIN_INTERVAL_TICKS;
-        NetworkConfig config = Wormholes.settings.getNetwork();
-        int heartbeat = Math.max(20, config.viewHeartbeatTicks);
-        boolean heartbeatDue = tickCounter % ((heartbeat / DIRTY_DRAIN_INTERVAL_TICKS) * DIRTY_DRAIN_INTERVAL_TICKS) < DIRTY_DRAIN_INTERVAL_TICKS;
-        int entityInterval = Math.max((int) DIRTY_DRAIN_INTERVAL_TICKS, config.viewEntityIntervalTicks);
-        boolean entitiesDue = tickCounter % ((entityInterval / DIRTY_DRAIN_INTERVAL_TICKS) * DIRTY_DRAIN_INTERVAL_TICKS) < DIRTY_DRAIN_INTERVAL_TICKS;
 
         for (Session session : sessions.values()) {
-            if (Wormholes.portalManager == null || Wormholes.portalManager.getLocalPortal(session.portalId) == null) {
+            ILocalPortal portal = Wormholes.portalManager == null ? null : Wormholes.portalManager.getLocalPortal(session.portalId);
+            if (portal == null) {
                 sessions.remove(session.portalId);
                 releaseSessionTickets(session);
                 continue;
             }
+            boolean entitiesDue = isIntervalDue(portal.getNetworkViewEntityIntervalTicks());
             if (entitiesDue && session.entityCaptureRunning.compareAndSet(false, true)) {
                 FoliaScheduler.runRegion(Wormholes.instance, session.world, session.centerChunkX, session.centerChunkZ, () -> captureEntities(session));
             }
+            boolean heartbeatDue = isIntervalDue(portal.getNetworkViewHeartbeatTicks());
             if (heartbeatDue || !session.pendingFullPeers.isEmpty()) {
                 requestFullCapture(session);
                 continue;
@@ -440,9 +455,9 @@ public final class ViewServer implements Listener {
         });
     }
 
-    private void retainGatewayTickets(ILocalPortal portal, NetworkConfig config) {
+    private void retainGatewayTickets(ILocalPortal portal) {
         World world = portal.getStructure().getWorld();
-        ViewBox box = computeBox(portal, config.viewDepth, config.viewLateralPad);
+        ViewBox box = computeBox(portal, portal.getNetworkViewDepth(), portal.getNetworkViewLateralPad());
         TicketLease previous;
         TicketLease next;
         synchronized (gatewayTickets) {
@@ -457,6 +472,23 @@ public final class ViewServer implements Listener {
         if (previous != null) {
             releaseTicketLease(previous);
         }
+    }
+
+    private void releaseGatewayTicket(UUID portalId) {
+        TicketLease removed;
+        synchronized (gatewayTickets) {
+            removed = gatewayTickets.remove(portalId);
+        }
+        if (removed != null) {
+            releaseTicketLease(removed);
+        }
+    }
+
+    private boolean isIntervalDue(int intervalTicks) {
+        long interval = Math.max(DIRTY_DRAIN_INTERVAL_TICKS, intervalTicks);
+        long steps = Math.max(1L, interval / DIRTY_DRAIN_INTERVAL_TICKS);
+        long normalized = steps * DIRTY_DRAIN_INTERVAL_TICKS;
+        return tickCounter % normalized < DIRTY_DRAIN_INTERVAL_TICKS;
     }
 
     private void releaseMissingGatewayTickets(Set<UUID> active) {
@@ -692,8 +724,11 @@ public final class ViewServer implements Listener {
 
         List<String> palette = new ArrayList<>(16);
         HashMap<String, Integer> paletteLookup = new HashMap<>(32);
+        List<String> biomePalette = new ArrayList<>(8);
+        HashMap<String, Integer> biomePaletteLookup = new HashMap<>(16);
         short[] indices = new short[cells];
         byte[] light = new byte[cells];
+        short[] biomes = new short[cells];
 
         int cell = 0;
         for (int y = minY; y <= maxY; y++) {
@@ -711,6 +746,15 @@ public final class ViewServer implements Listener {
                         paletteLookup.put(stateString, paletteIndex);
                     }
                     indices[cell] = (short) paletteIndex.intValue();
+                    Biome biome = snapshot.getBiome(lx, ly, lz);
+                    String biomeString = biome.getKey().asString();
+                    Integer biomePaletteIndex = biomePaletteLookup.get(biomeString);
+                    if (biomePaletteIndex == null) {
+                        biomePaletteIndex = biomePalette.size();
+                        biomePalette.add(biomeString);
+                        biomePaletteLookup.put(biomeString, biomePaletteIndex);
+                    }
+                    biomes[cell] = (short) biomePaletteIndex.intValue();
                     int sky = snapshot.getBlockSkyLight(lx, ly, lz);
                     int emitted = snapshot.getBlockEmittedLight(lx, ly, lz);
                     light[cell] = (byte) (((sky & 0x0F) << 4) | (emitted & 0x0F));
@@ -719,7 +763,7 @@ public final class ViewServer implements Listener {
             }
         }
 
-        ViewSlice slice = new ViewSlice(minX, minY, minZ, sizeX, sizeY, sizeZ, palette, indices, light);
+        ViewSlice slice = new ViewSlice(minX, minY, minZ, sizeX, sizeY, sizeZ, palette, indices, light, biomePalette, biomes);
         long columnKey = ViewSlice.columnKey(chunkX, chunkZ);
         long hash = slice.contentHash();
         Long previous = session.sliceHashes.put(columnKey, hash);

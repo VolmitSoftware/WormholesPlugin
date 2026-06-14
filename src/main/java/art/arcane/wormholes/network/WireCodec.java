@@ -9,7 +9,7 @@ import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 
 public final class WireCodec {
-    public static final int PROTOCOL_VERSION = 5;
+    public static final int PROTOCOL_VERSION = 6;
     public static final int MAX_FRAME_BYTES = 4 * 1024 * 1024;
     public static final int MAX_INFLATED_BYTES = 16 * 1024 * 1024;
     private static final int COMPRESS_THRESHOLD_BYTES = 1024;

@@ -42,6 +42,14 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 
 	public void completeRemoteArrival(Entity entity, Traversive t);
 
+	public void rejectRemoteArrival(Entity entity, Traversive t);
+
+	public void rejectDeparture(Entity entity, Traversive t);
+
+	public boolean canDepart(Entity entity);
+
+	public boolean canArrive(Entity entity);
+
 	public void setDirection(Direction d);
 
 	public void setFrame(PortalFrame frame);
@@ -85,6 +93,44 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 	public ProjectionMode getProjectionMode();
 
 	public void setProjectionMode(ProjectionMode mode);
+
+	public PortalPermissionMode getPermissionMode();
+
+	public void setPermissionMode(PortalPermissionMode mode);
+
+	public String getPermissionNode();
+
+	public boolean isOutgoingTraversalsEnabled();
+
+	public void setOutgoingTraversalsEnabled(boolean enabled);
+
+	public boolean isIncomingTraversalsEnabled();
+
+	public void setIncomingTraversalsEnabled(boolean enabled);
+
+	public int getNetworkViewDepth();
+
+	public void setNetworkViewDepth(int depth);
+
+	public int getNetworkViewLateralPad();
+
+	public void setNetworkViewLateralPad(int lateralPad);
+
+	public int getNetworkViewHeartbeatTicks();
+
+	public void setNetworkViewHeartbeatTicks(int ticks);
+
+	public int getNetworkViewEntityIntervalTicks();
+
+	public void setNetworkViewEntityIntervalTicks(int ticks);
+
+	public int getNetworkViewUnsubscribeGraceSeconds();
+
+	public void setNetworkViewUnsubscribeGraceSeconds(int seconds);
+
+	public String getNetworkViewFallbackBlock();
+
+	public void setNetworkViewFallbackBlock(String blockState);
 
 	public AxisAlignedBB getView();
 

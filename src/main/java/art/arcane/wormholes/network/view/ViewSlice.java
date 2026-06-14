@@ -6,7 +6,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-public record ViewSlice(int minX, int minY, int minZ, int sizeX, int sizeY, int sizeZ, List<String> palette, short[] indices, byte[] light) {
+public record ViewSlice(int minX, int minY, int minZ, int sizeX, int sizeY, int sizeZ, List<String> palette, short[] indices, byte[] light, List<String> biomePalette, short[] biomes) {
     public static final int MAX_PALETTE_ENTRIES = 4096;
     public static final int MAX_CELLS = 16 * 512 * 16;
 
@@ -44,6 +44,15 @@ public record ViewSlice(int minX, int minY, int minZ, int sizeX, int sizeY, int 
         for (byte level : light) {
             hash = (hash ^ (level & 0xFF)) * 0x100000001b3L;
         }
+        for (String entry : biomePalette) {
+            for (int i = 0; i < entry.length(); i++) {
+                hash = (hash ^ entry.charAt(i)) * 0x100000001b3L;
+            }
+            hash = (hash ^ 0xFE) * 0x100000001b3L;
+        }
+        for (short biome : biomes) {
+            hash = (hash ^ (biome & 0xFFFF)) * 0x100000001b3L;
+        }
         return hash;
     }
 
@@ -62,6 +71,13 @@ public record ViewSlice(int minX, int minY, int minZ, int sizeX, int sizeY, int 
             out.writeShort(index);
         }
         out.write(light);
+        out.writeShort(biomePalette.size());
+        for (String entry : biomePalette) {
+            out.writeUTF(entry);
+        }
+        for (short biome : biomes) {
+            out.writeShort(biome);
+        }
     }
 
     public static ViewSlice read(DataInputStream in) throws IOException {
@@ -89,6 +105,18 @@ public record ViewSlice(int minX, int minY, int minZ, int sizeX, int sizeY, int 
         }
         byte[] light = new byte[(int) cells];
         in.readFully(light);
-        return new ViewSlice(minX, minY, minZ, sizeX, sizeY, sizeZ, palette, indices, light);
+        int biomePaletteSize = in.readUnsignedShort();
+        if (biomePaletteSize > MAX_PALETTE_ENTRIES) {
+            throw new IOException("View slice biome palette too large: " + biomePaletteSize);
+        }
+        List<String> biomePalette = new ArrayList<>(biomePaletteSize);
+        for (int i = 0; i < biomePaletteSize; i++) {
+            biomePalette.add(in.readUTF());
+        }
+        short[] biomes = new short[(int) cells];
+        for (int i = 0; i < biomes.length; i++) {
+            biomes[i] = in.readShort();
+        }
+        return new ViewSlice(minX, minY, minZ, sizeX, sizeY, sizeZ, palette, indices, light, biomePalette, biomes);
     }
 }

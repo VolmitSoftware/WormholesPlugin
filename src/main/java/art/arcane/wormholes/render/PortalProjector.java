@@ -83,6 +83,7 @@ public final class PortalProjector {
     private boolean hasCameraSnapshot;
     private String transformedBlockCacheFrameKey;
     private BlockData remoteFallback;
+    private String remoteFallbackState;
     private long lastRemoteRevision = -1L;
     private int remoteResendStage;
 
@@ -660,16 +661,18 @@ public final class PortalProjector {
         if (subscriptions == null || peerName == null || portalId == null) {
             return null;
         }
-        RemoteViewCache.RemoteView view = subscriptions.touch(peerName, portalId);
-        if (remoteFallback == null) {
-            remoteFallback = parseRemoteFallback();
+        RemoteViewCache.RemoteView view = subscriptions.touch(peerName, portalId, portal.getNetworkViewUnsubscribeGraceSeconds());
+        String fallbackState = portal.getNetworkViewFallbackBlock();
+        if (remoteFallback == null || !fallbackState.equals(remoteFallbackState)) {
+            remoteFallback = parseRemoteFallback(fallbackState);
+            remoteFallbackState = fallbackState;
         }
         return new RemoteWorldView(view, remoteFallback);
     }
 
-    private static BlockData parseRemoteFallback() {
+    private static BlockData parseRemoteFallback(String fallbackState) {
         try {
-            return Bukkit.createBlockData(Wormholes.settings.getNetwork().viewFallbackBlock);
+            return Bukkit.createBlockData(fallbackState);
         } catch (IllegalArgumentException e) {
             return Material.AIR.createBlockData();
         }

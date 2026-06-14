@@ -1,6 +1,5 @@
 package art.arcane.wormholes.network.view;
 
-import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.network.NetworkManager;
 import art.arcane.wormholes.network.WireMessage;
 
@@ -18,6 +17,7 @@ public final class ViewSubscriptionManager {
     private final RemoteViewCache cache;
     private final Map<Key, Long> lastTouchMillis = new ConcurrentHashMap<>();
     private final Map<Key, Long> lastSubscribeMillis = new ConcurrentHashMap<>();
+    private final Map<Key, Long> unsubscribeGraceMillis = new ConcurrentHashMap<>();
     private final Map<Key, Boolean> subscribed = new ConcurrentHashMap<>();
 
     public ViewSubscriptionManager(NetworkManager network, RemoteViewCache cache) {
@@ -25,10 +25,11 @@ public final class ViewSubscriptionManager {
         this.cache = cache;
     }
 
-    public RemoteViewCache.RemoteView touch(String peerName, UUID portalId) {
+    public RemoteViewCache.RemoteView touch(String peerName, UUID portalId, int graceSeconds) {
         Key key = new Key(peerName, portalId);
         long now = System.currentTimeMillis();
         lastTouchMillis.put(key, now);
+        unsubscribeGraceMillis.put(key, Long.valueOf(Math.max(5, graceSeconds) * 1000L));
         RemoteViewCache.RemoteView view = cache.getOrCreate(peerName, portalId);
         if (subscribed.putIfAbsent(key, Boolean.TRUE) == null) {
             lastSubscribeMillis.put(key, now);
@@ -43,15 +44,16 @@ public final class ViewSubscriptionManager {
     }
 
     public void sweep() {
-        long graceMillis = Math.max(5, Wormholes.settings.getNetwork().viewUnsubscribeGraceSeconds) * 1000L;
         long now = System.currentTimeMillis();
         for (Map.Entry<Key, Long> entry : lastTouchMillis.entrySet()) {
+            Key key = entry.getKey();
+            long graceMillis = unsubscribeGraceMillis.getOrDefault(key, Long.valueOf(30_000L)).longValue();
             if (now - entry.getValue() < graceMillis) {
                 continue;
             }
-            Key key = entry.getKey();
             lastTouchMillis.remove(key, entry.getValue());
             lastSubscribeMillis.remove(key);
+            unsubscribeGraceMillis.remove(key);
             if (subscribed.remove(key) != null) {
                 network.send(key.peerName(), new WireMessage.ViewUnsubscribe(key.portalId()));
                 cache.remove(key.peerName(), key.portalId());

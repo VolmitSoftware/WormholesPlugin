@@ -79,13 +79,15 @@ class TomlCodecNetworkTest {
     }
 
     @Test
-    void defaultNetworkConfigCreatesFileWithEmptyPeers() {
+    void defaultNetworkConfigCreatesFileWithEmptyPeers() throws Exception {
         File file = tempDir.resolve("network.toml").toFile();
         NetworkConfig loaded = TomlCodec.loadOrCreate(file, NetworkConfig.class);
         assertEquals(false, loaded.enabled);
-        assertEquals("minecraft:air", loaded.viewFallbackBlock);
         assertEquals(0, loaded.peers.size());
         assertTrue(file.isFile());
+        String written = Files.readString(file.toPath(), StandardCharsets.UTF_8);
+        assertTrue(!written.contains("view-depth"));
+        assertTrue(!written.contains("view-entity-interval-ticks"));
     }
 
     @Test
