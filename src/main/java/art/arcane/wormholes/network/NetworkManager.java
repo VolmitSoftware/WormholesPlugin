@@ -2,13 +2,14 @@ package art.arcane.wormholes.network;
 
 import art.arcane.wormholes.config.toml.NetworkConfig;
 
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -19,6 +20,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -35,8 +37,13 @@ public final class NetworkManager implements PeerConnection.Listener {
     private static final int ROUTE_TTL = 8;
     private static final long STATUS_BRIDGE_INTERVAL_MS = 2_000L;
     private static final long STATUS_BRIDGE_READY_TTL_MS = 12_000L;
-    private static final int STATUS_BRIDGE_QUEUE_CAPACITY = 256;
+    private static final long STATUS_FRAGMENT_TTL_MS = 15L * 60_000L;
+    private static final int STATUS_FRAGMENT_ASSEMBLY_CAPACITY = 128;
+    private static final int STATUS_BRIDGE_QUEUE_CAPACITY = 1024;
     private static final int STATUS_BRIDGE_FRAME_BUDGET_BYTES = 20_000;
+    private static final int STATUS_FRAGMENT_MAX_FRAME_BYTES = WireCodec.MAX_FRAME_BYTES + Integer.BYTES;
+    private static final int STATUS_FRAGMENT_CHUNK_BYTES = 8 * 1024;
+    private static final int STATUS_FRAGMENT_MAX_COUNT = (STATUS_FRAGMENT_MAX_FRAME_BYTES / STATUS_FRAGMENT_CHUNK_BYTES) + 2;
 
     private final Logger logger;
     private final String mcVersion;
@@ -58,7 +65,9 @@ public final class NetworkManager implements PeerConnection.Listener {
     private final Map<String, Long> statusLastSeen = new ConcurrentHashMap<>();
     private final Map<String, Long> statusRttMillis = new ConcurrentHashMap<>();
     private final Map<String, Long> nextStatusAttempt = new ConcurrentHashMap<>();
+    private final AtomicLong statusFragmentIds = new AtomicLong();
     private final Set<String> statusOversizeWarnings = ConcurrentHashMap.newKeySet();
+    private final Map<String, StatusFragmentAssembly> statusFragments = new ConcurrentHashMap<>();
     private final Map<String, String> routes = new ConcurrentHashMap<>();
     private final Map<String, List<PortalInfo>> relayedPortalDirectories = new ConcurrentHashMap<>();
 
@@ -248,6 +257,7 @@ public final class NetworkManager implements PeerConnection.Listener {
         statusRttMillis.clear();
         nextStatusAttempt.clear();
         statusOutbox.clear();
+        statusFragments.clear();
         acceptThread = null;
     }
 
@@ -307,8 +317,7 @@ public final class NetworkManager implements PeerConnection.Listener {
     }
 
     public NetworkConfig.PeerEntry getPeer(String name) {
-        NetworkConfig.PeerEntry configured = findConfiguredPeer(config, name);
-        return configured != null ? configured : learnedPeers.get(name);
+        return learnedPeers.get(name);
     }
 
     public List<PeerStatus> status() {
@@ -558,14 +567,74 @@ public final class NetworkManager implements PeerConnection.Listener {
 
     private void receiveStatusBridgeMessages(String peerName, List<WireMessage> messages) {
         for (WireMessage message : messages) {
-            if (message instanceof WireMessage.Routed routed) {
-                handleRouted(peerName, routed);
-                continue;
-            }
-            cacheRelayAnnouncement(peerName, message);
-            relayPortalAnnouncement(peerName, peerName, ROUTE_TTL, message);
-            deliverMessage(peerName, message);
+            receiveStatusBridgeMessage(peerName, message);
         }
+    }
+
+    private void receiveStatusBridgeMessage(String peerName, WireMessage message) {
+        if (message instanceof WireMessage.SidebandFragment fragment) {
+            WireMessage reassembled = receiveStatusFragment(peerName, fragment);
+            if (reassembled == null) {
+                return;
+            }
+            message = reassembled;
+        }
+        if (message instanceof WireMessage.Routed routed) {
+            handleRouted(peerName, routed);
+            return;
+        }
+        cacheRelayAnnouncement(peerName, message);
+        relayPortalAnnouncement(peerName, peerName, ROUTE_TTL, message);
+        deliverMessage(peerName, message);
+    }
+
+    private WireMessage receiveStatusFragment(String peerName, WireMessage.SidebandFragment fragment) {
+        long now = System.currentTimeMillis();
+        expireStatusFragments(now);
+        if (!isValidStatusFragment(fragment)) {
+            return null;
+        }
+        String key = statusFragmentKey(peerName, fragment.messageId());
+        if (!statusFragments.containsKey(key) && statusFragments.size() >= STATUS_FRAGMENT_ASSEMBLY_CAPACITY) {
+            return null;
+        }
+        byte[][] completedFrame = new byte[1][];
+        statusFragments.compute(key, (ignored, previous) -> {
+            StatusFragmentAssembly assembly = previous;
+            if (assembly == null || !assembly.accepts(fragment)) {
+                assembly = new StatusFragmentAssembly(fragment, now);
+            }
+            if (!assembly.add(fragment)) {
+                return assembly;
+            }
+            if (!assembly.isComplete()) {
+                return assembly;
+            }
+            completedFrame[0] = assembly.assemble();
+            return null;
+        });
+        if (completedFrame[0] == null) {
+            return null;
+        }
+        try {
+            return WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(completedFrame[0])));
+        } catch (IOException e) {
+            logger.warning("net: dropped corrupt status sideband jumbo frame from " + peerName + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    private static boolean isValidStatusFragment(WireMessage.SidebandFragment fragment) {
+        if (fragment.total() <= 0 || fragment.total() > STATUS_FRAGMENT_MAX_COUNT) {
+            return false;
+        }
+        if (fragment.index() < 0 || fragment.index() >= fragment.total()) {
+            return false;
+        }
+        if (fragment.frameLength() <= 0 || fragment.frameLength() > STATUS_FRAGMENT_MAX_FRAME_BYTES) {
+            return false;
+        }
+        return fragment.chunk() != null && fragment.chunk().length > 0 && fragment.chunk().length <= STATUS_FRAGMENT_CHUNK_BYTES;
     }
 
     private void markStatusBridgeReady(String peerName, long rttMillis) {
@@ -743,6 +812,7 @@ public final class NetworkManager implements PeerConnection.Listener {
     private void keepalive() {
         long now = System.currentTimeMillis();
         expireStatusBridgePeers(now);
+        expireStatusFragments(now);
         for (PeerConnection connection : readyPeers.values()) {
             connection.send(new WireMessage.Ping(now));
         }
@@ -761,35 +831,68 @@ public final class NetworkManager implements PeerConnection.Listener {
     }
 
     private boolean enqueueStatusMessage(String peerName, WireMessage message) {
-        if (!canCarryStatusMessage(peerName, message)) {
+        List<WireMessage> queuedMessages = statusMessagesFor(peerName, message);
+        if (queuedMessages.isEmpty()) {
             return false;
         }
         BlockingQueue<WireMessage> queue = statusOutbox.computeIfAbsent(peerName, ignored -> new LinkedBlockingQueue<>(STATUS_BRIDGE_QUEUE_CAPACITY));
-        boolean queued = queue.offer(message);
-        if (!queued) {
+        if (queue.remainingCapacity() < queuedMessages.size()) {
             lastDialError.put(peerName, "game-port status sideband queue is full");
+            return false;
         }
-        return queued;
+        for (WireMessage queuedMessage : queuedMessages) {
+            queue.offer(queuedMessage);
+        }
+        return true;
     }
 
-    private boolean canCarryStatusMessage(String peerName, WireMessage message) {
+    private List<WireMessage> statusMessagesFor(String peerName, WireMessage message) {
         try {
-            int frameLength = WireCodec.encodeFrame(message).length;
-            if (frameLength <= MinecraftStatusBridge.MAX_FRAME_BYTES && frameLength <= STATUS_BRIDGE_FRAME_BUDGET_BYTES) {
-                return true;
+            byte[] frame = WireCodec.encodeFrame(message);
+            if (frame.length <= MinecraftStatusBridge.MAX_FRAME_BYTES) {
+                return List.of(message);
             }
-            warnOversizedStatusMessage(peerName, message, frameLength);
-            return false;
+            return fragmentStatusMessage(peerName, message, frame);
         } catch (IOException e) {
             logger.warning("net: could not encode " + message.type() + " for status sideband to " + peerName + ": " + e.getMessage());
-            return false;
+            return List.of();
+        }
+    }
+
+    private List<WireMessage> fragmentStatusMessage(String peerName, WireMessage message, byte[] frame) {
+        if (frame.length > STATUS_FRAGMENT_MAX_FRAME_BYTES) {
+            warnOversizedStatusMessage(peerName, message, frame.length);
+            return List.of();
+        }
+        int total = (frame.length + STATUS_FRAGMENT_CHUNK_BYTES - 1) / STATUS_FRAGMENT_CHUNK_BYTES;
+        if (total > STATUS_FRAGMENT_MAX_COUNT) {
+            warnOversizedStatusMessage(peerName, message, frame.length);
+            return List.of();
+        }
+        warnFragmentedStatusMessage(peerName, message, frame.length, total);
+        long messageId = statusFragmentIds.incrementAndGet();
+        List<WireMessage> fragments = new ArrayList<>(total);
+        for (int index = 0; index < total; index++) {
+            int offset = index * STATUS_FRAGMENT_CHUNK_BYTES;
+            int length = Math.min(STATUS_FRAGMENT_CHUNK_BYTES, frame.length - offset);
+            byte[] chunk = new byte[length];
+            System.arraycopy(frame, offset, chunk, 0, length);
+            fragments.add(new WireMessage.SidebandFragment(messageId, index, total, frame.length, chunk));
+        }
+        return fragments;
+    }
+
+    private void warnFragmentedStatusMessage(String peerName, WireMessage message, int frameLength, int fragments) {
+        String key = peerName + ":" + message.type() + ":fragmented";
+        if (statusOversizeWarnings.add(key)) {
+            logger.warning("net: " + message.type() + " for " + peerName + " is " + frameLength + " bytes and will use " + fragments + " signed game-port sideband fragments; open the raw Wormholes port for high-throughput projection traffic");
         }
     }
 
     private void warnOversizedStatusMessage(String peerName, WireMessage message, int frameLength) {
         String key = peerName + ":" + message.type();
         if (statusOversizeWarnings.add(key)) {
-            logger.warning("net: " + message.type() + " for " + peerName + " is " + frameLength + " bytes and cannot use the game-port status sideband; open the raw Wormholes port for high-throughput projection traffic");
+            logger.warning("net: " + message.type() + " for " + peerName + " is " + frameLength + " bytes and exceeds the Wormholes sideband jumbo frame limit; open the raw Wormholes port for high-throughput projection traffic");
         }
     }
 
@@ -865,6 +968,14 @@ public final class NetworkManager implements PeerConnection.Listener {
         }
     }
 
+    private void expireStatusFragments(long now) {
+        statusFragments.entrySet().removeIf(entry -> now - entry.getValue().createdAtMillis() > STATUS_FRAGMENT_TTL_MS);
+    }
+
+    private static String statusFragmentKey(String peerName, long messageId) {
+        return peerName + ":" + messageId;
+    }
+
     private boolean hasPendingDial(String peerName) {
         for (PeerConnection connection : pending) {
             if (connection.isDialer() && peerName.equals(connection.getPeerName())) {
@@ -881,24 +992,17 @@ public final class NetworkManager implements PeerConnection.Listener {
     }
 
     private NetworkConfig.PeerEntry findKnownPeer(String name) {
-        NetworkConfig.PeerEntry configured = findConfiguredPeer(config, name);
-        return configured != null ? configured : learnedPeers.get(name);
+        return learnedPeers.get(name);
     }
 
     private List<NetworkConfig.PeerEntry> knownPeers() {
-        NetworkConfig active = config;
-        Map<String, NetworkConfig.PeerEntry> peers = new LinkedHashMap<>();
-        for (NetworkConfig.PeerEntry peer : active.peers) {
-            if (peer.name != null && !peer.name.isBlank()) {
-                peers.put(peer.name, peer);
-            }
-        }
+        List<NetworkConfig.PeerEntry> peers = new ArrayList<>(learnedPeers.size());
         for (NetworkConfig.PeerEntry peer : learnedPeers.values()) {
             if (peer.name != null && !peer.name.isBlank()) {
-                peers.putIfAbsent(peer.name, peer);
+                peers.add(peer);
             }
         }
-        return new ArrayList<>(peers.values());
+        return peers;
     }
 
     private List<NetworkConfig.PeerEntry> dialPeers() {
@@ -910,15 +1014,6 @@ public final class NetworkManager implements PeerConnection.Listener {
             }
         }
         return dialable;
-    }
-
-    private static NetworkConfig.PeerEntry findConfiguredPeer(NetworkConfig active, String name) {
-        for (NetworkConfig.PeerEntry peer : active.peers) {
-            if (peer.name != null && peer.name.equals(name)) {
-                return peer;
-            }
-        }
-        return null;
     }
 
     private static boolean isBoat(NetworkConfig.PeerEntry peer) {
@@ -1086,5 +1181,65 @@ public final class NetworkManager implements PeerConnection.Listener {
         return message instanceof WireMessage.PortalDirectory
             || message instanceof WireMessage.PortalUpsert
             || message instanceof WireMessage.PortalRemove;
+    }
+
+    private static final class StatusFragmentAssembly {
+        private final long messageId;
+        private final int total;
+        private final int frameLength;
+        private final byte[][] chunks;
+        private final long createdAtMillis;
+        private int received;
+        private int receivedBytes;
+
+        private StatusFragmentAssembly(WireMessage.SidebandFragment first, long createdAtMillis) {
+            this.messageId = first.messageId();
+            this.total = first.total();
+            this.frameLength = first.frameLength();
+            this.chunks = new byte[first.total()][];
+            this.createdAtMillis = createdAtMillis;
+        }
+
+        private boolean accepts(WireMessage.SidebandFragment fragment) {
+            return messageId == fragment.messageId()
+                && total == fragment.total()
+                && frameLength == fragment.frameLength();
+        }
+
+        private boolean add(WireMessage.SidebandFragment fragment) {
+            if (!accepts(fragment)) {
+                return false;
+            }
+            int index = fragment.index();
+            if (index < 0 || index >= chunks.length || chunks[index] != null) {
+                return false;
+            }
+            byte[] chunk = fragment.chunk();
+            if (receivedBytes + chunk.length > frameLength) {
+                return false;
+            }
+            chunks[index] = chunk;
+            received++;
+            receivedBytes += chunk.length;
+            return true;
+        }
+
+        private boolean isComplete() {
+            return received == total && receivedBytes == frameLength;
+        }
+
+        private byte[] assemble() {
+            byte[] frame = new byte[frameLength];
+            int offset = 0;
+            for (byte[] chunk : chunks) {
+                System.arraycopy(chunk, 0, frame, offset, chunk.length);
+                offset += chunk.length;
+            }
+            return frame;
+        }
+
+        private long createdAtMillis() {
+            return createdAtMillis;
+        }
     }
 }

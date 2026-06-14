@@ -24,12 +24,6 @@ public class ProjectionConfig {
     public int refreshIntervalTicks = 1;
 
     @ConfigDescription({
-        "Maximum stale-cell flush window in milliseconds.",
-        "Kept for compatibility with older projection timing; lower values make stale projected blocks revert more aggressively."
-    })
-    public double flushTimeMillis = 750.0;
-
-    @ConfigDescription({
         "Virtual-iris apex padding behind the player's eye in blocks.",
         "Higher values widen the cone when the player is close to the frame, reducing edge pop-out.",
         "Too high can project more cells than needed, so keep this near 1-3 unless close-up portals still clip."

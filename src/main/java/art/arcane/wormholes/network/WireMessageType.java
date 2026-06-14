@@ -23,7 +23,8 @@ public enum WireMessageType {
     HANDOFF_DENY(32),
     HANDOFF_CANCEL(33),
     ENTITY_TRANSFER(34),
-    ENTITY_TRANSFER_ACK(35);
+    ENTITY_TRANSFER_ACK(35),
+    SIDEBAND_FRAGMENT(60);
 
     private static final WireMessageType[] BY_ID = new WireMessageType[64];
 

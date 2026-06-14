@@ -496,6 +496,33 @@ public sealed interface WireMessage {
         }
     }
 
+    record SidebandFragment(long messageId, int index, int total, int frameLength, byte[] chunk) implements WireMessage {
+        private static final int MAX_CHUNK_BYTES = 16 * 1024;
+
+        @Override
+        public WireMessageType type() {
+            return WireMessageType.SIDEBAND_FRAGMENT;
+        }
+
+        @Override
+        public void write(DataOutputStream out) throws IOException {
+            out.writeLong(messageId);
+            out.writeInt(index);
+            out.writeInt(total);
+            out.writeInt(frameLength);
+            WireCodec.writeByteArray(out, chunk, MAX_CHUNK_BYTES);
+        }
+
+        public static SidebandFragment read(DataInputStream in) throws IOException {
+            long messageId = in.readLong();
+            int index = in.readInt();
+            int total = in.readInt();
+            int frameLength = in.readInt();
+            byte[] chunk = WireCodec.readByteArray(in, MAX_CHUNK_BYTES);
+            return new SidebandFragment(messageId, index, total, frameLength, chunk);
+        }
+    }
+
     private static void writeUuid(DataOutputStream out, UUID id) throws IOException {
         out.writeLong(id.getMostSignificantBits());
         out.writeLong(id.getLeastSignificantBits());

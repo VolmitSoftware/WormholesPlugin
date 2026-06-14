@@ -1,25 +1,19 @@
 package art.arcane.wormholes;
 
 import art.arcane.wormholes.config.WormholesSettings;
-import art.arcane.wormholes.config.toml.AdvancedConfig;
 import art.arcane.wormholes.config.toml.MainConfig;
 import art.arcane.wormholes.config.toml.ProjectionConfig;
 import art.arcane.wormholes.config.toml.RenderConfig;
 
 public final class Settings {
     public static volatile boolean ENABLE_PARTICLES = true;
-    public static volatile int MAX_PORTAL_SIZE_CUBED = 24;
     public static volatile double PORTAL_CONSTRUCT_SPEED = 0.975D;
     public static volatile double PORTAL_COLAPSE_SPEED = 0.91D;
-    public static volatile double PORTAL_OPEN_SPEED = 1.0D;
-    public static volatile double PORTAL_CLOSE_SPEED = 1.0D;
     public static volatile boolean DEBUG_RENDERING = false;
-    public static volatile boolean DEBUG_VIEWPORT = false;
     public static volatile boolean DEBUG_TRAVERSABLES = true;
     public static volatile double FRUSTUM_CULLING_RATIO = 0.2D;
     public static volatile double CAPTURE_ZONE_RADIUS = 8.0D;
     public static volatile double PROJECTION_RANGE = 32.0D;
-    public static volatile double PROJECTION_FLUSH_TIME = 750.0D;
     public static volatile double NEAR_PLANE_PADDING = 2.0D;
     public static volatile double PROJECTION_APERTURE_PADDING_BLOCKS = 1.0D;
     public static volatile boolean LIGHTING_FIDELITY = true;
@@ -45,10 +39,6 @@ public final class Settings {
     public static volatile int PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK = 4;
     public static volatile int PROJECTION_INTEREST_GRACE_TICKS = 5;
     public static volatile int PROJECTION_INITIAL_RESEND_PASSES = 4;
-    public static volatile int OCTREE_LEAF_SIZE = 4;
-    public static volatile int PARALLEL_CHUNK_READS = 4;
-    public static volatile long OCTREE_REBUILD_INTERVAL_MS = 5000L;
-    public static volatile int CHUNK_SNAPSHOT_RADIUS = 6;
     public static volatile boolean DEBUG = false;
 
     private Settings() {
@@ -61,22 +51,16 @@ public final class Settings {
         MainConfig main = src.getMain();
         ProjectionConfig projection = src.getProjection();
         RenderConfig render = src.getRender();
-        AdvancedConfig advanced = src.getAdvanced();
 
         ENABLE_PARTICLES = main.enableParticles;
-        MAX_PORTAL_SIZE_CUBED = clampInt(main.maxPortalSizeCubed, 1, 256);
         PORTAL_CONSTRUCT_SPEED = clampDouble(main.portalConstructSpeed, 0.0D, 1.0D);
         PORTAL_COLAPSE_SPEED = clampDouble(main.portalCollapseSpeed, 0.0D, 1.0D);
-        PORTAL_OPEN_SPEED = clampDouble(main.portalOpenSpeed, 0.0D, 1.0D);
-        PORTAL_CLOSE_SPEED = clampDouble(main.portalCloseSpeed, 0.0D, 1.0D);
         DEBUG_RENDERING = main.debugRendering;
-        DEBUG_VIEWPORT = main.debugViewport;
         DEBUG_TRAVERSABLES = main.debugTraversables;
         DEBUG = main.verboseLogging;
 
         FRUSTUM_CULLING_RATIO = clampDouble(projection.frustumCullingRatio, 0.0D, 1.0D);
         PROJECTION_RANGE = clampDouble(projection.range, 1.0D, 256.0D);
-        PROJECTION_FLUSH_TIME = clampDouble(projection.flushTimeMillis, 50.0D, 5000.0D);
         NEAR_PLANE_PADDING = clampDouble(projection.nearPlanePadding, 0.0D, 16.0D);
         PROJECTION_APERTURE_PADDING_BLOCKS = clampDouble(projection.aperturePaddingBlocks, 0.0D, 8.0D);
         PROJECTION_REFRESH_INTERVAL_TICKS = clampInt(projection.refreshIntervalTicks, 1, 20);
@@ -104,18 +88,9 @@ public final class Settings {
         ENTITY_CANDIDATE_CACHE_TICKS = clampInt(render.entityCandidateCacheTicks, 1, 40);
         MAX_SPOOFED_ENTITIES = clampInt(render.maxSpoofedEntities, 0, 256);
         CAPTURE_ZONE_RADIUS = clampDouble(render.captureZoneRadius, 1.0D, 64.0D);
-
-        OCTREE_LEAF_SIZE = clampInt(advanced.octreeLeafSize, 1, 32);
-        PARALLEL_CHUNK_READS = clampInt(advanced.parallelChunkReads, 1, 32);
-        OCTREE_REBUILD_INTERVAL_MS = clampLong(advanced.octreeRebuildIntervalMillis, 500L, 600_000L);
-        CHUNK_SNAPSHOT_RADIUS = clampInt(advanced.chunkSnapshotRadius, 1, 32);
     }
 
     private static int clampInt(int value, int min, int max) {
-        return Math.max(min, Math.min(max, value));
-    }
-
-    private static long clampLong(long value, long min, long max) {
         return Math.max(min, Math.min(max, value));
     }
 

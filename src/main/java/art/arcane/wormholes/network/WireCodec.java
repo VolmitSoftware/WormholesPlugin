@@ -99,6 +99,7 @@ public final class WireCodec {
             case VIEW_ENTITIES -> WireMessage.ViewEntities.read(in);
             case VIEW_ENTITY_ANIMATION -> WireMessage.ViewEntityAnimation.read(in);
             case VIEW_TIME -> WireMessage.ViewTime.read(in);
+            case SIDEBAND_FRAGMENT -> WireMessage.SidebandFragment.read(in);
         };
     }
 

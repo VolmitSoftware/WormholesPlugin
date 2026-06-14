@@ -1,6 +1,5 @@
 package art.arcane.wormholes.config;
 
-import art.arcane.wormholes.config.toml.AdvancedConfig;
 import art.arcane.wormholes.config.toml.MainConfig;
 import art.arcane.wormholes.config.toml.NetworkConfig;
 import art.arcane.wormholes.config.toml.ProjectionConfig;
@@ -14,14 +13,12 @@ public final class WormholesSettings {
     private final MainConfig main;
     private final ProjectionConfig projection;
     private final RenderConfig render;
-    private final AdvancedConfig advanced;
     private final NetworkConfig network;
 
-    public WormholesSettings(MainConfig main, ProjectionConfig projection, RenderConfig render, AdvancedConfig advanced, NetworkConfig network) {
+    public WormholesSettings(MainConfig main, ProjectionConfig projection, RenderConfig render, NetworkConfig network) {
         this.main = main;
         this.projection = projection;
         this.render = render;
-        this.advanced = advanced;
         this.network = network;
     }
 
@@ -33,9 +30,8 @@ public final class WormholesSettings {
         MainConfig main = TomlCodec.loadOrCreate(new File(configDir, "main.toml"), MainConfig.class);
         ProjectionConfig projection = TomlCodec.loadOrCreate(new File(configDir, "projection.toml"), ProjectionConfig.class);
         RenderConfig render = TomlCodec.loadOrCreate(new File(configDir, "render.toml"), RenderConfig.class);
-        AdvancedConfig advanced = TomlCodec.loadOrCreate(new File(configDir, "advanced.toml"), AdvancedConfig.class);
         NetworkConfig network = TomlCodec.loadOrCreate(new File(configDir, "network.toml"), NetworkConfig.class);
-        return new WormholesSettings(main, projection, render, advanced, network);
+        return new WormholesSettings(main, projection, render, network);
     }
 
     public MainConfig getMain() {
@@ -48,10 +44,6 @@ public final class WormholesSettings {
 
     public RenderConfig getRender() {
         return render;
-    }
-
-    public AdvancedConfig getAdvanced() {
-        return advanced;
     }
 
     public NetworkConfig getNetwork() {

@@ -63,7 +63,7 @@ public class UniversalTunnel extends Tunnel
 	public boolean isValid()
 	{
 		RemotePortal destination = resolveDestination();
-		if(destination == null || !destination.isOpen())
+		if(destination == null)
 		{
 			return false;
 		}

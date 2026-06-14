@@ -60,19 +60,22 @@ class DirectorySyncIntegrationTest {
         fail("Timed out waiting for: " + what);
     }
 
-    private static NetworkConfig config(int listenPort, String serverName, String peerName, int peerPort) {
+    private static NetworkConfig config(int listenPort, String serverName) {
         NetworkConfig config = new NetworkConfig();
         config.enabled = true;
         config.serverName = serverName;
         config.listenHost = "127.0.0.1";
         config.advertiseHost = "127.0.0.1";
         config.listenPort = listenPort;
+        return config;
+    }
+
+    private static NetworkConfig.PeerEntry route(String peerName, int peerPort) {
         NetworkConfig.PeerEntry peer = new NetworkConfig.PeerEntry();
         peer.name = peerName;
         peer.host = "127.0.0.1";
         peer.port = peerPort;
-        config.peers.add(peer);
-        return config;
+        return peer;
     }
 
     private static NetworkRouter router(NetworkManager manager, RemotePortalRegistry registry) {
@@ -100,8 +103,10 @@ class DirectorySyncIntegrationTest {
         int portA = freePort();
         int portB = freePort();
 
-        NetworkManager alpha = new NetworkManager(LOGGER, config(portA, ALPHA_NAME, BETA_NAME, portB), "1.26.1", "test", 25565, tempDir.resolve("alpha"));
-        NetworkManager beta = new NetworkManager(LOGGER, config(portB, BETA_NAME, ALPHA_NAME, portA), "1.26.1", "test", 25566, tempDir.resolve("beta"));
+        NetworkManager alpha = new NetworkManager(LOGGER, config(portA, ALPHA_NAME), "1.26.1", "test", 25565, tempDir.resolve("alpha"));
+        NetworkManager beta = new NetworkManager(LOGGER, config(portB, BETA_NAME), "1.26.1", "test", 25566, tempDir.resolve("beta"));
+        alpha.savePeer(route(BETA_NAME, portB));
+        beta.savePeer(route(ALPHA_NAME, portA));
         managers.add(alpha);
         managers.add(beta);
 

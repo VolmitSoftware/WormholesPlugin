@@ -1,6 +1,8 @@
 package art.arcane.wormholes.network;
 
+import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.config.toml.NetworkConfig;
+import art.arcane.wormholes.portal.UniversalTunnel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -11,6 +13,7 @@ import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -67,21 +70,26 @@ class NetworkManagerTest {
         fail("Timed out waiting for: " + what);
     }
 
-    private static NetworkConfig config(int listenPort, String serverName, String peerName, int peerPort) {
+    private static NetworkConfig config(int listenPort, String serverName) {
         NetworkConfig config = new NetworkConfig();
         config.enabled = true;
         config.serverName = serverName == null ? "" : serverName;
         config.listenHost = "127.0.0.1";
         config.advertiseHost = "127.0.0.1";
         config.listenPort = listenPort;
-        if (peerName != null) {
-            NetworkConfig.PeerEntry peer = new NetworkConfig.PeerEntry();
-            peer.name = peerName;
-            peer.host = "127.0.0.1";
-            peer.port = peerPort;
-            config.peers.add(peer);
-        }
         return config;
+    }
+
+    private static NetworkConfig.PeerEntry route(String peerName, int peerPort) {
+        return route(peerName, "127.0.0.1", peerPort);
+    }
+
+    private static NetworkConfig.PeerEntry route(String peerName, String host, int peerPort) {
+        NetworkConfig.PeerEntry peer = new NetworkConfig.PeerEntry();
+        peer.name = peerName;
+        peer.host = host;
+        peer.port = peerPort;
+        return peer;
     }
 
     private NetworkManager manager(NetworkConfig config, int gamePort, String identityName) {
@@ -90,21 +98,37 @@ class NetworkManagerTest {
         return manager;
     }
 
+    private static PortalInfo portalInfo(UUID id, boolean open) {
+        return new PortalInfo(id, "Gateway test", "world", "GATEWAY", open, "N", "E", "U",
+            10.5D, 64.0D, 20.5D,
+            9.5D, 63.5D, 19.5D,
+            11.5D, 66.5D, 21.5D);
+    }
+
+    private static WireTraversive traversive() {
+        return new WireTraversive("N", "E", "U",
+            10.5D, 64.0D, 20.5D,
+            10.5D, 64.0D, 20.5D,
+            0.0D, 0.0D, 1.0D,
+            0.0D, 0.0D, 1.0D,
+            true);
+    }
+
     @Test
     void localNameUsesConfiguredServerNameWhenPresent() {
-        NetworkConfig named = config(8901, "", null, 0);
+        NetworkConfig named = config(8901, "");
         named.serverName = "hub";
         NetworkManager namedManager = manager(named, 25565, "named");
         assertEquals("hub", namedManager.getLocalName());
 
-        NetworkManager defaultPort = manager(config(8902, "", null, 0), 25565, "default");
+        NetworkManager defaultPort = manager(config(8902, ""), 25565, "default");
         String defaultName = defaultPort.getLocalName();
         assertTrue(defaultName.startsWith("wh-"));
 
-        NetworkManager defaultPortReloaded = manager(config(8903, "", null, 0), 25565, "default");
+        NetworkManager defaultPortReloaded = manager(config(8903, ""), 25565, "default");
         assertEquals(defaultName, defaultPortReloaded.getLocalName());
 
-        NetworkManager customPort = manager(config(8904, "", null, 0), 25566, "custom");
+        NetworkManager customPort = manager(config(8904, ""), 25566, "custom");
         assertTrue(customPort.getLocalName().startsWith("wh-"));
         assertNotEquals(defaultName, customPort.getLocalName());
     }
@@ -113,8 +137,10 @@ class NetworkManagerTest {
     void twoManagersHandshakeAndReachReady() throws IOException {
         int portA = freePort();
         int portB = freePort();
-        NetworkManager alpha = manager(config(portA, ALPHA_NAME, BETA_NAME, portB), ALPHA_GAME_PORT, "alpha");
-        NetworkManager beta = manager(config(portB, BETA_NAME, ALPHA_NAME, portA), BETA_GAME_PORT, "beta");
+        NetworkManager alpha = manager(config(portA, ALPHA_NAME), ALPHA_GAME_PORT, "alpha");
+        NetworkManager beta = manager(config(portB, BETA_NAME), BETA_GAME_PORT, "beta");
+        alpha.savePeer(route(BETA_NAME, portB));
+        beta.savePeer(route(ALPHA_NAME, portA));
 
         alpha.start();
         beta.start();
@@ -127,10 +153,12 @@ class NetworkManagerTest {
     void trustedPeerRejectsChangedPublicKey() throws IOException, InterruptedException {
         int portA = freePort();
         int portB = freePort();
-        NetworkConfig alphaConfig = config(portA, ALPHA_NAME, BETA_NAME, portB);
-        NetworkConfig betaConfig = config(portB, BETA_NAME, ALPHA_NAME, portA);
+        NetworkConfig alphaConfig = config(portA, ALPHA_NAME);
+        NetworkConfig betaConfig = config(portB, BETA_NAME);
         NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "alpha");
         NetworkManager beta = manager(betaConfig, BETA_GAME_PORT, "beta");
+        alpha.savePeer(route(BETA_NAME, portB));
+        beta.savePeer(route(ALPHA_NAME, portA));
 
         alpha.start();
         beta.start();
@@ -150,11 +178,12 @@ class NetworkManagerTest {
         int portAlpha = freePort();
         int portZulu = freePort();
 
-        NetworkConfig alphaConfig = config(portAlpha, ALPHA_NAME, null, 0);
-        NetworkConfig zuluConfig = config(portZulu, ZULU_NAME, ALPHA_NAME, portAlpha);
+        NetworkConfig alphaConfig = config(portAlpha, ALPHA_NAME);
+        NetworkConfig zuluConfig = config(portZulu, ZULU_NAME);
 
         NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "alpha");
         NetworkManager zulu = manager(zuluConfig, 25599, "zulu");
+        zulu.savePeer(route(ALPHA_NAME, portAlpha));
 
         alpha.start();
         zulu.start();
@@ -171,13 +200,14 @@ class NetworkManagerTest {
     void outboundOnlyBoatConnectsToAnchor() throws IOException {
         int portAnchor = freePort();
         int unusedBoatPort = freePort();
-        NetworkConfig anchorConfig = config(portAnchor, ALPHA_NAME, null, 0);
-        NetworkConfig boatConfig = config(unusedBoatPort, BETA_NAME, ALPHA_NAME, portAnchor);
+        NetworkConfig anchorConfig = config(portAnchor, ALPHA_NAME);
+        NetworkConfig boatConfig = config(unusedBoatPort, BETA_NAME);
         boatConfig.role = "boat";
         boatConfig.listenEnabled = false;
 
         NetworkManager anchor = manager(anchorConfig, ALPHA_GAME_PORT, "anchor");
         NetworkManager boat = manager(boatConfig, BETA_GAME_PORT, "boat");
+        boat.savePeer(route(ALPHA_NAME, portAnchor));
 
         anchor.start();
         boat.start();
@@ -192,16 +222,16 @@ class NetworkManagerTest {
         int boatAPort = freePort();
         int boatBPort = freePort();
 
-        NetworkConfig anchorConfig = config(anchorPort, "anchor", null, 0);
+        NetworkConfig anchorConfig = config(anchorPort, "anchor");
         anchorConfig.serverName = "anchor";
         anchorConfig.relayEnabled = true;
 
-        NetworkConfig boatAConfig = config(boatAPort, "boat-a", "anchor", anchorPort);
+        NetworkConfig boatAConfig = config(boatAPort, "boat-a");
         boatAConfig.serverName = "boat-a";
         boatAConfig.role = "boat";
         boatAConfig.listenEnabled = false;
 
-        NetworkConfig boatBConfig = config(boatBPort, "boat-b", "anchor", anchorPort);
+        NetworkConfig boatBConfig = config(boatBPort, "boat-b");
         boatBConfig.serverName = "boat-b";
         boatBConfig.role = "boat";
         boatBConfig.listenEnabled = false;
@@ -209,6 +239,8 @@ class NetworkManagerTest {
         NetworkManager anchor = manager(anchorConfig, 25565, "relay-anchor");
         NetworkManager boatA = manager(boatAConfig, 25566, "relay-boat-a");
         NetworkManager boatB = manager(boatBConfig, 25567, "relay-boat-b");
+        boatA.savePeer(route("anchor", anchorPort));
+        boatB.savePeer(route("anchor", anchorPort));
         LinkedBlockingQueue<String> boatBMessages = new LinkedBlockingQueue<>();
         LinkedBlockingQueue<String> boatAMessages = new LinkedBlockingQueue<>();
         boatB.setMessageSink((peerName, message) -> {
@@ -243,8 +275,8 @@ class NetworkManagerTest {
     void savedPeerRoutePersistsAndDialsWithoutConfiguredPeer() throws IOException {
         int portA = freePort();
         int portB = freePort();
-        NetworkConfig alphaConfig = config(portA, ALPHA_NAME, null, 0);
-        NetworkConfig betaConfig = config(portB, BETA_NAME, null, 0);
+        NetworkConfig alphaConfig = config(portA, ALPHA_NAME);
+        NetworkConfig betaConfig = config(portB, BETA_NAME);
         NetworkConfig.PeerEntry route = new NetworkConfig.PeerEntry();
         route.name = BETA_NAME;
         route.host = "127.0.0.1";
@@ -264,13 +296,14 @@ class NetworkManagerTest {
 
         awaitTrue("alpha reaches beta through saved route", () -> alpha.isPeerReady(BETA_NAME), 10_000L);
         awaitTrue("beta accepts alpha without configured peer", () -> beta.isPeerReady(ALPHA_NAME), 10_000L);
-        assertEquals(0, alphaConfig.peers.size());
+        assertTrue(alpha.getPeer(BETA_NAME) != null);
     }
 
     @Test
     void diagnosticsExplainSeparateWormholesPort() {
-        NetworkConfig alphaConfig = config(8901, ALPHA_NAME, BETA_NAME, 8902);
+        NetworkConfig alphaConfig = config(8901, ALPHA_NAME);
         NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "diagnostic-alpha");
+        alpha.savePeer(route(BETA_NAME, 8902));
         List<String> diagnostics = alpha.diagnostics();
         assertTrue(diagnostics.stream().anyMatch(message -> message.contains("status sideband")));
         assertTrue(diagnostics.stream().anyMatch(message -> message.contains("raw port")));
@@ -280,18 +313,22 @@ class NetworkManagerTest {
     void statusSidebandExchangesQueuedMessagesAfterTrust() throws IOException, InterruptedException {
         int rawAlpha = freePort();
         int rawBeta = freePort();
-        NetworkConfig alphaConfig = config(rawAlpha, ALPHA_NAME, BETA_NAME, rawBeta);
+        NetworkConfig alphaConfig = config(rawAlpha, ALPHA_NAME);
         alphaConfig.listenEnabled = false;
-        alphaConfig.peers.get(0).publicHost = "127.0.0.1";
-        alphaConfig.peers.get(0).publicPort = BETA_GAME_PORT;
+        NetworkConfig.PeerEntry betaRoute = route(BETA_NAME, rawBeta);
+        betaRoute.publicHost = "127.0.0.1";
+        betaRoute.publicPort = BETA_GAME_PORT;
 
-        NetworkConfig betaConfig = config(rawBeta, BETA_NAME, ALPHA_NAME, rawAlpha);
+        NetworkConfig betaConfig = config(rawBeta, BETA_NAME);
         betaConfig.listenEnabled = false;
-        betaConfig.peers.get(0).publicHost = "127.0.0.1";
-        betaConfig.peers.get(0).publicPort = ALPHA_GAME_PORT;
+        NetworkConfig.PeerEntry alphaRoute = route(ALPHA_NAME, rawAlpha);
+        alphaRoute.publicHost = "127.0.0.1";
+        alphaRoute.publicPort = ALPHA_GAME_PORT;
 
         NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "status-alpha");
         NetworkManager beta = manager(betaConfig, BETA_GAME_PORT, "status-beta");
+        alpha.savePeer(betaRoute);
+        beta.savePeer(alphaRoute);
         LinkedBlockingQueue<String> betaMessages = new LinkedBlockingQueue<>();
         beta.setMessageSink((peerName, message) -> {
             if (message instanceof WireMessage.PortalDirectory) {
@@ -312,9 +349,53 @@ class NetworkManagerTest {
     }
 
     @Test
+    void statusSidebandFragmentsJumboFrames() throws IOException, InterruptedException {
+        int rawAlpha = freePort();
+        int rawBeta = freePort();
+        NetworkConfig alphaConfig = config(rawAlpha, ALPHA_NAME);
+        alphaConfig.listenEnabled = false;
+        NetworkConfig.PeerEntry betaRoute = route(BETA_NAME, rawBeta);
+        betaRoute.publicHost = "127.0.0.1";
+        betaRoute.publicPort = BETA_GAME_PORT;
+
+        NetworkConfig betaConfig = config(rawBeta, BETA_NAME);
+        betaConfig.listenEnabled = false;
+        NetworkConfig.PeerEntry alphaRoute = route(ALPHA_NAME, rawAlpha);
+        alphaRoute.publicHost = "127.0.0.1";
+        alphaRoute.publicPort = ALPHA_GAME_PORT;
+
+        NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "jumbo-alpha");
+        NetworkManager beta = manager(betaConfig, BETA_GAME_PORT, "jumbo-beta");
+        alpha.savePeer(betaRoute);
+        beta.savePeer(alphaRoute);
+        LinkedBlockingQueue<Integer> betaTransfers = new LinkedBlockingQueue<>();
+        beta.setMessageSink((peerName, message) -> {
+            if (message instanceof WireMessage.EntityTransfer transfer) {
+                betaTransfers.offer(transfer.entitySnapshot().length);
+            }
+        });
+        alpha.start();
+        beta.start();
+
+        byte[] snapshot = new byte[70_000];
+        new Random(42L).nextBytes(snapshot);
+        WireMessage.EntityTransfer transfer = new WireMessage.EntityTransfer(UUID.randomUUID(), UUID.randomUUID(), snapshot, traversive());
+        assertTrue(WireCodec.encodeFrame(transfer).length > MinecraftStatusBridge.MAX_FRAME_BYTES);
+        assertTrue(alpha.send(BETA_NAME, transfer));
+
+        for (int i = 0; i < 16 && betaTransfers.isEmpty(); i++) {
+            MinecraftStatusBridge.StatusPacket request = beta.createStatusBridgePacket(ALPHA_NAME, List.of());
+            MinecraftStatusBridge.StatusPacket response = alpha.handleStatusBridgeRequest(request);
+            assertTrue(response != null);
+            assertTrue(beta.handleStatusBridgeResponse(ALPHA_NAME, response, 12L));
+        }
+        assertEquals(snapshot.length, betaTransfers.poll(10L, TimeUnit.SECONDS));
+    }
+
+    @Test
     void statusReportsBoatRoutesAsWaiting() throws IOException {
         int portA = freePort();
-        NetworkConfig alphaConfig = config(portA, ALPHA_NAME, null, 0);
+        NetworkConfig alphaConfig = config(portA, ALPHA_NAME);
         NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "waiting-alpha");
         NetworkConfig.PeerEntry boatRoute = new NetworkConfig.PeerEntry();
         boatRoute.name = BETA_NAME;
@@ -336,11 +417,12 @@ class NetworkManagerTest {
     void fallbackHostRotationFindsReachableAddress() throws IOException {
         int portA = freePort();
         int portB = freePort();
-        NetworkConfig alphaConfig = config(portA, ALPHA_NAME, BETA_NAME, portB);
-        alphaConfig.peers.get(0).host = "unreachable.invalid";
-        alphaConfig.peers.get(0).fallbackHosts = "127.0.0.1";
+        NetworkConfig alphaConfig = config(portA, ALPHA_NAME);
         NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "alpha");
-        NetworkManager beta = manager(config(portB, BETA_NAME, null, 0), BETA_GAME_PORT, "beta");
+        NetworkConfig.PeerEntry betaRoute = route(BETA_NAME, "unreachable.invalid", portB);
+        betaRoute.fallbackHosts = "127.0.0.1";
+        alpha.savePeer(betaRoute);
+        NetworkManager beta = manager(config(portB, BETA_NAME), BETA_GAME_PORT, "beta");
 
         alpha.start();
         beta.start();
@@ -353,8 +435,10 @@ class NetworkManagerTest {
     void mutualDialsSettleToOneStableConnection() throws IOException, InterruptedException {
         int portA = freePort();
         int portB = freePort();
-        NetworkManager alpha = manager(config(portA, ALPHA_NAME, BETA_NAME, portB), ALPHA_GAME_PORT, "alpha");
-        NetworkManager beta = manager(config(portB, BETA_NAME, ALPHA_NAME, portA), BETA_GAME_PORT, "beta");
+        NetworkManager alpha = manager(config(portA, ALPHA_NAME), ALPHA_GAME_PORT, "alpha");
+        NetworkManager beta = manager(config(portB, BETA_NAME), BETA_GAME_PORT, "beta");
+        alpha.savePeer(route(BETA_NAME, portB));
+        beta.savePeer(route(ALPHA_NAME, portA));
 
         alpha.start();
         beta.start();
@@ -368,11 +452,12 @@ class NetworkManagerTest {
     void reconnectsAfterPeerRestartWithSameIdentity() throws IOException {
         int portA = freePort();
         int portB = freePort();
-        NetworkConfig alphaConfig = config(portA, ALPHA_NAME, BETA_NAME, portB);
-        NetworkConfig betaConfig = config(portB, BETA_NAME, null, 0);
+        NetworkConfig alphaConfig = config(portA, ALPHA_NAME);
+        NetworkConfig betaConfig = config(portB, BETA_NAME);
 
         NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "alpha");
         NetworkManager beta = manager(betaConfig, BETA_GAME_PORT, "beta");
+        alpha.savePeer(route(BETA_NAME, portB));
         alpha.start();
         beta.start();
         awaitTrue("initial connect", () -> alpha.isPeerReady(BETA_NAME), 20_000L);
@@ -387,6 +472,35 @@ class NetworkManagerTest {
     }
 
     @Test
+    void universalTunnelRecoversWhenPeerReadyAndRemoteLastReportedClosed() throws IOException {
+        int portA = freePort();
+        int portB = freePort();
+        NetworkManager alpha = manager(config(portA, ALPHA_NAME), ALPHA_GAME_PORT, "alpha");
+        NetworkManager beta = manager(config(portB, BETA_NAME), BETA_GAME_PORT, "beta");
+        alpha.savePeer(route(BETA_NAME, portB));
+        beta.savePeer(route(ALPHA_NAME, portA));
+        alpha.start();
+        beta.start();
+        awaitTrue("connected", () -> alpha.isPeerReady(BETA_NAME), 10_000L);
+
+        NetworkManager previousNetwork = Wormholes.networkManager;
+        RemotePortalRegistry previousRegistry = Wormholes.remotePortalRegistry;
+        try {
+            UUID portalId = UUID.randomUUID();
+            RemotePortalRegistry registry = new RemotePortalRegistry();
+            registry.applyDirectory(BETA_NAME, List.of(portalInfo(portalId, false)));
+            Wormholes.networkManager = alpha;
+            Wormholes.remotePortalRegistry = registry;
+
+            UniversalTunnel tunnel = new UniversalTunnel(BETA_NAME, portalId);
+            assertTrue(tunnel.isValid());
+        } finally {
+            Wormholes.networkManager = previousNetwork;
+            Wormholes.remotePortalRegistry = previousRegistry;
+        }
+    }
+
+    @Test
     void disabledConfigDoesNotStart() {
         NetworkConfig config = new NetworkConfig();
         config.enabled = false;
@@ -396,11 +510,13 @@ class NetworkManagerTest {
     }
 
     @Test
-    void statusReportsConfiguredPeers() throws IOException {
+    void statusReportsSavedPeerRoutes() throws IOException {
         int portA = freePort();
         int portB = freePort();
-        NetworkManager alpha = manager(config(portA, ALPHA_NAME, BETA_NAME, portB), ALPHA_GAME_PORT, "alpha");
-        NetworkManager beta = manager(config(portB, BETA_NAME, ALPHA_NAME, portA), BETA_GAME_PORT, "beta");
+        NetworkManager alpha = manager(config(portA, ALPHA_NAME), ALPHA_GAME_PORT, "alpha");
+        NetworkManager beta = manager(config(portB, BETA_NAME), BETA_GAME_PORT, "beta");
+        alpha.savePeer(route(BETA_NAME, portB));
+        beta.savePeer(route(ALPHA_NAME, portA));
         alpha.start();
         beta.start();
         awaitTrue("connected", () -> alpha.isPeerReady(BETA_NAME), 10_000L);

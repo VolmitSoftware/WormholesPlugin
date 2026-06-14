@@ -137,12 +137,15 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			j.put("permissionMode", permissionMode.name());
 			j.put("outgoingTraversalsEnabled", outgoingTraversalsEnabled);
 			j.put("incomingTraversalsEnabled", incomingTraversalsEnabled);
+		if(isGateway())
+		{
 			j.put("networkViewDepth", networkViewDepth);
 			j.put("networkViewLateralPad", networkViewLateralPad);
 			j.put("networkViewHeartbeatTicks", networkViewHeartbeatTicks);
 			j.put("networkViewEntityIntervalTicks", networkViewEntityIntervalTicks);
 			j.put("networkViewUnsubscribeGraceSeconds", networkViewUnsubscribeGraceSeconds);
 			j.put("networkViewFallbackBlock", networkViewFallbackBlock);
+		}
 
 		if(tunnel != null)
 		{
@@ -1133,17 +1136,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 						window.close();
 						uiOpenConfigMenu(p);
 					}))
-			.setElement(0, 2, new UIElement("network-view-settings")
-					.setName(ChatColor.DARK_AQUA + "" + ChatColor.BOLD + "Network View")
-					.addLore(ChatColor.GRAY + "Tune this gateway's streamed")
-					.addLore(ChatColor.GRAY + "cross-server projection volume.")
-					.addLore(ChatColor.GRAY + "Depth " + ChatColor.AQUA + networkViewDepth + ChatColor.GRAY + ", Entities " + ChatColor.AQUA + networkViewEntityIntervalTicks + "t")
-					.setMaterial(new MaterialBlock(Material.SPYGLASS))
-					.onLeftClick((e) ->
-					{
-						window.close();
-						uiOpenNetworkViewMenu(p);
-					}))
 			.setElement(-1, 2, new UIElement("rotate-counter-clockwise")
 					.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Counterclockwise")
 				.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees")
@@ -1171,6 +1163,21 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					uiOpenConfigMenu(p);
 				}));
 		//@done
+
+			if(isGateway())
+			{
+				window.setElement(0, 2, new UIElement("network-view-settings")
+						.setName(ChatColor.DARK_AQUA + "" + ChatColor.BOLD + "Network View")
+						.addLore(ChatColor.GRAY + "Tune this gateway's streamed")
+						.addLore(ChatColor.GRAY + "cross-server projection volume.")
+						.addLore(ChatColor.GRAY + "Depth " + ChatColor.AQUA + networkViewDepth + ChatColor.GRAY + ", Entities " + ChatColor.AQUA + networkViewEntityIntervalTicks + "t")
+						.setMaterial(new MaterialBlock(Material.SPYGLASS))
+						.onLeftClick((e) ->
+						{
+							window.close();
+							uiOpenNetworkViewMenu(p);
+						}));
+			}
 
 			return window;
 		}

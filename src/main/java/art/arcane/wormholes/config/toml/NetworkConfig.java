@@ -3,13 +3,11 @@ package art.arcane.wormholes.config.toml;
 import art.arcane.wormholes.util.project.config.ConfigDescription;
 import art.arcane.wormholes.util.project.config.ConfigDoc;
 
-import java.util.ArrayList;
-import java.util.List;
-
 @ConfigDoc({
     "Wormholes cross-server networking.",
-    "This file controls broad runtime behavior. Portal-code imports store route state internally,",
-    "so normal portal linking does not require one [[peers]] block per remote server.",
+    "This file controls broad runtime behavior. Portal-code imports and learned routes are stored internally,",
+    "so route tables do not live in network.toml.",
+    "Best security and reliability come from opening the raw Wormholes port on both linked servers.",
     "Player transfer to a peer uses proxy routing for Boats or public-host/public-port for direct packet transfer."
 })
 public class NetworkConfig {
@@ -44,7 +42,11 @@ public class NetworkConfig {
     })
     public String listenHost = "";
 
-    @ConfigDescription("Bind port for the inter-server listen socket.")
+    @ConfigDescription({
+        "Bind port for the signed raw Wormholes inter-server socket.",
+        "Prefer opening/forwarding this same Wormholes port on both linked servers.",
+        "The Minecraft game-port status sideband can fragment large frames, but it is slower and should stay a fallback."
+    })
     public int listenPort = 8901;
 
     @ConfigDescription({
@@ -88,18 +90,6 @@ public class NetworkConfig {
         "for example: WITHER, ENDER_DRAGON, TNT. Players are never blocked by this list."
     })
     public String entityTransferDenyTypes = "";
-
-    @ConfigDescription({
-        "Advanced static peer routes only. Portal-code imports are stored under plugin data/routes instead.",
-        "One manual block per remote server, for example:",
-        "[[peers]]",
-        "name = \"hub\"",
-        "host = \"10.0.0.2\"",
-        "port = 8901",
-        "public-host = \"play.example.com\"",
-        "public-port = 25565"
-    })
-    public List<PeerEntry> peers = new ArrayList<>();
 
     public static class PeerEntry {
         @ConfigDescription("The peer's server-name (must match its own network.toml server-name).")

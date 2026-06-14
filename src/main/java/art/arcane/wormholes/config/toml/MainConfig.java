@@ -16,12 +16,6 @@ public class MainConfig {
     public boolean enableParticles = true;
 
     @ConfigDescription({
-        "Maximum allowed portal volume in block cells.",
-        "Larger portals project more cells and cost more to render; this is a safety limit on construction size."
-    })
-    public int maxPortalSizeCubed = 24;
-
-    @ConfigDescription({
         "Portal construction animation speed from 0.0 to 1.0.",
         "Higher values consume placed runes into the portal faster; 1.0 completes as fast as the scheduler can process it."
     })
@@ -34,18 +28,6 @@ public class MainConfig {
     public double portalCollapseSpeed = 0.91;
 
     @ConfigDescription({
-        "Portal open animation speed from 0.0 to 1.0.",
-        "Currently used by the open effect pacing; higher values make the transition feel more immediate."
-    })
-    public double portalOpenSpeed = 1.0;
-
-    @ConfigDescription({
-        "Portal close animation speed from 0.0 to 1.0.",
-        "Currently used by the close effect pacing; lower values can make teardown feel slower."
-    })
-    public double portalCloseSpeed = 1.0;
-
-    @ConfigDescription({
         "Verbose console logging for projection and portal lifecycle diagnostics.",
         "Enable only while debugging; it can be noisy when several players are viewing portals."
     })
@@ -56,12 +38,6 @@ public class MainConfig {
         "Developer aid for tuning projection geometry; leave false during normal gameplay."
     })
     public boolean debugRendering = false;
-
-    @ConfigDescription({
-        "Visualize the player's portal view AABB.",
-        "Developer aid for capture/projection range debugging; leave false during normal gameplay."
-    })
-    public boolean debugViewport = false;
 
     @ConfigDescription({
         "Send traversal debug output when entities or players pass through portals.",

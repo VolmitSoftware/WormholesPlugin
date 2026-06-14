@@ -8,7 +8,6 @@ import org.bukkit.Location;
 import org.junit.jupiter.api.Test;
 
 import art.arcane.wormholes.config.WormholesSettings;
-import art.arcane.wormholes.config.toml.AdvancedConfig;
 import art.arcane.wormholes.config.toml.MainConfig;
 import art.arcane.wormholes.config.toml.NetworkConfig;
 import art.arcane.wormholes.config.toml.ProjectionConfig;
@@ -71,32 +70,32 @@ public final class ProjectionManagerInterestTest {
     public void configuredFoveatedUnrenderingControlsViewportInterest() {
         ProjectionConfig projection = new ProjectionConfig();
         projection.foveatedUnrendering = true;
-        Settings.refresh(new WormholesSettings(new MainConfig(), projection, new RenderConfig(), new AdvancedConfig(), new NetworkConfig()));
+        Settings.refresh(new WormholesSettings(new MainConfig(), projection, new RenderConfig(), new NetworkConfig()));
         assertFalse(ProjectionManager.isObserverProjectionInterested(null, null, null));
 
         projection.foveatedUnrendering = false;
-        Settings.refresh(new WormholesSettings(new MainConfig(), projection, new RenderConfig(), new AdvancedConfig(), new NetworkConfig()));
+        Settings.refresh(new WormholesSettings(new MainConfig(), projection, new RenderConfig(), new NetworkConfig()));
         assertTrue(ProjectionManager.isObserverProjectionInterested(null, null, null));
 
-        Settings.refresh(new WormholesSettings(new MainConfig(), new ProjectionConfig(), new RenderConfig(), new AdvancedConfig(), new NetworkConfig()));
+        Settings.refresh(new WormholesSettings(new MainConfig(), new ProjectionConfig(), new RenderConfig(), new NetworkConfig()));
     }
 
     @Test
     public void recursivePortalDepthClampsToBoundedRange() {
         ProjectionConfig projection = new ProjectionConfig();
         projection.recursivePortalDepth = 1;
-        Settings.refresh(new WormholesSettings(new MainConfig(), projection, new RenderConfig(), new AdvancedConfig(), new NetworkConfig()));
+        Settings.refresh(new WormholesSettings(new MainConfig(), projection, new RenderConfig(), new NetworkConfig()));
         assertEquals(3, Settings.PROJECTION_RECURSIVE_PORTAL_DEPTH);
 
         projection.recursivePortalDepth = 128;
-        Settings.refresh(new WormholesSettings(new MainConfig(), projection, new RenderConfig(), new AdvancedConfig(), new NetworkConfig()));
+        Settings.refresh(new WormholesSettings(new MainConfig(), projection, new RenderConfig(), new NetworkConfig()));
         assertEquals(64, Settings.PROJECTION_RECURSIVE_PORTAL_DEPTH);
 
         projection.recursivePortalDepth = 12;
-        Settings.refresh(new WormholesSettings(new MainConfig(), projection, new RenderConfig(), new AdvancedConfig(), new NetworkConfig()));
+        Settings.refresh(new WormholesSettings(new MainConfig(), projection, new RenderConfig(), new NetworkConfig()));
         assertEquals(12, Settings.PROJECTION_RECURSIVE_PORTAL_DEPTH);
 
-        Settings.refresh(new WormholesSettings(new MainConfig(), new ProjectionConfig(), new RenderConfig(), new AdvancedConfig(), new NetworkConfig()));
+        Settings.refresh(new WormholesSettings(new MainConfig(), new ProjectionConfig(), new RenderConfig(), new NetworkConfig()));
     }
 
     @Test
@@ -108,13 +107,13 @@ public final class ProjectionManagerInterestTest {
         render.lightingMaxSectionsPerPass = 0;
         render.entityCandidateCacheTicks = 0;
 
-        Settings.refresh(new WormholesSettings(new MainConfig(), projection, render, new AdvancedConfig(), new NetworkConfig()));
+        Settings.refresh(new WormholesSettings(new MainConfig(), projection, render, new NetworkConfig()));
 
         assertEquals(1, Settings.PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK);
         assertEquals(0, Settings.PROJECTION_INTEREST_GRACE_TICKS);
         assertEquals(1, Settings.LIGHTING_MAX_SECTIONS_PER_PASS);
         assertEquals(1, Settings.ENTITY_CANDIDATE_CACHE_TICKS);
 
-        Settings.refresh(new WormholesSettings(new MainConfig(), new ProjectionConfig(), new RenderConfig(), new AdvancedConfig(), new NetworkConfig()));
+        Settings.refresh(new WormholesSettings(new MainConfig(), new ProjectionConfig(), new RenderConfig(), new NetworkConfig()));
     }
 }
