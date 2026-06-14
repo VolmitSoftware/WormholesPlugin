@@ -25,6 +25,7 @@ import com.github.retrooper.packetevents.PacketEvents;
 import com.github.retrooper.packetevents.event.PacketListenerCommon;
 import com.github.retrooper.packetevents.settings.PacketEventsSettings;
 import io.github.retrooper.packetevents.factory.spigot.SpigotPacketEventsBuilder;
+import io.github.slimjar.app.builder.SpigotApplicationBuilder;
 import net.kyori.adventure.platform.bukkit.BukkitAudiences;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.title.Title;
@@ -86,6 +87,14 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     private HotloadManager hotloadManager;
     private PacketListenerCommon statusBridgeListener;
     private boolean packetEventsLoaded = false;
+
+    public Wormholes() {
+        getLogger().info("Loading dependencies...");
+        new SpigotApplicationBuilder(this)
+            .remap(true)
+            .build();
+        getLogger().info("Dependencies loaded.");
+    }
 
     @Override
     public void onLoad() {

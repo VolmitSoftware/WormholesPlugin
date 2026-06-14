@@ -5,6 +5,7 @@ import org.gradle.jvm.toolchain.JavaLanguageVersion
 plugins {
     id 'java-library'
     alias(libs.plugins.shadow)
+    alias(libs.plugins.slimjar)
 }
 
 group = 'art.arcane'
@@ -19,6 +20,7 @@ String authTokenProperty = providers.gradleProperty('authToken').orNull
 String jitpackAuthToken = authTokenProperty ?: providers.gradleProperty('jitpackAuthToken').orNull
 
 def shadowJarTask = tasks.named('shadowJar', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar)
+tasks.named('slimJar').get()
 
 // ADD YOURSELF AS A NEW LINE IF YOU WANT YOUR OWN BUILD TASK GENERATED
 // ======================== WIfffsDOWS =============================
@@ -71,6 +73,8 @@ tasks.named('build').configure {
 shadowJarTask.configure {
     archiveClassifier.set('')
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    minimize()
+    relocate('io.github.slimjar', "${lib}.slimjar")
     relocate('org.bstats', "${lib}.bstats")
     relocate('com.github.retrooper.packetevents', "${lib}.packetevents.api")
     relocate('io.github.retrooper.packetevents', "${lib}.packetevents.impl")
@@ -103,6 +107,14 @@ tasks.named('test').configure {
     useJUnitPlatform()
 }
 
+slimJar {
+    relocate('org.bstats', "${lib}.bstats")
+    relocate('com.github.retrooper.packetevents', "${lib}.packetevents.api")
+    relocate('io.github.retrooper.packetevents', "${lib}.packetevents.impl")
+    relocate('com.moandjiezana.toml', "${lib}.toml4j")
+    relocate('net.kyori', "${lib}.kyori")
+}
+
 repositories {
     mavenCentral()
     maven {
@@ -123,6 +135,7 @@ repositories {
 }
 
 dependencies {
+    implementation('de.crazydev22.slimjar.helper:spigot:2.1.9')
     compileOnly(libs.paper)
     compileOnly(libs.fastutil)
     testImplementation(libs.paper)
@@ -133,14 +146,16 @@ dependencies {
         changing = true
         transitive = false
     }
-    implementation(libs.bstats)
-    implementation(libs.packetevents)
-    implementation(libs.toml4j)
-    implementation('net.kyori:adventure-api:4.24.0')
-    implementation('net.kyori:adventure-text-minimessage:4.24.0')
-    implementation('net.kyori:adventure-text-serializer-legacy:4.24.0')
-    implementation('net.kyori:adventure-text-serializer-plain:4.24.0')
-    implementation('net.kyori:adventure-platform-bukkit:4.4.1') {
+    slim(libs.bstats)
+    slim(libs.packetevents) {
+        exclude(group: 'net.kyori')
+    }
+    slim(libs.toml4j)
+    slim('net.kyori:adventure-api:4.24.0')
+    slim('net.kyori:adventure-text-minimessage:4.24.0')
+    slim('net.kyori:adventure-text-serializer-legacy:4.24.0')
+    slim('net.kyori:adventure-text-serializer-plain:4.24.0')
+    slim('net.kyori:adventure-platform-bukkit:4.4.1') {
         exclude group: 'net.md-5', module: 'bungeecord-chat'
     }
 }

@@ -1,5 +1,6 @@
 [versions]
 shadow = "9.0.0-rc3"
+slimjar = "2.1.9"
 runTask = "2.3.1"
 paper = "26.1.2.build.66-stable"
 packetevents = "2.12.1"
@@ -20,4 +21,5 @@ fastutil = { module = "it.unimi.dsi:fastutil", version.ref = "fastutil" }
 
 [plugins]
 shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }
+slimjar = { id = "de.crazydev22.slimjar", version.ref = "slimjar" }
 runPaper = { id = "xyz.jpenilla.run-paper", version.ref = "runTask" }
