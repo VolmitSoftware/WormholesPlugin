@@ -33,6 +33,7 @@ import java.time.Duration;
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.geometry.Raycast;
+import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.volmlib.util.scheduling.AR;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.volmlib.util.inventorygui.Element;
@@ -387,7 +388,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	{
 		if(entity instanceof Player player)
 		{
-			Wormholes.sendActionBar(player, Component.text("Portal access denied"));
+			WormholesAudience.sendActionBar(player, Component.text("Portal access denied"));
 		}
 	}
 
@@ -2159,6 +2160,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		Component subtitle = LegacyComponentSerializer.legacySection().deserialize(legacy);
 		Title.Times times = Title.Times.times(Duration.ZERO, Duration.ofMillis(100), Duration.ofMillis(150));
 		Title title = Title.title(Component.empty(), subtitle, times);
-		Wormholes.showTitle(player, title);
+		WormholesAudience.showTitle(player, title);
 	}
 }

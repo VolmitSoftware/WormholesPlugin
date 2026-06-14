@@ -231,7 +231,7 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
         }
 
         Component component = MINI_MESSAGE.deserialize(miniMessage);
-        BukkitAudiences audiences = Wormholes.audiences();
+        BukkitAudiences audiences = WormholesAudience.audiences();
         if (audiences != null) {
             audiences.sender(sender).sendMessage(component);
             return;

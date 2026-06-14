@@ -33,6 +33,7 @@ import net.kyori.adventure.text.format.NamedTextColor;
 
 import art.arcane.wormholes.portal.PortalBlock;
 import art.arcane.wormholes.portal.PortalType;
+import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.wormholes.util.Direction;
 import art.arcane.wormholes.util.GChunk;
 import art.arcane.volmlib.util.collection.KList;
@@ -159,11 +160,11 @@ public class BlockManager implements Listener
 
 		if(b == null)
 		{
-			Wormholes.sendActionBar(e.getPlayer(),Component.text("That is not a placed rune. Place runes (Portal/Wormhole/Gateway) as one connected flat plane, then left-click one with the wand.", NamedTextColor.GOLD));
+			WormholesAudience.sendActionBar(e.getPlayer(),Component.text("That is not a placed rune. Place runes (Portal/Wormhole/Gateway) as one connected flat plane, then left-click one with the wand.", NamedTextColor.GOLD));
 			return;
 		}
 
-		Wormholes.sendActionBar(e.getPlayer(),Component.text("Forming portal... shape must be one connected flat plane of " + b.getType().name().toLowerCase() + " runes.", NamedTextColor.AQUA));
+		WormholesAudience.sendActionBar(e.getPlayer(),Component.text("Forming portal... shape must be one connected flat plane of " + b.getType().name().toLowerCase() + " runes.", NamedTextColor.AQUA));
 		construct(e.getPlayer(), e.getClickedBlock());
 	}
 
@@ -251,7 +252,7 @@ public class BlockManager implements Listener
 		}
 
 		placeBlock(new PortalBlock(placedType, e.getBlock().getLocation()));
-		Wormholes.sendActionBar(e.getPlayer(),Component.text("Rune placed. Build one connected flat plane, then left-click any rune with the Portal Wand.", NamedTextColor.AQUA));
+		WormholesAudience.sendActionBar(e.getPlayer(),Component.text("Rune placed. Build one connected flat plane, then left-click any rune with the Portal Wand.", NamedTextColor.AQUA));
 	}
 
 	@EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

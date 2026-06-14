@@ -19,6 +19,7 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 
 import art.arcane.wormholes.portal.ILocalPortal;
+import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.volmlib.util.scheduling.AR;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.util.Area;
@@ -112,7 +113,7 @@ public class EffectManager implements Listener
 	public void playNotificationFail(String message, Player p)
 	{
 		Component component = LegacyComponentSerializer.legacySection().deserialize(message).colorIfAbsent(NamedTextColor.RED);
-		Wormholes.sendActionBar(p, component);
+		WormholesAudience.sendActionBar(p, component);
 	}
 
 	public void playNotificationFail(String message, Location l)
@@ -134,13 +135,13 @@ public class EffectManager implements Listener
 	public void playNotificationSuccess(String message, Player p)
 	{
 		Component component = LegacyComponentSerializer.legacySection().deserialize(message).colorIfAbsent(NamedTextColor.GREEN);
-		Wormholes.sendActionBar(p, component);
+		WormholesAudience.sendActionBar(p, component);
 	}
 
 	public void playNotification(ItemStack is, String message, Player p)
 	{
 		Component component = LegacyComponentSerializer.legacySection().deserialize(message);
-		Wormholes.sendActionBar(p, component);
+		WormholesAudience.sendActionBar(p, component);
 	}
 
 	public void playPortalBlockPlaced(Block block)

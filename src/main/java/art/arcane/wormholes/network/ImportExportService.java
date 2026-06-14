@@ -4,6 +4,7 @@ import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.config.toml.NetworkConfig;
 import art.arcane.wormholes.portal.ILocalPortal;
+import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.wormholes.util.project.config.TomlCodec;
 
 import net.kyori.adventure.text.Component;
@@ -29,7 +30,7 @@ public final class ImportExportService {
     }
 
     public void exportToChat(Player player, ILocalPortal portal) {
-        Wormholes.sendMessage(player, Component.text("Building portal code...", NamedTextColor.DARK_GRAY));
+        WormholesAudience.sendMessage(player, Component.text("Building portal code...", NamedTextColor.DARK_GRAY));
         FoliaScheduler.runAsync(Wormholes.instance, () -> exportNow(player, portal));
     }
 
@@ -68,17 +69,17 @@ public final class ImportExportService {
         Component message = Component.text("[Copy portal code: " + portal.getName() + "]", NamedTextColor.GOLD, TextDecoration.BOLD)
             .clickEvent(ClickEvent.copyToClipboard(encoded))
             .hoverEvent(HoverEvent.showText(Component.text("Click to copy. Paste it on the other server:\nportal menu > Import, or /wh network import <code>", NamedTextColor.GRAY)));
-        Wormholes.sendMessage(player, message);
-        Wormholes.sendMessage(player, Component.text("Contains this server's address and public key fingerprint " + network.getPublicKeyFingerprint() + ".", NamedTextColor.DARK_GRAY));
+        WormholesAudience.sendMessage(player, message);
+        WormholesAudience.sendMessage(player, Component.text("Contains this server's address and public key fingerprint " + network.getPublicKeyFingerprint() + ".", NamedTextColor.DARK_GRAY));
         if (encoded.length() > CHAT_SAFE_CODE_LENGTH) {
-            Wormholes.sendMessage(player, Component.text("This code is too long to paste into chat - use /wh network import <code> on the other server instead.", NamedTextColor.YELLOW));
+            WormholesAudience.sendMessage(player, Component.text("This code is too long to paste into chat - use /wh network import <code> on the other server instead.", NamedTextColor.YELLOW));
         }
     }
 
     private void importNow(CommandSender sender, ILocalPortal portal, String raw) {
         PortalCode code = PortalCode.decode(raw);
         if (code == null) {
-            Wormholes.sendMessage(sender, Component.text("Invalid portal code. Codes start with " + PortalCode.PREFIX + " - if pasted into chat it may have been truncated; try /wh network import <code>. Codes from older plugin versions must be re-exported.", NamedTextColor.RED));
+            WormholesAudience.sendMessage(sender, Component.text("Invalid portal code. Codes start with " + PortalCode.PREFIX + " - if pasted into chat it may have been truncated; try /wh network import <code>. Codes from older plugin versions must be re-exported.", NamedTextColor.RED));
             return;
         }
 
@@ -87,9 +88,9 @@ public final class ImportExportService {
         if (code.serverName().equals(network.getLocalName())) {
             boolean ownPortal = Wormholes.portalManager != null && Wormholes.portalManager.getLocalPortal(code.portalId()) != null;
             if (ownPortal) {
-                Wormholes.sendMessage(sender, Component.text("That code is from this server.", NamedTextColor.RED));
+                WormholesAudience.sendMessage(sender, Component.text("That code is from this server.", NamedTextColor.RED));
             } else {
-                Wormholes.sendMessage(sender, Component.text("That code resolved to this server identity (" + code.serverName() + "). Re-export from the other server after both servers restart with their own Wormholes identity.", NamedTextColor.RED));
+                WormholesAudience.sendMessage(sender, Component.text("That code resolved to this server identity (" + code.serverName() + "). Re-export from the other server after both servers restart with their own Wormholes identity.", NamedTextColor.RED));
             }
             return;
         }
@@ -117,7 +118,7 @@ public final class ImportExportService {
 
         if (portal != null) {
             FoliaScheduler.runRegion(Wormholes.instance, portal.getCenter(), () -> portal.linkRemote(code.serverName(), code.portalId()));
-            Wormholes.sendMessage(sender, Component.text("Linked ", NamedTextColor.GREEN)
+            WormholesAudience.sendMessage(sender, Component.text("Linked ", NamedTextColor.GREEN)
                 .append(Component.text(portal.getName(), NamedTextColor.WHITE))
                 .append(Component.text(" -> ", NamedTextColor.GRAY))
                 .append(Component.text(code.portalName(), NamedTextColor.WHITE))
@@ -125,9 +126,9 @@ public final class ImportExportService {
                 .append(Component.text(code.serverName(), NamedTextColor.WHITE))
                 .append(Component.text(". It opens once the servers connect.", NamedTextColor.GREEN)));
         } else {
-            Wormholes.sendMessage(sender, Component.text("Saved route to " + code.serverName() + " with public key " + Handshake.fingerprint(Handshake.decodePublicKeyText(code.publicKey())) + ". '" + code.portalName() + "' will appear in gateway Link menus once connected.", NamedTextColor.GREEN));
+            WormholesAudience.sendMessage(sender, Component.text("Saved route to " + code.serverName() + " with public key " + Handshake.fingerprint(Handshake.decodePublicKeyText(code.publicKey())) + ". '" + code.portalName() + "' will appear in gateway Link menus once connected.", NamedTextColor.GREEN));
         }
-        Wormholes.sendMessage(sender, Component.text("Check /wh network status for the connection state.", NamedTextColor.DARK_GRAY));
+        WormholesAudience.sendMessage(sender, Component.text("Check /wh network status for the connection state.", NamedTextColor.DARK_GRAY));
     }
 
     private String resolveAdvertiseHost(CommandSender sender, NetworkConfig config) {
@@ -137,7 +138,7 @@ public final class ImportExportService {
         String publicIp = AddressResolver.detectPublicAddress();
         String resolved = publicIp != null ? publicIp : network.getAdvertiseHost();
         network.setInferredAdvertiseHost(resolved);
-        Wormholes.sendMessage(sender, Component.text("Using " + resolved + " in this portal code. Set advertise-host in network.toml only if that address is wrong.", NamedTextColor.GRAY));
+        WormholesAudience.sendMessage(sender, Component.text("Using " + resolved + " in this portal code. Set advertise-host in network.toml only if that address is wrong.", NamedTextColor.GRAY));
         return resolved;
     }
 

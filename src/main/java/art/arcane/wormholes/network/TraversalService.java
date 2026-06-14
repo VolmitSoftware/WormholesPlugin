@@ -7,6 +7,7 @@ import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.LocalPortal;
 import art.arcane.wormholes.portal.Traversive;
 import art.arcane.wormholes.portal.UniversalTunnel;
+import art.arcane.wormholes.service.WormholesAudience;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -370,7 +371,7 @@ public final class TraversalService implements Listener {
     }
 
     private void notifyUnreachable(Player player) {
-        Wormholes.sendActionBar(player, Component.text("Destination server unreachable", NamedTextColor.RED));
+        WormholesAudience.sendActionBar(player, Component.text("Destination server unreachable", NamedTextColor.RED));
     }
 
     private void pruneArrivals() {

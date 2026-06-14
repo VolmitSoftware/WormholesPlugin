@@ -11,28 +11,21 @@ import art.arcane.wormholes.network.NetworkRouter;
 import art.arcane.wormholes.network.PlayerTransfer;
 import art.arcane.wormholes.network.PortalSyncService;
 import art.arcane.wormholes.network.RemotePortalRegistry;
-import art.arcane.wormholes.network.TransferGate;
 import art.arcane.wormholes.network.TraversalService;
 import art.arcane.wormholes.network.view.RemoteViewCache;
 import art.arcane.wormholes.network.view.ViewServer;
 import art.arcane.wormholes.network.view.ViewSubscriptionManager;
-import art.arcane.wormholes.util.J;
+import art.arcane.wormholes.service.MetricsRuntime;
+import art.arcane.wormholes.service.PacketEventsRuntime;
+import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.wormholes.service.WormholesCommandService;
 import art.arcane.wormholes.service.WormholesIntegrationService;
+import art.arcane.wormholes.util.J;
 import art.arcane.wormholes.util.common.SplashScreen;
 import art.arcane.wormholes.util.project.config.HotloadManager;
-import com.github.retrooper.packetevents.PacketEvents;
-import com.github.retrooper.packetevents.event.PacketListenerCommon;
-import com.github.retrooper.packetevents.settings.PacketEventsSettings;
-import io.github.retrooper.packetevents.factory.spigot.SpigotPacketEventsBuilder;
 import io.github.slimjar.app.builder.SpigotApplicationBuilder;
-import net.kyori.adventure.platform.bukkit.BukkitAudiences;
-import net.kyori.adventure.text.Component;
-import net.kyori.adventure.title.Title;
-import org.bstats.bukkit.Metrics;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
-import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -61,7 +54,6 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     public static String tag = ChatColor.DARK_GRAY + "[" + ChatColor.GRAY + "Wormholes" + ChatColor.DARK_GRAY + "] " + ChatColor.GRAY;
 
     public static volatile WormholesSettings settings;
-    private static volatile BukkitAudiences audiences;
     public static volatile BlockManager blockManager;
     public static volatile EffectManager effectManager;
     public static volatile ConstructionManager constructionManager;
@@ -81,12 +73,11 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
 
     private final AtomicBoolean alreadyDrained = new AtomicBoolean(false);
     private SchedulerRuntime schedulerRuntime;
-    private Metrics metrics;
+    private PacketEventsRuntime packetEventsRuntime;
+    private MetricsRuntime metricsRuntime;
     private WormholesCommandService commandService;
     private WormholesIntegrationService integrationService;
     private HotloadManager hotloadManager;
-    private PacketListenerCommon statusBridgeListener;
-    private boolean packetEventsLoaded = false;
 
     public Wormholes() {
         getLogger().info("Loading dependencies...");
@@ -101,11 +92,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         INSTANCE = this;
         instance = this;
 
-        SpigotPacketEventsBuilder.clearBuildCache();
-        PacketEventsSettings packetEventsSettings = new PacketEventsSettings()
-            .checkForUpdates(false);
-        PacketEvents.setAPI(SpigotPacketEventsBuilder.buildNoCache(this, packetEventsSettings));
-        PacketEvents.getAPI().load();
+        packetEvents().load();
     }
 
     @Override
@@ -118,10 +105,8 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             Settings.refresh(settings);
             this.schedulerRuntime = installSchedulerBridge();
 
-            PacketEvents.getAPI().init();
-            packetEventsLoaded = true;
-
-            audiences = BukkitAudiences.create(this);
+            packetEvents().init();
+            WormholesAudience.start(this);
 
             blockManager = new BlockManager();
             effectManager = new EffectManager();
@@ -157,7 +142,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             getServer().getPluginManager().registerEvents(traversalService, this);
             getServer().getPluginManager().registerEvents(viewServer, this);
             getServer().getMessenger().registerOutgoingPluginChannel(this, PlayerTransfer.PROXY_CHANNEL);
-            PacketEvents.getAPI().getEventManager().registerListener(new TransferGate());
+            packetEvents().registerTransferGate();
             networkManager.start();
             J.ar(() -> {
                 ViewSubscriptionManager subscriptions = viewSubscriptions;
@@ -179,7 +164,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             hotloadManager = new HotloadManager(getDataFolder().toPath(), getLogger(), this::onConfigHotReload);
             hotloadManager.start();
 
-            this.metrics = new Metrics(this, BSTATS_PLUGIN_ID);
+            this.metricsRuntime = MetricsRuntime.start(this, BSTATS_PLUGIN_ID);
         } catch (Exception ex) {
             success = false;
             errorMessage = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
@@ -351,15 +336,13 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     }
 
     private void registerStatusBridgeListener(NetworkManager manager) {
-        unregisterStatusBridgeListener();
-        statusBridgeListener = PacketEvents.getAPI().getEventManager().registerListener(manager.statusBridge());
+        packetEvents().registerStatusBridge(manager);
     }
 
     private void unregisterStatusBridgeListener() {
-        PacketListenerCommon listener = statusBridgeListener;
-        statusBridgeListener = null;
-        if (listener != null && PacketEvents.getAPI() != null) {
-            PacketEvents.getAPI().getEventManager().unregisterListener(listener);
+        PacketEventsRuntime runtime = packetEventsRuntime;
+        if (runtime != null) {
+            runtime.unregisterStatusBridge();
         }
     }
 
@@ -459,31 +442,6 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             return;
         }
         instance.getLogger().severe(message);
-    }
-
-    public static BukkitAudiences audiences() {
-        return audiences;
-    }
-
-    public static void sendActionBar(Player player, Component component) {
-        BukkitAudiences a = audiences;
-        if (a != null && player != null && component != null) {
-            a.player(player).sendActionBar(component);
-        }
-    }
-
-    public static void showTitle(Player player, Title title) {
-        BukkitAudiences a = audiences;
-        if (a != null && player != null && title != null) {
-            a.player(player).showTitle(title);
-        }
-    }
-
-    public static void sendMessage(CommandSender sender, Component component) {
-        BukkitAudiences a = audiences;
-        if (a != null && sender != null && component != null) {
-            a.sender(sender).sendMessage(component);
-        }
     }
 
     public static void awaitChatInput(Player player, Consumer<String> callback) {
@@ -605,32 +563,26 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             getLogger().log(Level.WARNING, "Error during BlockManager teardown", ex);
         }
 
-        if (packetEventsLoaded && PacketEvents.getAPI() != null) {
-            try {
-                PacketEvents.getAPI().terminate();
-            } catch (Throwable ex) {
-                getLogger().log(Level.WARNING, "Error during PacketEvents shutdown", ex);
-            }
-        }
-        SpigotPacketEventsBuilder.clearBuildCache();
-        packetEventsLoaded = false;
-
-        if (metrics != null) {
-            try {
-                metrics.shutdown();
-            } catch (Throwable ex) {
-                getLogger().log(Level.WARNING, "Error during bStats shutdown", ex);
-            }
-            metrics = null;
+        PacketEventsRuntime activePacketEvents = packetEventsRuntime;
+        if (activePacketEvents != null) {
+            activePacketEvents.terminate();
         }
 
-        if (audiences != null) {
-            try {
-                audiences.close();
-            } catch (Throwable ex) {
-                getLogger().log(Level.WARNING, "Error closing Adventure audiences", ex);
-            }
-            audiences = null;
+        MetricsRuntime activeMetrics = metricsRuntime;
+        metricsRuntime = null;
+        if (activeMetrics != null) {
+            activeMetrics.shutdown();
         }
+
+        WormholesAudience.stop(getLogger());
+    }
+
+    private PacketEventsRuntime packetEvents() {
+        PacketEventsRuntime runtime = packetEventsRuntime;
+        if (runtime == null) {
+            runtime = new PacketEventsRuntime(this);
+            packetEventsRuntime = runtime;
+        }
+        return runtime;
     }
 }
