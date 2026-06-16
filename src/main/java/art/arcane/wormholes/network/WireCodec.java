@@ -5,44 +5,34 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
-import java.util.zip.Deflater;
-import java.util.zip.Inflater;
 
 public final class WireCodec {
-    public static final int PROTOCOL_VERSION = 6;
+    public static final int PROTOCOL_VERSION = 11;
     public static final int MAX_FRAME_BYTES = 4 * 1024 * 1024;
-    public static final int MAX_INFLATED_BYTES = 16 * 1024 * 1024;
-    private static final int COMPRESS_THRESHOLD_BYTES = 1024;
-    private static final byte FLAG_DEFLATED = 0x01;
+    private static final int FRAME_PREFIX_OVERHEAD = 4 + 1;
+    private static final int MIN_FRAME_BODY_BYTES = 2;
 
     private WireCodec() {
     }
 
     public static byte[] encodeFrame(WireMessage message) throws IOException {
+        return encodeFrame(message, null, false);
+    }
+
+    public static byte[] encodeFrame(WireMessage message, WireCompression compression, boolean dictNegotiated) throws IOException {
         byte[] payload = encodePayload(message);
-
-        byte flags = 0;
-        if (payload.length >= COMPRESS_THRESHOLD_BYTES) {
-            byte[] deflated = deflate(payload);
-            if (deflated.length < payload.length) {
-                payload = deflated;
-                flags |= FLAG_DEFLATED;
-            }
+        byte[] body = compression == null ? prependPlainMode(payload) : compression.encode(payload, dictNegotiated);
+        int frameLength = 1 + body.length;
+        if (frameLength + 4 > MAX_FRAME_BYTES) {
+            throw new IOException("Frame too large: " + (frameLength + 4) + " bytes (" + message.type() + ")");
         }
-
-        int frameLength = 2 + payload.length;
-        if (frameLength > MAX_FRAME_BYTES) {
-            throw new IOException("Frame too large: " + frameLength + " bytes (" + message.type() + ")");
-        }
-
-        ByteArrayOutputStream frameBuffer = new ByteArrayOutputStream(frameLength + 4);
-        DataOutputStream frameOut = new DataOutputStream(frameBuffer);
-        frameOut.writeInt(frameLength);
-        frameOut.writeByte(message.type().id());
-        frameOut.writeByte(flags);
-        frameOut.write(payload);
-        frameOut.flush();
-        return frameBuffer.toByteArray();
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream(frameLength + 4);
+        DataOutputStream out = new DataOutputStream(buffer);
+        out.writeInt(frameLength);
+        out.writeByte(message.type().id());
+        out.write(body);
+        out.flush();
+        return buffer.toByteArray();
     }
 
     public static byte[] encodePayload(WireMessage message) throws IOException {
@@ -54,22 +44,27 @@ public final class WireCodec {
     }
 
     public static WireMessage readFrame(DataInputStream in) throws IOException {
+        return readFrame(in, null);
+    }
+
+    public static WireMessage readFrame(DataInputStream in, WireCompression compression) throws IOException {
         int frameLength = in.readInt();
-        if (frameLength < 2 || frameLength > MAX_FRAME_BYTES) {
+        if (frameLength < MIN_FRAME_BODY_BYTES || frameLength > MAX_FRAME_BYTES) {
             throw new IOException("Invalid frame length: " + frameLength);
         }
         byte typeId = in.readByte();
-        byte flags = in.readByte();
-        byte[] payload = new byte[frameLength - 2];
-        in.readFully(payload);
+        int bodyLength = frameLength - 1;
+        if (bodyLength < 1) {
+            throw new IOException("Frame body missing compression byte");
+        }
+        byte[] body = new byte[bodyLength];
+        in.readFully(body);
 
         WireMessageType type = WireMessageType.byId(typeId);
         if (type == null) {
             throw new IOException("Unknown message type id: " + typeId);
         }
-        if ((flags & FLAG_DEFLATED) != 0) {
-            payload = inflate(payload);
-        }
+        byte[] payload = compression == null ? extractPlainMode(body) : compression.decode(body).payload();
         return decodePayload(type, payload);
     }
 
@@ -83,6 +78,9 @@ public final class WireCodec {
             case PING -> WireMessage.Ping.read(in);
             case PONG -> WireMessage.Pong.read(in);
             case ROUTED -> WireMessage.Routed.read(in);
+            case DICT_OFFER -> WireMessage.DictOffer.read(in);
+            case DICT_REQUEST -> WireMessage.DictRequest.read(in);
+            case DICT_DATA -> WireMessage.DictData.read(in);
             case PORTAL_DIRECTORY -> WireMessage.PortalDirectory.read(in);
             case PORTAL_UPSERT -> WireMessage.PortalUpsert.read(in);
             case PORTAL_REMOVE -> WireMessage.PortalRemove.read(in);
@@ -94,11 +92,15 @@ public final class WireCodec {
             case ENTITY_TRANSFER_ACK -> WireMessage.EntityTransferAck.read(in);
             case VIEW_SUBSCRIBE -> WireMessage.ViewSubscribe.read(in);
             case VIEW_UNSUBSCRIBE -> WireMessage.ViewUnsubscribe.read(in);
-            case VIEW_SNAPSHOT -> WireMessage.ViewSnapshot.read(in);
-            case VIEW_DELTA -> WireMessage.ViewDelta.read(in);
             case VIEW_ENTITIES -> WireMessage.ViewEntities.read(in);
             case VIEW_ENTITY_ANIMATION -> WireMessage.ViewEntityAnimation.read(in);
             case VIEW_TIME -> WireMessage.ViewTime.read(in);
+            case CHUNK_BULK -> WireMessage.ChunkBulkBatch.read(in);
+            case CHUNK_DIFF -> WireMessage.ChunkDiff.read(in);
+            case CHUNK_HASH_PROBE -> WireMessage.ChunkHashProbeMessage.read(in);
+            case CHUNK_RESYNC_REQUEST -> WireMessage.ChunkResyncRequestMessage.read(in);
+            case VIEW_BULK_COMPLETE -> WireMessage.ViewBulkComplete.read(in);
+            case PORTAL_SETTINGS_UPDATE -> WireMessage.PortalSettingsUpdate.read(in);
             case SIDEBAND_FRAGMENT -> WireMessage.SidebandFragment.read(in);
         };
     }
@@ -134,44 +136,19 @@ public final class WireCodec {
         return bytes;
     }
 
-    private static byte[] deflate(byte[] data) {
-        Deflater deflater = new Deflater(Deflater.BEST_SPEED);
-        try {
-            deflater.setInput(data);
-            deflater.finish();
-            ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(64, data.length / 4));
-            byte[] chunk = new byte[8192];
-            while (!deflater.finished()) {
-                int written = deflater.deflate(chunk);
-                out.write(chunk, 0, written);
-            }
-            return out.toByteArray();
-        } finally {
-            deflater.end();
-        }
+    private static byte[] prependPlainMode(byte[] payload) {
+        byte[] body = new byte[payload.length + 1];
+        body[0] = WireCompression.MODE_NONE;
+        System.arraycopy(payload, 0, body, 1, payload.length);
+        return body;
     }
 
-    private static byte[] inflate(byte[] data) throws IOException {
-        Inflater inflater = new Inflater();
-        try {
-            inflater.setInput(data);
-            ByteArrayOutputStream out = new ByteArrayOutputStream(Math.min(MAX_INFLATED_BYTES, data.length * 4));
-            byte[] chunk = new byte[8192];
-            while (!inflater.finished()) {
-                int written = inflater.inflate(chunk);
-                if (written == 0 && inflater.needsInput()) {
-                    throw new IOException("Truncated deflated payload");
-                }
-                out.write(chunk, 0, written);
-                if (out.size() > MAX_INFLATED_BYTES) {
-                    throw new IOException("Inflated payload exceeds " + MAX_INFLATED_BYTES + " bytes");
-                }
-            }
-            return out.toByteArray();
-        } catch (java.util.zip.DataFormatException e) {
-            throw new IOException("Corrupt deflated payload", e);
-        } finally {
-            inflater.end();
+    private static byte[] extractPlainMode(byte[] body) throws IOException {
+        if (body[0] != WireCompression.MODE_NONE) {
+            throw new IOException("inbound frame uses compression mode " + body[0] + " but no decoder is bound");
         }
+        byte[] payload = new byte[body.length - 1];
+        System.arraycopy(body, 1, payload, 0, payload.length);
+        return payload;
     }
 }

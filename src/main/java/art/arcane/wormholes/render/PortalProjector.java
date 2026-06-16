@@ -85,6 +85,7 @@ public final class PortalProjector {
     private BlockData remoteFallback;
     private String remoteFallbackState;
     private long lastRemoteRevision = -1L;
+    private boolean pendingRemoteResample;
     private int remoteResendStage;
 
     public PortalProjector(ILocalPortal portal, Player observer, ProjectionClaimArbiter claimArbiter) {
@@ -277,8 +278,9 @@ public final class PortalProjector {
             return;
         }
 
-        double range = capProjectionDistance(observer, Settings.PROJECTION_RANGE);
-        double depthBlocks = capProjectionDistance(observer, Settings.PROJECTION_DEPTH_BLOCKS);
+        double portalDepth = portal.getNetworkViewDepth();
+        double range = capProjectionDistance(observer, portalDepth);
+        double depthBlocks = capProjectionDistance(observer, portalDepth);
         Frustum4D next;
         try {
             next = new Frustum4D(eye, portal.getStructure(), range);
@@ -348,7 +350,8 @@ public final class PortalProjector {
         double maxProjectionDepth = depthBlocks + portalPlaneClearance;
         double signedMinDistance = eyeFrontSide ? -maxProjectionDepth : portalPlaneClearance;
         double signedMaxDistance = eyeFrontSide ? -portalPlaneClearance : maxProjectionDepth;
-        boolean forceStableCellResample = shouldResampleStableCells();
+        boolean forceStableCellResample = shouldResampleStableCells() || pendingRemoteResample;
+        pendingRemoteResample = false;
         boolean forceFullSend = initialFullSendPassesRemaining > 0;
         PortalPlaneWindow planeWindow = PortalPlaneWindow.create(portal.getStructure().getArea(), projectionLocalFrame,
             localOriginX, localOriginY, localOriginZ, Settings.PROJECTION_APERTURE_PADDING_BLOCKS + PLANE_WINDOW_EXTRA_PADDING,
@@ -531,8 +534,9 @@ public final class PortalProjector {
             return;
         }
 
-        double range = capProjectionDistance(observer, Settings.PROJECTION_RANGE);
-        double depthBlocks = capProjectionDistance(observer, Settings.PROJECTION_DEPTH_BLOCKS);
+        double portalDepth = portal.getNetworkViewDepth();
+        double range = capProjectionDistance(observer, portalDepth);
+        double depthBlocks = capProjectionDistance(observer, portalDepth);
         Frustum4D frustum;
         try {
             frustum = new Frustum4D(eye, portal.getStructure(), range);
@@ -631,20 +635,24 @@ public final class PortalProjector {
     }
 
     private void maybeForceRemoteResend(RemoteWorldView remoteView) {
-        boolean force = false;
         long revision = remoteView.getRevision();
         if (revision != lastRemoteRevision) {
             lastRemoteRevision = revision;
-            force = true;
+            // A remote block changed: re-evaluate every projected cell next frame so cells that became
+            // air drop out of nextProjected and the claim arbiter REVERTS them (restores the real local
+            // block). Do NOT releaseSilently/clear here -- that forgets the already-sent fake blocks
+            // without reverting, leaving a stale block (e.g. a broken block stuck in the projection).
+            pendingRemoteResample = true;
         }
+        boolean fullResend = false;
         if (remoteResendStage == 0 && projectCallCount >= 20L) {
             remoteResendStage = 1;
-            force = true;
+            fullResend = true;
         } else if (remoteResendStage == 1 && projectCallCount >= 60L) {
             remoteResendStage = 2;
-            force = true;
+            fullResend = true;
         }
-        if (!force) {
+        if (!fullResend) {
             return;
         }
         projected.clear();

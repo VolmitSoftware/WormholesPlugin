@@ -406,6 +406,46 @@ public class PortalManager implements Listener
 		return getTotalPortalCount() - getGatewayCount();
 	}
 
+	public List<GatewayPortalInfo> listGatewayPortalsNear(Location origin, double radius)
+	{
+		if(origin == null || origin.getWorld() == null)
+		{
+			return List.of();
+		}
+		double radiusSquared = radius * radius;
+		List<GatewayPortalInfo> matches = new ArrayList<GatewayPortalInfo>();
+		for(ILocalPortal portal : portals.v())
+		{
+			if(!portal.isGateway())
+			{
+				continue;
+			}
+			Location center = portal.getCenter();
+			if(center == null || center.getWorld() == null || !center.getWorld().equals(origin.getWorld()))
+			{
+				continue;
+			}
+			double dx = center.getX() - origin.getX();
+			double dy = center.getY() - origin.getY();
+			double dz = center.getZ() - origin.getZ();
+			double distanceSquared = (dx * dx) + (dy * dy) + (dz * dz);
+			if(distanceSquared > radiusSquared)
+			{
+				continue;
+			}
+			art.arcane.wormholes.util.Direction normal = portal.getFrame() == null ? null : portal.getFrame().getNormal();
+			double nx = normal == null ? 0.0D : normal.x();
+			double ny = normal == null ? 0.0D : normal.y();
+			double nz = normal == null ? 0.0D : normal.z();
+			matches.add(new GatewayPortalInfo(portal.getId(), center.getX(), center.getY(), center.getZ(), nx, ny, nz));
+		}
+		return matches;
+	}
+
+	public record GatewayPortalInfo(UUID portalId, double centerX, double centerY, double centerZ, double normalX, double normalY, double normalZ)
+	{
+	}
+
 	public int getGatewayCount()
 	{
 		int g = 0;

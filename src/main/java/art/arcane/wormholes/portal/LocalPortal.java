@@ -64,14 +64,16 @@ import net.md_5.bungee.api.ChatColor;
 public class LocalPortal extends Portal implements ILocalPortal, IProgressivePortal, IFXPortal, IOwnablePortal, Listener
 {
 	private static final long TELEPORT_COOLDOWN_MILLIS = 1000L;
-	private static final int DEFAULT_NETWORK_VIEW_DEPTH = 32;
-	private static final int DEFAULT_NETWORK_VIEW_LATERAL_PAD = 8;
+	private static final long POST_TRAVERSAL_GRACE_MILLIS = 10_000L;
+	private static final int DEFAULT_NETWORK_VIEW_DEPTH = 64;
+	private static final int DEFAULT_NETWORK_VIEW_LATERAL_PAD = 48;
 	private static final int DEFAULT_NETWORK_VIEW_HEARTBEAT_TICKS = 60;
 	private static final int DEFAULT_NETWORK_VIEW_ENTITY_INTERVAL_TICKS = 10;
 	private static final int DEFAULT_NETWORK_VIEW_UNSUBSCRIBE_GRACE_SECONDS = 30;
 	private static final String DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK = "minecraft:air";
 	private static final ParticleEffect.OrdinaryColor OUTLINE_PARTICLE_COLOR = new ParticleEffect.OrdinaryColor(150, 80, 255);
 	private static final ConcurrentHashMap<UUID, Long> TELEPORT_COOLDOWNS = new ConcurrentHashMap<UUID, Long>();
+	private static final ConcurrentHashMap<UUID, Long> POST_TRAVERSAL_GRACE = new ConcurrentHashMap<UUID, Long>();
 
 	private PhantomSpinner spinner;
 	private PortalStructure structure;
@@ -97,6 +99,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private int networkViewEntityIntervalTicks;
 	private int networkViewUnsubscribeGraceSeconds;
 	private String networkViewFallbackBlock;
+	private boolean settingsSyncEnabled;
+	private final java.util.Map<UUID, UIWindow> openMenus = new java.util.concurrent.ConcurrentHashMap<UUID, UIWindow>();
 
 	public LocalPortal(UUID id, PortalType type, PortalStructure structure)
 	{
@@ -124,6 +128,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			networkViewEntityIntervalTicks = DEFAULT_NETWORK_VIEW_ENTITY_INTERVAL_TICKS;
 			networkViewUnsubscribeGraceSeconds = DEFAULT_NETWORK_VIEW_UNSUBSCRIBE_GRACE_SECONDS;
 			networkViewFallbackBlock = DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK;
+			settingsSyncEnabled = true;
 			view = computeView();
 		}
 
@@ -146,6 +151,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			j.put("networkViewEntityIntervalTicks", networkViewEntityIntervalTicks);
 			j.put("networkViewUnsubscribeGraceSeconds", networkViewUnsubscribeGraceSeconds);
 			j.put("networkViewFallbackBlock", networkViewFallbackBlock);
+			j.put("settingsSyncEnabled", settingsSyncEnabled);
 		}
 
 		if(tunnel != null)
@@ -171,11 +177,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			outgoingTraversalsEnabled = !j.has("outgoingTraversalsEnabled") || j.getBoolean("outgoingTraversalsEnabled");
 			incomingTraversalsEnabled = !j.has("incomingTraversalsEnabled") || j.getBoolean("incomingTraversalsEnabled");
 			networkViewDepth = readNetworkViewInt(j, "networkViewDepth", DEFAULT_NETWORK_VIEW_DEPTH, 1, 128);
-			networkViewLateralPad = readNetworkViewInt(j, "networkViewLateralPad", DEFAULT_NETWORK_VIEW_LATERAL_PAD, 0, 64);
+			networkViewLateralPad = readNetworkViewInt(j, "networkViewLateralPad", DEFAULT_NETWORK_VIEW_LATERAL_PAD, 0, 128);
 			networkViewHeartbeatTicks = readNetworkViewInt(j, "networkViewHeartbeatTicks", DEFAULT_NETWORK_VIEW_HEARTBEAT_TICKS, 2, 600);
 			networkViewEntityIntervalTicks = readNetworkViewInt(j, "networkViewEntityIntervalTicks", DEFAULT_NETWORK_VIEW_ENTITY_INTERVAL_TICKS, 2, 600);
 			networkViewUnsubscribeGraceSeconds = readNetworkViewInt(j, "networkViewUnsubscribeGraceSeconds", DEFAULT_NETWORK_VIEW_UNSUBSCRIBE_GRACE_SECONDS, 5, 600);
 			networkViewFallbackBlock = normalizeNetworkViewFallbackBlock(j.optString("networkViewFallbackBlock", DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK));
+			settingsSyncEnabled = !j.has("settingsSyncEnabled") || j.getBoolean("settingsSyncEnabled");
 			view = computeView();
 
 		if(j.has("tunnel"))
@@ -219,6 +226,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		if(wasGateway != isGateway())
 		{
 			tunnel = null;
+		}
+
+		if(!projectionMode.isAllowedFor(type))
+		{
+			setProjectionMode(ProjectionMode.ON);
 		}
 
 		save();
@@ -276,24 +288,30 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		pruneTeleportCooldowns(now);
 		for(Entity i : getStructure().getCaptureZone().getEntities(getStructure().getWorld()))
 		{
-			if(isTeleportCoolingDown(i.getUniqueId(), now))
-			{
-				continue;
-			}
-
 			Traversive traversive = rayTeleport(i);
 			if(traversive == null)
 			{
 				continue;
 			}
 
-			markTeleportCooldown(i.getUniqueId(), now);
 			if(!canUseTunnel(i))
 			{
 				rejectTraversal(i, traversive);
 				continue;
 			}
 
+			if(isInPostTraversalGrace(i.getUniqueId(), now))
+			{
+				continue;
+			}
+
+			if(isTeleportCoolingDown(i.getUniqueId(), now))
+			{
+				continue;
+			}
+
+			markTeleportCooldown(i.getUniqueId(), now);
+			markPostTraversalGrace(i.getUniqueId());
 			pushTraversive(traversive);
 		}
 	}
@@ -363,14 +381,13 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private void rejectTraversal(Entity entity, Traversive traversive)
 	{
-		Vector bounce = traversive.getInVelocity().clone().multiply(-2.0D);
+		Vector bounce = traversive.getInVelocity().clone().multiply(-6.0D);
 		if(bounce.lengthSquared() < 0.01D)
 		{
 			double side = traversive.isFrontSide() ? 1.0D : -1.0D;
-			bounce = getFrame().getNormal().toVector().normalize().multiply(side);
+			bounce = getFrame().getNormal().toVector().normalize().multiply(side * 3.0D);
 		}
 		entity.setVelocity(bounce);
-		markTeleportCooldown(entity.getUniqueId(), System.currentTimeMillis());
 		playEffect(PortalEffect.REJECT, traversive.getInPoint().toLocation(getStructure().getWorld()));
 		notifyPortalDenied(entity);
 	}
@@ -378,6 +395,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private boolean allowsPortalPermission(Entity entity)
 	{
 		if(!(entity instanceof Player player))
+		{
+			return true;
+		}
+		if(player.isOp())
 		{
 			return true;
 		}
@@ -896,9 +917,29 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		TELEPORT_COOLDOWNS.put(entityId, Long.valueOf(now + TELEPORT_COOLDOWN_MILLIS));
 	}
 
+	public static void markPostTraversalGrace(UUID entityId)
+	{
+		POST_TRAVERSAL_GRACE.put(entityId, Long.valueOf(System.currentTimeMillis() + POST_TRAVERSAL_GRACE_MILLIS));
+	}
+
+	public static boolean isInPostTraversalGrace(UUID entityId, long now)
+	{
+		Long until = POST_TRAVERSAL_GRACE.get(entityId);
+		if(until == null)
+		{
+			return false;
+		}
+		if(until.longValue() <= now)
+		{
+			POST_TRAVERSAL_GRACE.remove(entityId, until);
+			return false;
+		}
+		return true;
+	}
+
 	private static void pruneTeleportCooldowns(long now)
 	{
-		if(TELEPORT_COOLDOWNS.size() < 256)
+		if(TELEPORT_COOLDOWNS.size() < 256 && POST_TRAVERSAL_GRACE.size() < 256)
 		{
 			return;
 		}
@@ -910,6 +951,15 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			if(entry.getValue().longValue() <= now)
 			{
 				TELEPORT_COOLDOWNS.remove(entry.getKey(), entry.getValue());
+			}
+		}
+		Iterator<Map.Entry<UUID, Long>> graceIterator = POST_TRAVERSAL_GRACE.entrySet().iterator();
+		while(graceIterator.hasNext())
+		{
+			Map.Entry<UUID, Long> entry = graceIterator.next();
+			if(entry.getValue().longValue() <= now)
+			{
+				POST_TRAVERSAL_GRACE.remove(entry.getKey(), entry.getValue());
 			}
 		}
 	}
@@ -1009,46 +1059,97 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public Window uiCreatePortalMenu(Player p)
 	{
-		//@builder
-		Window window = new UIWindow(Wormholes.instance, p)
-				.setTitle(getRouter(true))
-				.setResolution(WindowResolution.W3_H3)
-				.setViewportHeight(3)
-				.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
-		window.setElement(-1, 1, new UIElement("set-destination")
-				.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Link")
-				.addLore(ChatColor.GRAY + "Choose a portal destination for")
-				.addLore(ChatColor.GRAY + "this portal.")
+		UIWindow window = new UIWindow(Wormholes.instance, p);
+		window.setTitle(getRouter(true));
+		window.setResolution(WindowResolution.W9_H6);
+		window.setViewportHeight(6);
+		window.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
+		window.onClosed((w) -> openMenus.remove(p.getUniqueId()));
+		rebuildPortalMenuElements(window, p);
+		openMenus.put(p.getUniqueId(), window);
+		return window;
+	}
+
+	private void rebuildPortalMenuElements(UIWindow window, Player p)
+	{
+		window.clearElements();
+		window.setElement(0, 0, portalPlacardElement());
+
+		String linkLore = hasTunnel()
+				? ChatColor.GRAY + "Currently linked: " + ChatColor.GOLD + getTunnel().getDestination().getName()
+				: ChatColor.GRAY + "Currently linked: " + ChatColor.RED + "None";
+		window.setElement(-3, 1, new UIElement("set-destination")
+				.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Link Destination")
+				.addLore(ChatColor.GRAY + "Choose a portal to link to.")
+				.addLore(linkLore)
+				.addLore(" ")
+				.addLore(ChatColor.DARK_GRAY + "Click to open the link picker.")
 				.setMaterial(new MaterialBlock(Material.ENDER_EYE))
 				.setCount(Math.max(1, Wormholes.portalManager.getAccessableCount(getType()) - 1))
-				.onLeftClick((e) -> uiChooseDestination(p)))
-		.setElement(0, 1, new UIElement("set-name")
-				.setName(ChatColor.GREEN + "" + ChatColor.BOLD + "Name")
-				.addLore(ChatColor.GRAY + "Change the portal name.")
+				.onLeftClick((e) -> uiChooseDestination(p)));
+
+		window.setElement(-1, 1, new UIElement("set-name")
+				.setName(ChatColor.GREEN + "" + ChatColor.BOLD + "Rename Portal")
+				.addLore(ChatColor.GRAY + "Change the portal name shown on")
+				.addLore(ChatColor.GRAY + "links, routers, and notifications.")
+				.addLore(ChatColor.GRAY + "Current: " + ChatColor.WHITE + getName())
+				.addLore(" ")
+				.addLore(ChatColor.DARK_GRAY + "Click to type a new name.")
 				.setMaterial(new MaterialBlock(Material.NAME_TAG))
-				.onLeftClick((e) -> uiChangeName(p)))
-		.setElement(1, 1, projectionsElement(window))
-		.setElement(0, 2, new UIElement("destroy")
+				.onLeftClick((e) -> uiChangeName(p)));
+
+		window.setElement(1, 1, modeOpenerElement(window, p));
+		window.setElement(3, 1, projectionsElement(window, p));
+
+		window.setElement(-3, 2, permissionElement(window, p));
+		window.setElement(-1, 2, outgoingTransfersElement(window, p));
+		window.setElement(1, 2, incomingTransfersElement(window, p));
+
+		window.setElement(-3, 3, directionElement(window, p));
+		window.setElement(-1, 3, flipFaceElement(window, p));
+		window.setElement(1, 3, rotateCounterClockwiseElement(window, p));
+		window.setElement(3, 3, rotateClockwiseElement(window, p));
+
+		window.setElement(0, 5, new UIElement("destroy")
 				.setName(ChatColor.RED + "" + ChatColor.BOLD + "Delete Portal")
-				.addLore(ChatColor.GRAY + "Deletes the portal without")
+				.addLore(ChatColor.GRAY + "Removes the portal without")
 				.addLore(ChatColor.GRAY + "dropping portal blocks.")
-				.addLore(ChatColor.GRAY + " ")
-				.addLore(ChatColor.RED + "" + ChatColor.UNDERLINE + "Shift + Left Click")
+				.addLore(" ")
+				.addLore(ChatColor.RED + "" + ChatColor.UNDERLINE + "Shift + Left Click to confirm")
 				.setMaterial(new MaterialBlock(Material.GUNPOWDER))
 				.onShiftLeftClick((e) ->
 				{
 					window.close();
 					destroy();
 				}));
-		//@done
 
 		if(isGateway())
 		{
-			//@builder
-			window.setElement(-1, 2, new UIElement("export-portal")
-					.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Export")
-					.addLore(ChatColor.GRAY + "Get a portal code to paste into")
-					.addLore(ChatColor.GRAY + "another server's Import button.")
+			window.setElement(3, 2, settingsSyncElement(window, p));
+
+			window.setElement(-3, 4, new UIElement("network-view-settings")
+					.setName(ChatColor.DARK_AQUA + "" + ChatColor.BOLD + "Network View")
+					.addLore(ChatColor.GRAY + "Tune this gateway's streamed")
+					.addLore(ChatColor.GRAY + "cross-server projection volume.")
+					.addLore(" ")
+					.addLore(ChatColor.GRAY + "Depth " + ChatColor.AQUA + networkViewDepth)
+					.addLore(ChatColor.GRAY + "Entity Update " + ChatColor.AQUA + networkViewEntityIntervalTicks + "t")
+					.addLore(" ")
+					.addLore(ChatColor.DARK_GRAY + "Click to open Network View.")
+					.setMaterial(new MaterialBlock(Material.SPYGLASS))
+					.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () ->
+					{
+						window.close();
+						uiOpenNetworkViewMenu(p);
+					})));
+
+			window.setElement(-1, 4, new UIElement("export-portal")
+					.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Export Code")
+					.addLore(ChatColor.GRAY + "Generates a portal code you can")
+					.addLore(ChatColor.GRAY + "paste into another server's")
+					.addLore(ChatColor.GRAY + "Import button to link gateways.")
+					.addLore(" ")
+					.addLore(ChatColor.DARK_GRAY + "Click to copy a fresh code.")
 					.setMaterial(new MaterialBlock(Material.PAPER))
 					.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () ->
 					{
@@ -1058,11 +1159,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 						{
 							Wormholes.importExportService.exportToChat(p, LocalPortal.this);
 						}
-					})))
-			.setElement(1, 2, new UIElement("import-portal")
-					.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Import")
+					})));
+
+			window.setElement(1, 4, new UIElement("import-portal")
+					.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Import Code")
 					.addLore(ChatColor.GRAY + "Paste a portal code from another")
 					.addLore(ChatColor.GRAY + "server to link this gateway to it.")
+					.addLore(" ")
+					.addLore(ChatColor.DARK_GRAY + "Click then type or paste the code.")
 					.setMaterial(new MaterialBlock(Material.WRITABLE_BOOK))
 					.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () ->
 					{
@@ -1083,247 +1187,330 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 							}
 						});
 					})));
-			//@done
 		}
+	}
+
+	private void uiOpenNetworkViewMenu(Player p)
+	{
+		Window w = uiCreateNetworkViewMenu(p);
+		w.setVisible(true);
+	}
+
+	private Window uiCreateNetworkViewMenu(Player p)
+	{
+		UIWindow window = new UIWindow(Wormholes.instance, p);
+		window.setTitle(getRouter(true));
+		window.setResolution(WindowResolution.W9_H6);
+		window.setViewportHeight(3);
+		window.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
+
+		window.setElement(0, 0, networkViewPlacardElement());
+
+		window.setElement(-3, 1, networkViewNumberElement(window, p, "network-view-depth", "Capture Radius",
+				ChatColor.GRAY + "Blocks captured in every direction around the destination portal (360°), and how far you can see through it.",
+				Material.SPYGLASS, this::getNetworkViewDepth, this::setNetworkViewDepth, 4, 16));
+		window.setElement(0, 1, networkViewNumberElement(window, p, "network-view-heartbeat", "Full Refresh",
+				ChatColor.GRAY + "Ticks between full block refresh broadcasts.",
+				Material.CLOCK, this::getNetworkViewHeartbeatTicks, this::setNetworkViewHeartbeatTicks, 10, 60));
+		window.setElement(2, 1, networkViewNumberElement(window, p, "network-view-entities", "Entity Update",
+				ChatColor.GRAY + "Ticks between entity update broadcasts.",
+				Material.ENDER_EYE, this::getNetworkViewEntityIntervalTicks, this::setNetworkViewEntityIntervalTicks, 2, 20));
+		window.setElement(4, 1, networkViewNumberElement(window, p, "network-view-grace", "Unsubscribe Grace",
+				ChatColor.GRAY + "Seconds to keep streaming after a viewer looks away.",
+				Material.REDSTONE, this::getNetworkViewUnsubscribeGraceSeconds, this::setNetworkViewUnsubscribeGraceSeconds, 5, 30));
+
+		window.setElement(-2, 2, networkViewFallbackElement(p, window));
+		window.setElement(0, 2, backToPortalMenuElement(window, p));
 
 		return window;
 	}
 
-	@Override
-	public void uiOpenConfigMenu(Player p)
+	private Element networkViewNumberElement(Window window, Player viewer, String id, String label, String description, Material material, IntSupplier getter, IntConsumer setter, int step, int largeStep)
 	{
-		Window w = uiCreateConfigMenu(p);
-		w.setVisible(true);
+		UIElement element = new UIElement(id);
+		element.onLeftClick((e) -> adjustNetworkViewNumber(element, window, viewer, label, description, material, getter, setter, step));
+		element.onRightClick((e) -> adjustNetworkViewNumber(element, window, viewer, label, description, material, getter, setter, -step));
+		element.onShiftLeftClick((e) -> adjustNetworkViewNumber(element, window, viewer, label, description, material, getter, setter, largeStep));
+		element.onShiftRightClick((e) -> adjustNetworkViewNumber(element, window, viewer, label, description, material, getter, setter, -largeStep));
+		applyNetworkViewNumberElement(element, label, description, material, getter, step, largeStep);
+		return element;
+	}
+
+	private void adjustNetworkViewNumber(UIElement element, Window window, Player viewer, String label, String description, Material material, IntSupplier getter, IntConsumer setter, int delta)
+	{
+		int previous = getter.getAsInt();
+		setter.accept(previous + delta);
+		int current = getter.getAsInt();
+		applyNetworkViewNumberElement(element, label, description, material, getter, Math.abs(delta), Math.abs(delta));
+		window.updateInventory();
+		if(current != previous)
+		{
+			notifySetting(viewer, label + " " + ChatColor.AQUA + current);
+		}
+	}
+
+	private void applyNetworkViewNumberElement(Element element, String label, String description, Material material, IntSupplier getter, int step, int largeStep)
+	{
+		element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + label + " " + ChatColor.WHITE + getter.getAsInt());
+		element.setMaterial(new MaterialBlock(material));
+		KList<String> lore = element.getLore();
+		lore.clear();
+		lore.add(description);
+		lore.add(" ");
+		lore.add(ChatColor.GRAY + "Currently: " + ChatColor.AQUA + getter.getAsInt());
+		lore.add(" ");
+		lore.add(ChatColor.DARK_GRAY + "Left click: +" + Math.abs(step));
+		lore.add(ChatColor.DARK_GRAY + "Right click: -" + Math.abs(step));
+		lore.add(ChatColor.DARK_GRAY + "Shift-left: +" + Math.abs(largeStep));
+		lore.add(ChatColor.DARK_GRAY + "Shift-right: -" + Math.abs(largeStep));
+	}
+
+	private Element networkViewFallbackElement(Player p, Window window)
+	{
+		UIElement element = new UIElement("network-view-fallback");
+		element.onLeftClick((e) ->
+		{
+			window.close();
+			p.closeInventory();
+			p.sendMessage(ChatColor.AQUA + "Enter a block state for this portal's network view edge, or 'cancel':");
+			Wormholes.awaitChatInput(p, (text) ->
+			{
+				if(text == null || text.equalsIgnoreCase("cancel"))
+				{
+					uiOpenNetworkViewMenu(p);
+					return;
+				}
+				String previous = getNetworkViewFallbackBlock();
+				String normalized = normalizeNetworkViewFallbackBlock(text);
+				setNetworkViewFallbackBlock(normalized);
+				if(!previous.equals(getNetworkViewFallbackBlock()))
+				{
+					notifySetting(p, "Fallback set to " + ChatColor.AQUA + getNetworkViewFallbackBlock());
+				}
+				uiOpenNetworkViewMenu(p);
+			});
+		});
+		element.onRightClick((e) ->
+		{
+			String previous = getNetworkViewFallbackBlock();
+			setNetworkViewFallbackBlock(DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK);
+			applyNetworkViewFallbackElement(element);
+			window.updateInventory();
+			if(!previous.equals(getNetworkViewFallbackBlock()))
+			{
+				notifySetting(p, "Fallback reset to " + ChatColor.AQUA + getNetworkViewFallbackBlock());
+			}
+		});
+		applyNetworkViewFallbackElement(element);
+		return element;
+	}
+
+	private void applyNetworkViewFallbackElement(Element element)
+	{
+		element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Fallback Block");
+		element.setMaterial(new MaterialBlock(Material.GLASS));
+		KList<String> lore = element.getLore();
+		lore.clear();
+		lore.add(ChatColor.GRAY + "Block shown beyond streamed depth.");
+		lore.add(" ");
+		lore.add(ChatColor.GRAY + "Currently: " + ChatColor.WHITE + getNetworkViewFallbackBlock());
+		lore.add(" ");
+		lore.add(ChatColor.DARK_GRAY + "Left: enter a block state.");
+		lore.add(ChatColor.DARK_GRAY + "Right: reset to air.");
 	}
 
 	@Override
-	public Window uiCreateConfigMenu(Player p)
+	public void uiChooseMode(Player p)
 	{
-		//@builder
-		Window window = new UIWindow(Wormholes.instance, p)
-				.setTitle(getRouter(true))
-				.setResolution(WindowResolution.W3_H3)
-				.setViewportHeight(3)
-				.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
-		window.setElement(0, 0, new UIElement("set-mode")
-				.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Mode")
-				.addLore(ChatColor.GRAY + "Switch portal mode.")
-				.addLore(ChatColor.GRAY + "Current Mode " + ChatColor.YELLOW + "" + ChatColor.BOLD + F.capitalize(getType().name().toLowerCase()))
-				.setMaterial(new MaterialBlock(Material.BEACON))
-				.onLeftClick((e) -> uiChooseMode(p)))
-		.setElement(-1, 0, permissionElement(window))
-		.setElement(1, 0, outgoingTransfersElement(window))
-		.setElement(-1, 1, new UIElement("set-direction")
-				.setName(ChatColor.BLUE + "" + ChatColor.BOLD + "Direction")
-				.addLore(ChatColor.GRAY + "Change the portal facing direction.")
-				.addLore(ChatColor.GRAY + "Currently Facing " + ChatColor.BLUE + "" + ChatColor.BOLD + getDirection().toString())
-				.setMaterial(new MaterialBlock(Material.COMPASS))
-				.onLeftClick((e) ->
-				{
-					uiChangeDirection(p);
-					window.close();
-				}))
-		.setElement(0, 1, incomingTransfersElement(window))
-			.setElement(1, 1, new UIElement("flip-face")
-					.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Flip Face")
-				.addLore(ChatColor.GRAY + "Reverse the portal face direction.")
-				.addLore(ChatColor.GRAY + "Screen rotation stays aligned.")
-				.addLore(ChatColor.GRAY + "Current Roll Up " + ChatColor.AQUA + "" + ChatColor.BOLD + getFrame().getUp().toString())
-				.setMaterial(new MaterialBlock(Material.TARGET))
-				.onLeftClick((e) ->
-				{
-					setFrame(getFrame().flipNormal());
-					Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s face flipped to " + getDirection().toString() + ".", getStructure().getCenter());
-						window.close();
-						uiOpenConfigMenu(p);
-					}))
-			.setElement(-1, 2, new UIElement("rotate-counter-clockwise")
-					.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Counterclockwise")
-				.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees")
-				.addLore(ChatColor.GRAY + "without changing the face.")
-				.addLore(ChatColor.GRAY + "Current Up " + ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + getFrame().getUp().toString())
-				.setMaterial(new MaterialBlock(Material.REPEATER))
-				.onLeftClick((e) ->
-				{
-					setFrame(getFrame().rotateCounterClockwise());
-					Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s roll rotated counterclockwise.", getStructure().getCenter());
-					window.close();
-					uiOpenConfigMenu(p);
-				}))
-		.setElement(1, 2, new UIElement("rotate-clockwise")
-				.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Clockwise")
-				.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees")
-				.addLore(ChatColor.GRAY + "without changing the face.")
-				.addLore(ChatColor.GRAY + "Current Up " + ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + getFrame().getUp().toString())
-				.setMaterial(new MaterialBlock(Material.COMPARATOR))
-				.onLeftClick((e) ->
-				{
-					setFrame(getFrame().rotateClockwise());
-					Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s roll rotated clockwise.", getStructure().getCenter());
-					window.close();
-					uiOpenConfigMenu(p);
-				}));
-		//@done
+		UIWindow window = new UIWindow(Wormholes.instance, p);
+		window.setTitle(getRouter(true));
+		window.setResolution(WindowResolution.W9_H6);
+		window.setViewportHeight(3);
+		window.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
+		window.onClosed((w) -> FoliaScheduler.runEntity(Wormholes.instance, p, () -> uiOpenPortalMenu(p)));
 
-			if(isGateway())
-			{
-				window.setElement(0, 2, new UIElement("network-view-settings")
-						.setName(ChatColor.DARK_AQUA + "" + ChatColor.BOLD + "Network View")
-						.addLore(ChatColor.GRAY + "Tune this gateway's streamed")
-						.addLore(ChatColor.GRAY + "cross-server projection volume.")
-						.addLore(ChatColor.GRAY + "Depth " + ChatColor.AQUA + networkViewDepth + ChatColor.GRAY + ", Entities " + ChatColor.AQUA + networkViewEntityIntervalTicks + "t")
-						.setMaterial(new MaterialBlock(Material.SPYGLASS))
-						.onLeftClick((e) ->
-						{
-							window.close();
-							uiOpenNetworkViewMenu(p);
-						}));
-			}
+		window.setElement(0, 0, modePlacardElement());
+		window.setElement(-2, 1, modeOption(PortalType.PORTAL, p, window));
+		window.setElement(0, 1, modeOption(PortalType.WORMHOLE, p, window));
+		window.setElement(2, 1, modeOption(PortalType.GATEWAY, p, window));
+		window.setElement(0, 2, backToPortalMenuElement(window, p));
 
-			return window;
-		}
-
-		private void uiOpenNetworkViewMenu(Player p)
-		{
-			Window w = uiCreateNetworkViewMenu(p);
-			w.setVisible(true);
-		}
-
-		private Window uiCreateNetworkViewMenu(Player p)
-		{
-			Window window = new UIWindow(Wormholes.instance, p)
-					.setTitle(getRouter(true))
-					.setResolution(WindowResolution.W3_H3)
-					.setViewportHeight(3)
-					.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
-			window.setElement(-1, 0, networkViewNumberElement(window, "network-view-depth", "Depth", Material.SPYGLASS, () -> getNetworkViewDepth(), (value) -> setNetworkViewDepth(value), 4, 16))
-					.setElement(0, 0, networkViewNumberElement(window, "network-view-pad", "Lateral Pad", Material.MAP, () -> getNetworkViewLateralPad(), (value) -> setNetworkViewLateralPad(value), 1, 8))
-					.setElement(1, 0, networkViewNumberElement(window, "network-view-heartbeat", "Full Refresh", Material.CLOCK, () -> getNetworkViewHeartbeatTicks(), (value) -> setNetworkViewHeartbeatTicks(value), 10, 60))
-					.setElement(-1, 1, networkViewNumberElement(window, "network-view-entities", "Entity Update", Material.ENDER_EYE, () -> getNetworkViewEntityIntervalTicks(), (value) -> setNetworkViewEntityIntervalTicks(value), 2, 20))
-					.setElement(0, 1, networkViewNumberElement(window, "network-view-grace", "Unsubscribe Grace", Material.REDSTONE, () -> getNetworkViewUnsubscribeGraceSeconds(), (value) -> setNetworkViewUnsubscribeGraceSeconds(value), 5, 30))
-					.setElement(1, 1, networkViewFallbackElement(p, window))
-					.setElement(0, 2, new UIElement("back")
-							.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Back")
-							.addLore(ChatColor.GRAY + "Return to portal configs.")
-							.setMaterial(new MaterialBlock(Material.ARROW))
-							.onLeftClick((e) ->
-							{
-								window.close();
-								uiOpenConfigMenu(p);
-							}));
-			return window;
-		}
-
-		private Element networkViewNumberElement(Window window, String id, String label, Material material, IntSupplier getter, IntConsumer setter, int step, int largeStep)
-		{
-			UIElement element = new UIElement(id);
-			element.onLeftClick((e) ->
-			{
-				setter.accept(getter.getAsInt() + step);
-				applyNetworkViewNumberElement(element, label, material, getter);
-				window.updateInventory();
-			});
-			element.onRightClick((e) ->
-			{
-				setter.accept(getter.getAsInt() - step);
-				applyNetworkViewNumberElement(element, label, material, getter);
-				window.updateInventory();
-			});
-			element.onShiftLeftClick((e) ->
-			{
-				setter.accept(getter.getAsInt() + largeStep);
-				applyNetworkViewNumberElement(element, label, material, getter);
-				window.updateInventory();
-			});
-			element.onShiftRightClick((e) ->
-			{
-				setter.accept(getter.getAsInt() - largeStep);
-				applyNetworkViewNumberElement(element, label, material, getter);
-				window.updateInventory();
-			});
-			applyNetworkViewNumberElement(element, label, material, getter);
-			return element;
-		}
-
-		private void applyNetworkViewNumberElement(Element element, String label, Material material, IntSupplier getter)
-		{
-			element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + label + " " + getter.getAsInt());
-			element.setMaterial(new MaterialBlock(material));
-			KList<String> lore = element.getLore();
-			lore.clear();
-			lore.add(ChatColor.GRAY + "Left/right adjust.");
-			lore.add(ChatColor.GRAY + "Shift-left/right adjust faster.");
-			lore.add(" ");
-			lore.add(ChatColor.DARK_GRAY + "Saved per portal.");
-		}
-
-		private Element networkViewFallbackElement(Player p, Window window)
-		{
-			UIElement element = new UIElement("network-view-fallback");
-			element.onLeftClick((e) ->
-			{
-				window.close();
-				p.closeInventory();
-				p.sendMessage(ChatColor.AQUA + "Enter a block state for this portal's network view edge, or 'cancel':");
-				Wormholes.awaitChatInput(p, (text) ->
-				{
-					if(text == null || text.equalsIgnoreCase("cancel"))
-					{
-						uiOpenNetworkViewMenu(p);
-						return;
-					}
-					String normalized = normalizeNetworkViewFallbackBlock(text);
-					setNetworkViewFallbackBlock(normalized);
-					uiOpenNetworkViewMenu(p);
-				});
-			});
-			element.onRightClick((e) ->
-			{
-				setNetworkViewFallbackBlock(DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK);
-				applyNetworkViewFallbackElement(element);
-				window.updateInventory();
-			});
-			applyNetworkViewFallbackElement(element);
-			return element;
-		}
-
-		private void applyNetworkViewFallbackElement(Element element)
-		{
-			element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Fallback Block");
-			element.setMaterial(new MaterialBlock(Material.GLASS));
-			KList<String> lore = element.getLore();
-			lore.clear();
-			lore.add(ChatColor.GRAY + getNetworkViewFallbackBlock());
-			lore.add(" ");
-			lore.add(ChatColor.DARK_GRAY + "Left to enter block state.");
-			lore.add(ChatColor.DARK_GRAY + "Right resets to air.");
-		}
-
-		@Override
-		public void uiChooseMode(Player p)
-		{
-		//@builder
-		Window window = new UIWindow(Wormholes.instance, p)
-				.setTitle(getRouter(true))
-				.setResolution(WindowResolution.W3_H3)
-				.setViewportHeight(3)
-				.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE))
-				.onClosed((w) -> FoliaScheduler.runEntity(Wormholes.instance, p, () -> uiOpenConfigMenu(p)));
-		window.setElement(-1, 1, modeOption(PortalType.PORTAL, p, window))
-				.setElement(0, 1, modeOption(PortalType.WORMHOLE, p, window))
-				.setElement(1, 1, modeOption(PortalType.GATEWAY, p, window));
-		//@done
 		window.setVisible(true);
 	}
 
-	private Element projectionsElement(Window window)
+	private Element portalPlacardElement()
+	{
+		UIElement element = new UIElement("portal-placard");
+		element.setName(ChatColor.GOLD + "" + ChatColor.BOLD + getName());
+		element.setMaterial(new MaterialBlock(Material.BOOK));
+		element.addLore(ChatColor.GRAY + "Type: " + ChatColor.YELLOW + F.capitalize(getType().name().toLowerCase()));
+		element.addLore(ChatColor.GRAY + "Facing: " + ChatColor.BLUE + getDirection().toString());
+		if(hasTunnel())
+		{
+			element.addLore(ChatColor.GRAY + "Linked to: " + ChatColor.GOLD + getTunnel().getDestination().getName());
+		}
+		else
+		{
+			element.addLore(ChatColor.GRAY + "Linked to: " + ChatColor.RED + "None");
+		}
+		element.addLore(" ");
+		element.addLore(ChatColor.DARK_GRAY + "Operators bypass white/blacklist.");
+		return element;
+	}
+
+	private Element networkViewPlacardElement()
+	{
+		UIElement element = new UIElement("network-view-placard");
+		element.setName(ChatColor.DARK_AQUA + "" + ChatColor.BOLD + "Network View");
+		element.setMaterial(new MaterialBlock(Material.SPYGLASS));
+		element.addLore(ChatColor.GRAY + "Tune this gateway's streamed");
+		element.addLore(ChatColor.GRAY + "cross-server projection.");
+		element.addLore(" ");
+		element.addLore(ChatColor.GRAY + "Larger values = richer view,");
+		element.addLore(ChatColor.GRAY + "more bandwidth.");
+		return element;
+	}
+
+	private Element modePlacardElement()
+	{
+		UIElement element = new UIElement("mode-placard");
+		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Portal Mode");
+		element.setMaterial(new MaterialBlock(Material.BEACON));
+		element.addLore(ChatColor.GRAY + "Current: " + ChatColor.YELLOW + F.capitalize(getType().name().toLowerCase()));
+		element.addLore(" ");
+		element.addLore(ChatColor.GRAY + "Portal: basic linked portal.");
+		element.addLore(ChatColor.GRAY + "Wormhole: portal with viewport.");
+		element.addLore(ChatColor.GRAY + "Gateway: cross-server gateway.");
+		return element;
+	}
+
+	private Element modeOpenerElement(Window window, Player viewer)
+	{
+		UIElement element = new UIElement("set-mode");
+		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Mode");
+		element.setMaterial(new MaterialBlock(modeIcon(getType())));
+		element.setEnchanted(true);
+		element.addLore(ChatColor.GRAY + modeDescription(getType()));
+		element.addLore(" ");
+		element.addLore(ChatColor.GRAY + "Currently: " + ChatColor.YELLOW + F.capitalize(getType().name().toLowerCase()));
+		element.addLore(" ");
+		element.addLore(ChatColor.DARK_GRAY + "Click to change mode.");
+		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
+		{
+			window.close();
+			uiChooseMode(viewer);
+		}));
+		return element;
+	}
+
+	private Element directionElement(Window window, Player viewer)
+	{
+		UIElement element = new UIElement("set-direction");
+		element.setName(ChatColor.BLUE + "" + ChatColor.BOLD + "Direction");
+		element.setMaterial(new MaterialBlock(Material.COMPASS));
+		element.addLore(ChatColor.GRAY + "Change the portal facing direction.");
+		element.addLore(" ");
+		element.addLore(ChatColor.GRAY + "Currently facing: " + ChatColor.BLUE + getDirection().toString());
+		element.addLore(" ");
+		element.addLore(ChatColor.DARK_GRAY + "Click then look, left click to apply.");
+		element.onLeftClick((e) ->
+		{
+			window.close();
+			uiChangeDirection(viewer);
+		});
+		return element;
+	}
+
+	private Element flipFaceElement(Window window, Player viewer)
+	{
+		UIElement element = new UIElement("flip-face");
+		element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Flip Face");
+		element.setMaterial(new MaterialBlock(Material.TARGET));
+		element.addLore(ChatColor.GRAY + "Reverse the portal face direction.");
+		element.addLore(ChatColor.GRAY + "Screen rotation stays aligned.");
+		element.addLore(" ");
+		element.addLore(ChatColor.GRAY + "Currently rolling up: " + ChatColor.AQUA + getFrame().getUp().toString());
+		element.addLore(" ");
+		element.addLore(ChatColor.DARK_GRAY + "Click to flip.");
+		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
+		{
+			setFrame(getFrame().flipNormal());
+			Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " face flipped to " + getDirection().toString() + ".", getStructure().getCenter());
+			window.close();
+			uiOpenPortalMenu(viewer);
+		}));
+		return element;
+	}
+
+	private Element rotateCounterClockwiseElement(Window window, Player viewer)
+	{
+		UIElement element = new UIElement("rotate-counter-clockwise");
+		element.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Counterclockwise");
+		element.setMaterial(new MaterialBlock(Material.REPEATER));
+		element.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees");
+		element.addLore(ChatColor.GRAY + "without changing the face.");
+		element.addLore(" ");
+		element.addLore(ChatColor.GRAY + "Currently rolling up: " + ChatColor.LIGHT_PURPLE + getFrame().getUp().toString());
+		element.addLore(" ");
+		element.addLore(ChatColor.DARK_GRAY + "Click to rotate.");
+		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
+		{
+			setFrame(getFrame().rotateCounterClockwise());
+			Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " rolled counterclockwise.", getStructure().getCenter());
+			window.close();
+			uiOpenPortalMenu(viewer);
+		}));
+		return element;
+	}
+
+	private Element rotateClockwiseElement(Window window, Player viewer)
+	{
+		UIElement element = new UIElement("rotate-clockwise");
+		element.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Clockwise");
+		element.setMaterial(new MaterialBlock(Material.COMPARATOR));
+		element.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees");
+		element.addLore(ChatColor.GRAY + "without changing the face.");
+		element.addLore(" ");
+		element.addLore(ChatColor.GRAY + "Currently rolling up: " + ChatColor.LIGHT_PURPLE + getFrame().getUp().toString());
+		element.addLore(" ");
+		element.addLore(ChatColor.DARK_GRAY + "Click to rotate.");
+		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
+		{
+			setFrame(getFrame().rotateClockwise());
+			Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " rolled clockwise.", getStructure().getCenter());
+			window.close();
+			uiOpenPortalMenu(viewer);
+		}));
+		return element;
+	}
+
+	private Element backToPortalMenuElement(Window window, Player viewer)
+	{
+		UIElement element = new UIElement("back-to-portal");
+		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Back");
+		element.setMaterial(new MaterialBlock(Material.ARROW));
+		element.addLore(ChatColor.GRAY + "Return to the portal menu.");
+		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
+		{
+			window.close();
+			uiOpenPortalMenu(viewer);
+		}));
+		return element;
+	}
+
+	private Element projectionsElement(Window window, Player viewer)
 	{
 		UIElement element = new UIElement("toggle-projections");
 		element.onLeftClick((e) ->
 		{
-			setProjectionMode(getProjectionMode().next());
-			applyProjectionMode(e);
+			ProjectionMode previous = getProjectionMode();
+			setProjectionMode(getProjectionMode().nextFor(getType()));
+			applyProjectionMode(element);
 			window.updateInventory();
+			if(previous != getProjectionMode())
+			{
+				notifySetting(viewer, "Projections: " + ChatColor.AQUA + getProjectionMode().getDisplayName());
+			}
 		});
 		applyProjectionMode(element);
 		return element;
@@ -1340,17 +1527,63 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		lore.add(ChatColor.GRAY + mode.getLoreLine1());
 		lore.add(ChatColor.GRAY + mode.getLoreLine2());
 		lore.add(" ");
-		lore.add(ChatColor.DARK_GRAY + "Click to cycle: " + ChatColor.GRAY + "Off > On > One-Way > Mirror");
+		lore.add(ChatColor.GRAY + "Currently: " + ChatColor.AQUA + mode.getDisplayName());
+		lore.add(" ");
+		if(isGateway())
+		{
+			lore.add(ChatColor.DARK_GRAY + "Click to cycle: Off > On > One-Way > Mirror");
+		}
+		else
+		{
+			lore.add(ChatColor.DARK_GRAY + "Click to toggle: Off / On");
+		}
 	}
 
-	private Element permissionElement(Window window)
+	private Element settingsSyncElement(Window window, Player viewer)
+	{
+		UIElement element = new UIElement("settings-sync");
+		element.onLeftClick((e) ->
+		{
+			boolean previous = isSettingsSyncEnabled();
+			setSettingsSyncEnabled(!previous);
+			applySettingsSyncElement(element);
+			window.updateInventory();
+			notifySetting(viewer, "Settings Sync " + (isSettingsSyncEnabled() ? ChatColor.GREEN + "On" : ChatColor.RED + "Off"));
+		});
+		applySettingsSyncElement(element);
+		return element;
+	}
+
+	private void applySettingsSyncElement(Element element)
+	{
+		boolean enabled = isSettingsSyncEnabled();
+		element.setName((enabled ? ChatColor.GREEN : ChatColor.RED) + "" + ChatColor.BOLD + "Settings Sync " + (enabled ? "On" : "Off"));
+		element.setEnchanted(enabled);
+		element.setMaterial(new MaterialBlock(enabled ? Material.SOUL_LANTERN : Material.LANTERN));
+		KList<String> lore = element.getLore();
+		lore.clear();
+		lore.add(ChatColor.GRAY + "When On, this portal's settings");
+		lore.add(ChatColor.GRAY + "(depth, ticks, projection, permissions,");
+		lore.add(ChatColor.GRAY + "transfers) sync to all linked peers.");
+		lore.add(" ");
+		lore.add(ChatColor.GRAY + "Currently: " + (enabled ? ChatColor.GREEN + "On" : ChatColor.RED + "Off"));
+		lore.add(" ");
+		lore.add(ChatColor.DARK_GRAY + "Click to toggle.");
+	}
+
+	private Element permissionElement(Window window, Player viewer)
 	{
 		UIElement element = new UIElement("permission-mode");
 		element.onLeftClick((e) ->
 		{
+			PortalPermissionMode previous = getPermissionMode();
 			setPermissionMode(getPermissionMode().next());
 			applyPermissionElement(element);
 			window.updateInventory();
+			if(previous != getPermissionMode())
+			{
+				notifySetting(viewer, "Access " + ChatColor.AQUA + getPermissionMode().getDisplayName());
+			}
 		});
 		applyPermissionElement(element);
 		return element;
@@ -1365,19 +1598,27 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		KList<String> lore = element.getLore();
 		lore.clear();
 		lore.add(ChatColor.GRAY + mode.getLoreLine());
-		lore.add(ChatColor.GRAY + "Node " + ChatColor.WHITE + getPermissionNode());
+		lore.add(ChatColor.GRAY + "Node: " + ChatColor.WHITE + getPermissionNode());
 		lore.add(" ");
-		lore.add(ChatColor.DARK_GRAY + "Click to toggle blacklist/whitelist");
+		lore.add(ChatColor.GRAY + "Currently: " + ChatColor.LIGHT_PURPLE + mode.getDisplayName());
+		lore.add(" ");
+		lore.add(ChatColor.DARK_GRAY + "Click to toggle whitelist / blacklist.");
+		lore.add(ChatColor.DARK_GRAY + "Operators always bypass.");
 	}
 
-	private Element outgoingTransfersElement(Window window)
+	private Element outgoingTransfersElement(Window window, Player viewer)
 	{
 		UIElement element = new UIElement("outgoing-transfers");
 		element.onLeftClick((e) ->
 		{
-			setOutgoingTraversalsEnabled(!isOutgoingTraversalsEnabled());
+			boolean previous = isOutgoingTraversalsEnabled();
+			setOutgoingTraversalsEnabled(!previous);
 			applyOutgoingTransfersElement(element);
 			window.updateInventory();
+			if(previous != isOutgoingTraversalsEnabled())
+			{
+				notifySetting(viewer, "Send Transfers " + (isOutgoingTraversalsEnabled() ? ChatColor.GREEN + "On" : ChatColor.RED + "Off"));
+			}
 		});
 		applyOutgoingTransfersElement(element);
 		return element;
@@ -1394,17 +1635,24 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		lore.add(ChatColor.GRAY + "Controls players, entities, and items");
 		lore.add(ChatColor.GRAY + "entering this portal from here.");
 		lore.add(" ");
-		lore.add(ChatColor.DARK_GRAY + "Click to toggle");
+		lore.add(ChatColor.GRAY + "Currently: " + (enabled ? ChatColor.GREEN + "On" : ChatColor.RED + "Off"));
+		lore.add(" ");
+		lore.add(ChatColor.DARK_GRAY + "Click to toggle.");
 	}
 
-	private Element incomingTransfersElement(Window window)
+	private Element incomingTransfersElement(Window window, Player viewer)
 	{
 		UIElement element = new UIElement("incoming-transfers");
 		element.onLeftClick((e) ->
 		{
-			setIncomingTraversalsEnabled(!isIncomingTraversalsEnabled());
+			boolean previous = isIncomingTraversalsEnabled();
+			setIncomingTraversalsEnabled(!previous);
 			applyIncomingTransfersElement(element);
 			window.updateInventory();
+			if(previous != isIncomingTraversalsEnabled())
+			{
+				notifySetting(viewer, "Receive Transfers " + (isIncomingTraversalsEnabled() ? ChatColor.GREEN + "On" : ChatColor.RED + "Off"));
+			}
 		});
 		applyIncomingTransfersElement(element);
 		return element;
@@ -1421,29 +1669,41 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		lore.add(ChatColor.GRAY + "Controls players, entities, and items");
 		lore.add(ChatColor.GRAY + "arriving through this portal.");
 		lore.add(" ");
-		lore.add(ChatColor.DARK_GRAY + "Click to toggle");
+		lore.add(ChatColor.GRAY + "Currently: " + (enabled ? ChatColor.GREEN + "On" : ChatColor.RED + "Off"));
+		lore.add(" ");
+		lore.add(ChatColor.DARK_GRAY + "Click to toggle.");
 	}
 
 	private Element modeOption(PortalType target, Player p, Window window)
 	{
 		boolean current = getType() == target;
 		String label = F.capitalize(target.name().toLowerCase());
-		return new UIElement("mode-" + target.name().toLowerCase())
-				.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + label)
-				.setMaterial(new MaterialBlock(modeIcon(target)))
-				.setEnchanted(current)
-				.addLore(ChatColor.GRAY + modeDescription(target))
-				.addLore(ChatColor.GRAY + " ")
-				.addLore(current ? ChatColor.GREEN + "Currently Selected" : ChatColor.GRAY + "Click to select")
-				.onLeftClick((e) ->
-				{
-					if(getType() != target)
-					{
-						setType(target);
-						Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s mode set to " + label + ".", getStructure().getCenter());
-					}
-					window.close();
-				});
+		UIElement element = new UIElement("mode-" + target.name().toLowerCase());
+		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + label);
+		element.setMaterial(new MaterialBlock(modeIcon(target)));
+		element.setEnchanted(current);
+		element.addLore(ChatColor.GRAY + modeDescription(target));
+		element.addLore(" ");
+		element.addLore(current ? ChatColor.GREEN + "Currently Selected" : ChatColor.GRAY + "Click to select");
+		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () ->
+		{
+			if(getType() != target)
+			{
+				setType(target);
+				Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " mode set to " + label + ".", getStructure().getCenter());
+			}
+			window.close();
+		}));
+		return element;
+	}
+
+	private void notifySetting(Player viewer, String message)
+	{
+		if(viewer == null)
+		{
+			return;
+		}
+		Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + ": " + ChatColor.RESET + message, viewer);
 	}
 
 	private static Material modeIcon(PortalType type)
@@ -1508,13 +1768,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 						if(hasTunnel() && getTunnel().getDestination().getId().equals(target.getId()))
 						{
 							tunnel = null;
+							save();
+							Wormholes.effectManager.playNotificationSuccess(ChatColor.YELLOW + getName() + " unlinked from " + target.getName() + ".", getStructure().getCenter());
 						}
 						else
 						{
 							setDestination(target);
+							Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " linked to " + target.getName() + ".", getStructure().getCenter());
 						}
-
-						window.close();
 					})));
 			//@done
 			pos++;
@@ -1546,10 +1807,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 							{
 								tunnel = null;
 								save();
+								Wormholes.effectManager.playNotificationSuccess(ChatColor.YELLOW + getName() + " unlinked from " + target.getName() + ".", getStructure().getCenter());
 							}
 							else
 							{
 								setDestination(target);
+								Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " linked to " + target.getName() + " on " + target.getServer().getName() + ".", getStructure().getCenter());
 							}
 						})));
 				//@done
@@ -1729,6 +1992,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			Wormholes.projectionManager.removeProjector(this);
 		}
 		save();
+		broadcastSettingsIfEnabled();
 	}
 
 	private static ProjectionMode resolveProjectionMode(JSONObject j)
@@ -1765,6 +2029,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 		permissionMode = normalized;
 		save();
+		broadcastSettingsIfEnabled();
 	}
 
 	@Override
@@ -1788,6 +2053,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 		outgoingTraversalsEnabled = enabled;
 		save();
+		broadcastSettingsIfEnabled();
 	}
 
 	@Override
@@ -1805,6 +2071,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 			incomingTraversalsEnabled = enabled;
 			save();
+			broadcastSettingsIfEnabled();
 		}
 
 		@Override
@@ -1926,6 +2193,74 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			{
 				Wormholes.projectionManager.removeProjector(this);
 			}
+			broadcastSettingsIfEnabled();
+			refreshOpenMenus();
+		}
+
+		public void refreshOpenMenus()
+		{
+			if(openMenus.isEmpty())
+			{
+				return;
+			}
+			for(java.util.Map.Entry<UUID, UIWindow> entry : openMenus.entrySet())
+			{
+				UUID viewerId = entry.getKey();
+				UIWindow window = entry.getValue();
+				Player viewer = Bukkit.getPlayer(viewerId);
+				if(viewer == null || !viewer.isOnline() || !window.isVisible())
+				{
+					openMenus.remove(viewerId);
+					continue;
+				}
+				FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
+				{
+					if(!window.isVisible())
+					{
+						openMenus.remove(viewerId);
+						return;
+					}
+					rebuildPortalMenuElements(window, viewer);
+					window.updateInventory();
+				});
+			}
+		}
+
+		public boolean isSettingsSyncEnabled()
+		{
+			return settingsSyncEnabled;
+		}
+
+		public void setSettingsSyncEnabled(boolean enabled)
+		{
+			if(settingsSyncEnabled == enabled)
+			{
+				return;
+			}
+			settingsSyncEnabled = enabled;
+			save();
+			if(isGateway() && Wormholes.portalSyncService != null && !art.arcane.wormholes.network.PortalSyncService.isApplyingRemote())
+			{
+				Wormholes.portalSyncService.broadcastSettingsToggle(this);
+			}
+			refreshOpenMenus();
+		}
+
+		private void broadcastSettingsIfEnabled()
+		{
+			if(!settingsSyncEnabled)
+			{
+				return;
+			}
+			if(art.arcane.wormholes.network.PortalSyncService.isApplyingRemote())
+			{
+				return;
+			}
+			if(Wormholes.portalSyncService == null)
+			{
+				return;
+			}
+			Wormholes.portalSyncService.broadcastSettings(this);
 		}
 
 		private static int readNetworkViewInt(JSONObject j, String key, int defaultValue, int min, int max)

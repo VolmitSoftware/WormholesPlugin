@@ -78,6 +78,24 @@ public enum ProjectionMode
 		return CYCLE[(ordinal() + 1) % CYCLE.length];
 	}
 
+	public ProjectionMode nextFor(PortalType type)
+	{
+		if(type == PortalType.GATEWAY)
+		{
+			return next();
+		}
+		return this == OFF ? ON : OFF;
+	}
+
+	public boolean isAllowedFor(PortalType type)
+	{
+		if(type == PortalType.GATEWAY)
+		{
+			return true;
+		}
+		return this == OFF || this == ON;
+	}
+
 	public static ProjectionMode fromName(String name)
 	{
 		if(name == null)

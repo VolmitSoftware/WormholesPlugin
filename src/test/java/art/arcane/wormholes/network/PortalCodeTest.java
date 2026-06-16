@@ -14,7 +14,7 @@ class PortalCodeTest {
     @Test
     void codeRoundTripsAllFields() throws Exception {
         UUID portalId = UUID.randomUUID();
-        PortalCode original = new PortalCode("hub", "anchor", "play.example.com", java.util.List.of("203.0.113.7", "192.168.1.50"), 8901, 25565, publicKey(), portalId, "Gateway 1a2b");
+        PortalCode original = new PortalCode("hub", "play.example.com", java.util.List.of("203.0.113.7", "192.168.1.50"), 8901, 25565, publicKey(), portalId, "Gateway 1a2b");
         String encoded = original.encode();
         assertTrue(encoded.startsWith(PortalCode.PREFIX));
 
@@ -24,14 +24,14 @@ class PortalCodeTest {
 
     @Test
     void typicalCodeFitsInChat() throws Exception {
-        PortalCode code = new PortalCode("survival-main", "anchor", "play.somewhere-long.example.com", java.util.List.of("203.0.113.7", "192.168.1.50"), 8901, 25565,
+        PortalCode code = new PortalCode("survival-main", "play.somewhere-long.example.com", java.util.List.of("203.0.113.7", "192.168.1.50"), 8901, 25565,
             publicKey(), UUID.randomUUID(), "Gateway abcd");
         assertTrue(code.encode().length() <= 250, "typical code should be chat-pasteable, was " + code.encode().length());
     }
 
     @Test
     void decodeToleratesSurroundingWhitespace() throws Exception {
-        PortalCode original = new PortalCode("hub", "anchor", "10.0.0.2", java.util.List.of(), 8901, 25565, publicKey(), UUID.randomUUID(), "Gate");
+        PortalCode original = new PortalCode("hub", "10.0.0.2", java.util.List.of(), 8901, 25565, publicKey(), UUID.randomUUID(), "Gate");
         assertEquals(original, PortalCode.decode("  " + original.encode() + " \n"));
     }
 
@@ -43,20 +43,18 @@ class PortalCodeTest {
         assertNull(PortalCode.decode("WHP1.!!!!not-base64!!!!"));
         assertNull(PortalCode.decode(PortalCode.PREFIX));
 
-        String valid = new PortalCode("hub", "anchor", "10.0.0.2", java.util.List.of(), 8901, 25565, publicKey(), UUID.randomUUID(), "Gate").encode();
+        String valid = new PortalCode("hub", "10.0.0.2", java.util.List.of(), 8901, 25565, publicKey(), UUID.randomUUID(), "Gate").encode();
         assertNull(PortalCode.decode(valid.substring(0, valid.length() - 10)), "truncated code must not decode");
     }
 
     @Test
     void blankRequiredFieldsRejected() throws Exception {
         String publicKey = publicKey();
-        String blankServer = new PortalCode("", "anchor", "10.0.0.2", java.util.List.of(), 8901, 25565, publicKey, UUID.randomUUID(), "Gate").encode();
+        String blankServer = new PortalCode("", "10.0.0.2", java.util.List.of(), 8901, 25565, publicKey, UUID.randomUUID(), "Gate").encode();
         assertNull(PortalCode.decode(blankServer));
-        String blankRole = new PortalCode("hub", "", "10.0.0.2", java.util.List.of(), 8901, 25565, publicKey, UUID.randomUUID(), "Gate").encode();
-        assertNull(PortalCode.decode(blankRole));
-        String blankHost = new PortalCode("hub", "anchor", "", java.util.List.of(), 8901, 25565, publicKey, UUID.randomUUID(), "Gate").encode();
+        String blankHost = new PortalCode("hub", "", java.util.List.of(), 8901, 25565, publicKey, UUID.randomUUID(), "Gate").encode();
         assertNull(PortalCode.decode(blankHost));
-        String blankPublicKey = new PortalCode("hub", "anchor", "10.0.0.2", java.util.List.of(), 8901, 25565, "", UUID.randomUUID(), "Gate").encode();
+        String blankPublicKey = new PortalCode("hub", "10.0.0.2", java.util.List.of(), 8901, 25565, "", UUID.randomUUID(), "Gate").encode();
         assertNull(PortalCode.decode(blankPublicKey));
     }
 

@@ -1,5 +1,9 @@
 package art.arcane.wormholes.network.view;
 
+import art.arcane.wormholes.network.replication.ChunkBulk;
+import art.arcane.wormholes.network.replication.ChunkDiffBatch;
+import art.arcane.wormholes.network.replication.RemoteChunkStore;
+
 import com.github.retrooper.packetevents.protocol.entity.data.EntityData;
 import com.github.retrooper.packetevents.protocol.player.Equipment;
 
@@ -7,6 +11,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.block.data.BlockData;
 
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -79,7 +85,9 @@ public final class RemoteViewCache {
         private volatile long lastUpdateMillis;
         private volatile long revision;
         private volatile int skyDarken;
+        private volatile boolean viewReady;
         private volatile List<EntityVisual> entities = List.of();
+        private final Map<UUID, EntityVisual> lastEntityState = new ConcurrentHashMap<>();
         private final Map<UUID, Integer> stateVersions = new ConcurrentHashMap<>();
         private final Map<Long, DecodedSlice> slices = new ConcurrentHashMap<>();
         private final Map<UUID, RemoteProfile> profiles = new ConcurrentHashMap<>();
@@ -139,6 +147,10 @@ public final class RemoteViewCache {
             return skyDarken;
         }
 
+        public boolean isViewReady() {
+            return viewReady;
+        }
+
         public int getStateVersion(UUID entityId) {
             Integer version = stateVersions.get(entityId);
             return version == null ? 0 : version;
@@ -163,6 +175,101 @@ public final class RemoteViewCache {
 
     private final Map<String, RemoteView> views = new ConcurrentHashMap<>();
     private final Map<String, BlockData> parsedBlockData = new ConcurrentHashMap<>();
+    private final Map<String, RemoteChunkStore> chunkStores = new ConcurrentHashMap<>();
+
+    public RemoteChunkStore chunkStore(String peerName) {
+        return chunkStores.computeIfAbsent(peerName, ignored -> new RemoteChunkStore());
+    }
+
+    public RemoteChunkStore chunkStoreIfPresent(String peerName) {
+        return chunkStores.get(peerName);
+    }
+
+    public void clearChunkStore(String peerName) {
+        chunkStores.remove(peerName);
+    }
+
+    public void applyChunkBulk(String peerName, List<ChunkBulk> bulks) {
+        if (bulks == null || bulks.isEmpty()) {
+            return;
+        }
+        RemoteChunkStore store = chunkStore(peerName);
+        for (ChunkBulk bulk : bulks) {
+            try {
+                RemoteChunkStore.ReplicatedChunk chunk = store.applyBulk(bulk);
+                publishSliceToViews(peerName, chunk);
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    public List<RemoteChunkStore.ApplyOutcome> applyChunkDiff(String peerName, List<ChunkDiffBatch> batches) {
+        if (batches == null || batches.isEmpty()) {
+            return List.of();
+        }
+        RemoteChunkStore store = chunkStore(peerName);
+        List<RemoteChunkStore.ApplyOutcome> outcomes = new ArrayList<>(batches.size());
+        for (ChunkDiffBatch batch : batches) {
+            RemoteChunkStore.ApplyOutcome outcome = store.applyDiff(batch);
+            outcomes.add(outcome);
+            if (outcome.applied()) {
+                RemoteChunkStore.ReplicatedChunk chunk = store.get(batch.chunkKey());
+                if (chunk != null) {
+                    publishSliceToViews(peerName, chunk);
+                }
+            }
+        }
+        return outcomes;
+    }
+
+    private void publishSliceToViews(String peerName, RemoteChunkStore.ReplicatedChunk chunk) {
+        if (chunk == null) {
+            return;
+        }
+        ViewSlice slice = chunk.slice();
+        if (slice == null) {
+            return;
+        }
+        long columnKey = chunk.chunkKey();
+        DecodedSlice decoded = decode(slice);
+        for (RemoteView view : views.values()) {
+            if (!view.peerName.equals(peerName)) {
+                continue;
+            }
+            ViewBox existing = view.box;
+            ViewBox sliceBox = new ViewBox(slice.minX(), slice.minY(), slice.minZ(),
+                slice.minX() + slice.sizeX() - 1, slice.minY() + slice.sizeY() - 1, slice.minZ() + slice.sizeZ() - 1);
+            if (existing == null) {
+                view.box = sliceBox;
+            } else if (!columnIntersectsBox(columnKey, existing)) {
+                view.box = unionBoxes(existing, sliceBox);
+            }
+            view.slices.put(columnKey, decoded);
+            view.revision++;
+            view.lastUpdateMillis = System.currentTimeMillis();
+        }
+    }
+
+    private static ViewBox unionBoxes(ViewBox a, ViewBox b) {
+        return new ViewBox(
+            Math.min(a.minX(), b.minX()),
+            Math.min(a.minY(), b.minY()),
+            Math.min(a.minZ(), b.minZ()),
+            Math.max(a.maxX(), b.maxX()),
+            Math.max(a.maxY(), b.maxY()),
+            Math.max(a.maxZ(), b.maxZ())
+        );
+    }
+
+    private static boolean columnIntersectsBox(long columnKey, ViewBox box) {
+        int chunkX = (int) (columnKey >> 32);
+        int chunkZ = (int) columnKey;
+        int minChunkX = box.minX() >> 4;
+        int maxChunkX = box.maxX() >> 4;
+        int minChunkZ = box.minZ() >> 4;
+        int maxChunkZ = box.maxZ() >> 4;
+        return chunkX >= minChunkX && chunkX <= maxChunkX && chunkZ >= minChunkZ && chunkZ <= maxChunkZ;
+    }
 
     public RemoteView getOrCreate(String peerName, UUID portalId) {
         return views.computeIfAbsent(key(peerName, portalId), k -> new RemoteView(peerName, portalId));
@@ -176,26 +283,34 @@ public final class RemoteViewCache {
         views.remove(key(peerName, portalId));
     }
 
-    public void applySnapshot(String peerName, UUID portalId, ViewBox box, List<ViewSlice> slices) {
-        RemoteView view = getOrCreate(peerName, portalId);
-        view.box = box;
-        view.slices.clear();
-        for (ViewSlice slice : slices) {
-            view.slices.put(slice.columnKey(), decode(slice));
-        }
-        view.revision++;
+    public void markViewReady(String peerName, UUID portalId) {
+        RemoteView view = views.computeIfAbsent(key(peerName, portalId), k -> new RemoteView(peerName, portalId));
+        view.viewReady = true;
         view.lastUpdateMillis = System.currentTimeMillis();
     }
 
-    public void applyDelta(String peerName, UUID portalId, List<ViewSlice> slices) {
-        RemoteView view = views.get(key(peerName, portalId));
-        if (view == null || view.box == null) {
-            return;
+    public boolean isViewReady(UUID portalId) {
+        if (portalId == null) {
+            return false;
         }
-        for (ViewSlice slice : slices) {
-            view.slices.put(slice.columnKey(), decode(slice));
+        for (RemoteView view : views.values()) {
+            if (view.portalId.equals(portalId) && view.viewReady) {
+                return true;
+            }
         }
-        view.lastUpdateMillis = System.currentTimeMillis();
+        return false;
+    }
+
+    public boolean hasSlicesFor(UUID portalId) {
+        if (portalId == null) {
+            return false;
+        }
+        for (RemoteView view : views.values()) {
+            if (view.portalId.equals(portalId) && !view.slices.isEmpty()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public void applyTime(String peerName, UUID portalId, int skyDarken) {
@@ -207,49 +322,58 @@ public final class RemoteViewCache {
         view.lastUpdateMillis = System.currentTimeMillis();
     }
 
-    public void applyEntities(String peerName, UUID portalId, List<EntityVisual> entities) {
+    public void applyEntities(String peerName, UUID portalId, List<EntityVisual> entities, List<UUID> presentIds) {
         RemoteView view = views.get(key(peerName, portalId));
         if (view == null) {
             return;
         }
-        Set<UUID> present = new HashSet<>(entities.size());
-        for (EntityVisual visual : entities) {
-            present.add(visual.id());
-            if (visual.isPlayer() && visual.playerName() != null && !visual.playerName().isEmpty()) {
-                RemoteProfile previous = view.profiles.get(visual.id());
-                String textureValue = visual.hasTextures() ? visual.textureValue() : previous == null ? "" : previous.textureValue();
-                String textureSignature = visual.hasTextures() ? visual.textureSignature() : previous == null ? "" : previous.textureSignature();
-                view.profiles.put(visual.id(), new RemoteProfile(visual.playerName(), textureValue, textureSignature));
+        for (EntityVisual incoming : entities) {
+            EntityVisual lastKnown = view.lastEntityState.get(incoming.id());
+            EntityVisual full = EntityDeltaCodec.applyDelta(incoming, lastKnown);
+            view.lastEntityState.put(incoming.id(), full);
+            if (full.isPlayer() && full.playerName() != null && !full.playerName().isEmpty()) {
+                RemoteProfile previous = view.profiles.get(full.id());
+                String textureValue = full.hasTextures() ? full.textureValue() : previous == null ? "" : previous.textureValue();
+                String textureSignature = full.hasTextures() ? full.textureSignature() : previous == null ? "" : previous.textureSignature();
+                view.profiles.put(full.id(), new RemoteProfile(full.playerName(), textureValue, textureSignature));
             }
             boolean stateChanged = false;
-            if (visual.metadata() != null && visual.metadata().length > 0) {
+            int presentMask = incoming.presentMask();
+            boolean metadataIncluded = incoming.isFull() || (presentMask & EntityVisual.FIELD_METADATA) != 0;
+            boolean equipmentIncluded = incoming.isFull() || (presentMask & EntityVisual.FIELD_EQUIPMENT) != 0;
+            if (metadataIncluded && full.metadata() != null && full.metadata().length > 0) {
                 try {
-                    view.entityMetadata.put(visual.id(), List.copyOf(PacketBlobs.readMetadata(visual.metadata())));
+                    view.entityMetadata.put(full.id(), List.copyOf(PacketBlobs.readMetadata(full.metadata())));
                     stateChanged = true;
                 } catch (Throwable ignored) {
                 }
             }
-            if (visual.equipment() != null && visual.equipment().length > 0) {
+            if (equipmentIncluded && full.equipment() != null && full.equipment().length > 0) {
                 try {
-                    view.entityEquipment.put(visual.id(), List.copyOf(PacketBlobs.readEquipment(visual.equipment())));
+                    view.entityEquipment.put(full.id(), List.copyOf(PacketBlobs.readEquipment(full.equipment())));
                     stateChanged = true;
                 } catch (Throwable ignored) {
                 }
             }
             if (stateChanged) {
-                view.stateVersions.merge(visual.id(), 1, Integer::sum);
+                view.stateVersions.merge(full.id(), 1, Integer::sum);
             }
         }
-        view.profiles.keySet().retainAll(present);
-        view.entityMetadata.keySet().retainAll(present);
-        view.entityEquipment.keySet().retainAll(present);
-        view.stateVersions.keySet().retainAll(present);
-        view.entities = List.copyOf(entities);
+        if (presentIds != null) {
+            Set<UUID> present = new HashSet<>(presentIds);
+            view.profiles.keySet().retainAll(present);
+            view.entityMetadata.keySet().retainAll(present);
+            view.entityEquipment.keySet().retainAll(present);
+            view.stateVersions.keySet().retainAll(present);
+            view.lastEntityState.keySet().retainAll(present);
+        }
+        view.entities = List.copyOf(view.lastEntityState.values());
         view.lastUpdateMillis = System.currentTimeMillis();
     }
 
     public void clear() {
         views.clear();
+        chunkStores.clear();
     }
 
     private DecodedSlice decode(ViewSlice slice) {

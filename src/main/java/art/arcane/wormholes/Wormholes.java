@@ -12,11 +12,14 @@ import art.arcane.wormholes.network.PlayerTransfer;
 import art.arcane.wormholes.network.PortalSyncService;
 import art.arcane.wormholes.network.RemotePortalRegistry;
 import art.arcane.wormholes.network.TraversalService;
+import art.arcane.wormholes.network.replication.capture.CaptureRuntime;
+import art.arcane.wormholes.network.replication.capture.CaptureSettings;
 import art.arcane.wormholes.network.view.RemoteViewCache;
 import art.arcane.wormholes.network.view.ViewServer;
 import art.arcane.wormholes.network.view.ViewSubscriptionManager;
 import art.arcane.wormholes.service.MetricsRuntime;
 import art.arcane.wormholes.service.PacketEventsRuntime;
+import art.arcane.wormholes.service.StatsSnapshotWriter;
 import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.wormholes.service.WormholesCommandService;
 import art.arcane.wormholes.service.WormholesIntegrationService;
@@ -40,6 +43,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -78,6 +83,9 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     private WormholesCommandService commandService;
     private WormholesIntegrationService integrationService;
     private HotloadManager hotloadManager;
+    private StatsSnapshotWriter statsSnapshotWriter;
+    private CaptureRuntime captureRuntime;
+    private Instant pluginStartedAt;
 
     public Wormholes() {
         getLogger().info("Loading dependencies...");
@@ -135,7 +143,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             remoteViewCache = new RemoteViewCache();
             viewSubscriptions = new ViewSubscriptionManager(networkManager, remoteViewCache);
             viewServer = new ViewServer(networkManager);
-            NetworkRouter networkRouter = new NetworkRouter(remotePortalRegistry, portalSyncService, traversalService, viewServer, remoteViewCache, viewSubscriptions);
+            NetworkRouter networkRouter = new NetworkRouter(remotePortalRegistry, portalSyncService, traversalService, viewServer, remoteViewCache, viewSubscriptions, networkManager.getReplicationManager(), networkManager);
             networkManager.setMessageSink(networkRouter::onMessage);
             networkManager.setPeerStateSink(networkRouter::onPeerState);
             registerStatusBridgeListener(networkManager);
@@ -165,6 +173,9 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             hotloadManager.start();
 
             this.metricsRuntime = MetricsRuntime.start(this, BSTATS_PLUGIN_ID);
+            this.pluginStartedAt = Instant.now();
+            startStatsSnapshotWriter();
+            startCaptureRuntime();
         } catch (Exception ex) {
             success = false;
             errorMessage = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
@@ -280,11 +291,26 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
                 getLogger().log(Level.WARNING, "NetworkManager rejected hot-reload notification", ex);
             }
         }
+        try {
+            stopStatsSnapshotWriter();
+            startStatsSnapshotWriter();
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "StatsSnapshotWriter rejected hot-reload notification", ex);
+        }
+        try {
+            CaptureRuntime activeCapture = captureRuntime;
+            if (activeCapture != null) {
+                activeCapture.applySettings(reloaded.getNetwork());
+            }
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "CaptureRuntime rejected hot-reload notification", ex);
+        }
         getLogger().info("Configuration hot-reloaded.");
     }
 
     private void resetNetworkRuntime() {
         unregisterStatusBridgeListener();
+        stopCaptureRuntime();
         if (viewServer != null) {
             try {
                 viewServer.shutdown();
@@ -326,13 +352,14 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         remoteViewCache = new RemoteViewCache();
         viewSubscriptions = new ViewSubscriptionManager(networkManager, remoteViewCache);
         viewServer = new ViewServer(networkManager);
-        NetworkRouter networkRouter = new NetworkRouter(remotePortalRegistry, portalSyncService, traversalService, viewServer, remoteViewCache, viewSubscriptions);
+        NetworkRouter networkRouter = new NetworkRouter(remotePortalRegistry, portalSyncService, traversalService, viewServer, remoteViewCache, viewSubscriptions, networkManager.getReplicationManager(), networkManager);
         networkManager.setMessageSink(networkRouter::onMessage);
         networkManager.setPeerStateSink(networkRouter::onPeerState);
         registerStatusBridgeListener(networkManager);
         getServer().getPluginManager().registerEvents(traversalService, this);
         getServer().getPluginManager().registerEvents(viewServer, this);
         networkManager.start();
+        startCaptureRuntime();
     }
 
     private void registerStatusBridgeListener(NetworkManager manager) {
@@ -495,6 +522,18 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         }
 
         try {
+            stopStatsSnapshotWriter();
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "Error during StatsSnapshotWriter stop", ex);
+        }
+
+        try {
+            stopCaptureRuntime();
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "Error during CaptureRuntime stop", ex);
+        }
+
+        try {
             if (hotloadManager != null) {
                 hotloadManager.stop();
                 hotloadManager = null;
@@ -575,6 +614,86 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         }
 
         WormholesAudience.stop(getLogger());
+    }
+
+    public StatsSnapshotWriter getStatsSnapshotWriter() {
+        return statsSnapshotWriter;
+    }
+
+    private void startCaptureRuntime() {
+        if (captureRuntime != null) {
+            return;
+        }
+        if (networkManager == null) {
+            return;
+        }
+        if (settings == null || settings.getNetwork() == null || !settings.getNetwork().enabled) {
+            return;
+        }
+        CaptureSettings initial = settings == null ? CaptureSettings.defaults() : CaptureSettings.from(settings.getNetwork());
+        CaptureRuntime runtime = new CaptureRuntime(this, getLogger(), networkManager.getReplicationManager(), networkManager.getReplicationManager(), initial);
+        runtime.start();
+        captureRuntime = runtime;
+    }
+
+    private void stopCaptureRuntime() {
+        CaptureRuntime runtime = captureRuntime;
+        captureRuntime = null;
+        if (runtime != null) {
+            runtime.stop();
+        }
+    }
+
+    public CaptureRuntime getCaptureRuntime() {
+        return captureRuntime;
+    }
+
+    private void startStatsSnapshotWriter() {
+        if (statsSnapshotWriter != null) {
+            return;
+        }
+        if (settings == null) {
+            return;
+        }
+        if (settings.getNetwork() == null || settings.getNetwork().stats == null) {
+            return;
+        }
+        if (!settings.getNetwork().stats.enabled) {
+            return;
+        }
+        int intervalSec = Math.max(1, settings.getNetwork().stats.intervalSec);
+        Path output = resolveStatsOutputPath(settings.getNetwork().stats.pathOverride);
+        StatsSnapshotWriter writer = StatsSnapshotWriter.forRuntime(
+            this,
+            networkManager,
+            viewServer,
+            traversalService,
+            null,
+            output,
+            Duration.ofSeconds(intervalSec),
+            pluginStartedAt == null ? Instant.now() : pluginStartedAt
+        );
+        writer.start();
+        statsSnapshotWriter = writer;
+    }
+
+    private void stopStatsSnapshotWriter() {
+        StatsSnapshotWriter writer = statsSnapshotWriter;
+        statsSnapshotWriter = null;
+        if (writer != null) {
+            writer.stop();
+        }
+    }
+
+    private Path resolveStatsOutputPath(String override) {
+        if (override == null || override.isBlank()) {
+            return getDataFolder().toPath().resolve("wormholes-stats.txt");
+        }
+        Path path = Path.of(override);
+        if (path.isAbsolute()) {
+            return path;
+        }
+        return getDataFolder().toPath().resolve(override);
     }
 
     private PacketEventsRuntime packetEvents() {

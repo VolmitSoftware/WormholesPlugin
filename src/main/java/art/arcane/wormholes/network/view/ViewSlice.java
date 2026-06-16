@@ -30,30 +30,37 @@ public record ViewSlice(int minX, int minY, int minZ, int sizeX, int sizeY, int 
         return (((long) chunkX) << 32) | (((long) chunkZ) & 0xFFFFFFFFL);
     }
 
+    /**
+     * Palette-order- and light-independent hash of the slice's logical content (blocks + biomes).
+     * Each cell contributes the hash of the actual block/biome it resolves to, so two slices with
+     * identical per-cell content hash equal regardless of how each server ordered its palette or
+     * what the current lighting is. This is what the cross-server hash probe compares, so a resync
+     * only fires on a real block/biome divergence -- not on palette re-ordering after a diff, and
+     * not on day/night light changes.
+     */
     public long contentHash() {
-        long hash = 0xcbf29ce484222325L;
-        for (String entry : palette) {
-            for (int i = 0; i < entry.length(); i++) {
-                hash = (hash ^ entry.charAt(i)) * 0x100000001b3L;
-            }
-            hash = (hash ^ 0xFF) * 0x100000001b3L;
+        long h = 1469598103934665603L;
+        int paletteSize = palette.size();
+        int[] paletteHashes = new int[paletteSize];
+        for (int i = 0; i < paletteSize; i++) {
+            paletteHashes[i] = palette.get(i).hashCode();
         }
-        for (short index : indices) {
-            hash = (hash ^ (index & 0xFFFF)) * 0x100000001b3L;
+        for (int i = 0; i < indices.length; i++) {
+            int idx = indices[i] & 0xFFFF;
+            h ^= (idx < paletteSize ? paletteHashes[idx] : 0) & 0xFFFFFFFFL;
+            h *= 1099511628211L;
         }
-        for (byte level : light) {
-            hash = (hash ^ (level & 0xFF)) * 0x100000001b3L;
+        int biomeSize = biomePalette.size();
+        int[] biomeHashes = new int[biomeSize];
+        for (int i = 0; i < biomeSize; i++) {
+            biomeHashes[i] = biomePalette.get(i).hashCode();
         }
-        for (String entry : biomePalette) {
-            for (int i = 0; i < entry.length(); i++) {
-                hash = (hash ^ entry.charAt(i)) * 0x100000001b3L;
-            }
-            hash = (hash ^ 0xFE) * 0x100000001b3L;
+        for (int i = 0; i < biomes.length; i++) {
+            int idx = biomes[i] & 0xFFFF;
+            h ^= (idx < biomeSize ? biomeHashes[idx] : 0) & 0xFFFFFFFFL;
+            h *= 1099511628211L;
         }
-        for (short biome : biomes) {
-            hash = (hash ^ (biome & 0xFFFF)) * 0x100000001b3L;
-        }
-        return hash;
+        return h;
     }
 
     public void write(DataOutputStream out) throws IOException {

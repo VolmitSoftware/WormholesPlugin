@@ -74,8 +74,7 @@ class NetworkManagerTest {
         NetworkConfig config = new NetworkConfig();
         config.enabled = true;
         config.serverName = serverName == null ? "" : serverName;
-        config.listenHost = "127.0.0.1";
-        config.advertiseHost = "127.0.0.1";
+        config.advertiseHostOverride = "127.0.0.1";
         config.listenPort = listenPort;
         return config;
     }
@@ -202,7 +201,6 @@ class NetworkManagerTest {
         int unusedBoatPort = freePort();
         NetworkConfig anchorConfig = config(portAnchor, ALPHA_NAME);
         NetworkConfig boatConfig = config(unusedBoatPort, BETA_NAME);
-        boatConfig.role = "boat";
         boatConfig.listenEnabled = false;
 
         NetworkManager anchor = manager(anchorConfig, ALPHA_GAME_PORT, "anchor");
@@ -224,16 +222,13 @@ class NetworkManagerTest {
 
         NetworkConfig anchorConfig = config(anchorPort, "anchor");
         anchorConfig.serverName = "anchor";
-        anchorConfig.relayEnabled = true;
 
         NetworkConfig boatAConfig = config(boatAPort, "boat-a");
         boatAConfig.serverName = "boat-a";
-        boatAConfig.role = "boat";
         boatAConfig.listenEnabled = false;
 
         NetworkConfig boatBConfig = config(boatBPort, "boat-b");
         boatBConfig.serverName = "boat-b";
-        boatBConfig.role = "boat";
         boatBConfig.listenEnabled = false;
 
         NetworkManager anchor = manager(anchorConfig, 25565, "relay-anchor");
@@ -283,7 +278,6 @@ class NetworkManagerTest {
         route.port = portB;
         route.publicHost = "127.0.0.1";
         route.publicPort = BETA_GAME_PORT;
-        route.relationship = "anchor";
 
         NetworkManager routeWriter = manager(alphaConfig, ALPHA_GAME_PORT, "route-alpha");
         routeWriter.savePeer(route);
@@ -393,18 +387,17 @@ class NetworkManagerTest {
     }
 
     @Test
-    void statusReportsBoatRoutesAsWaiting() throws IOException {
+    void statusReportsUndialableRoutesAsWaiting() throws IOException {
         int portA = freePort();
         NetworkConfig alphaConfig = config(portA, ALPHA_NAME);
         NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "waiting-alpha");
-        NetworkConfig.PeerEntry boatRoute = new NetworkConfig.PeerEntry();
-        boatRoute.name = BETA_NAME;
-        boatRoute.host = "127.0.0.1";
-        boatRoute.port = freePort();
-        boatRoute.publicHost = "127.0.0.1";
-        boatRoute.publicPort = BETA_GAME_PORT;
-        boatRoute.relationship = "boat";
-        alpha.savePeer(boatRoute);
+        NetworkConfig.PeerEntry undialableRoute = new NetworkConfig.PeerEntry();
+        undialableRoute.name = BETA_NAME;
+        undialableRoute.host = "";
+        undialableRoute.port = 0;
+        undialableRoute.publicHost = "";
+        undialableRoute.publicPort = 0;
+        alpha.savePeer(undialableRoute);
 
         alpha.start();
 

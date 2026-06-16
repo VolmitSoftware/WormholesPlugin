@@ -6,6 +6,8 @@ paper = "26.1.2.build.66-stable"
 packetevents = "2.12.1"
 bstats = "3.0.2"
 toml4j = "0.7.2"
+adventure = "4.26.1"
+adventurePlatform = "4.4.1"
 junit = "5.10.2"
 junitPlatform = "1.10.2"
 fastutil = "8.5.15"
@@ -15,6 +17,14 @@ paper = { module = "io.papermc.paper:paper-api", version.ref = "paper" }
 packetevents = { module = "com.github.retrooper:packetevents-spigot", version.ref = "packetevents" }
 bstats = { module = "org.bstats:bstats-bukkit", version.ref = "bstats" }
 toml4j = { module = "com.moandjiezana.toml:toml4j", version.ref = "toml4j" }
+adventureApi = { module = "net.kyori:adventure-api", version.ref = "adventure" }
+adventureNbt = { module = "net.kyori:adventure-nbt", version.ref = "adventure" }
+adventureMiniMessage = { module = "net.kyori:adventure-text-minimessage", version.ref = "adventure" }
+adventureSerializerGson = { module = "net.kyori:adventure-text-serializer-gson", version.ref = "adventure" }
+adventureSerializerJson = { module = "net.kyori:adventure-text-serializer-json", version.ref = "adventure" }
+adventureSerializerLegacy = { module = "net.kyori:adventure-text-serializer-legacy", version.ref = "adventure" }
+adventureSerializerPlain = { module = "net.kyori:adventure-text-serializer-plain", version.ref = "adventure" }
+adventurePlatformBukkit = { module = "net.kyori:adventure-platform-bukkit", version.ref = "adventurePlatform" }
 junitJupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junitPlatformLauncher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junitPlatform" }
 fastutil = { module = "it.unimi.dsi:fastutil", version.ref = "fastutil" }

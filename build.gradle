@@ -73,7 +73,9 @@ tasks.named('build').configure {
 shadowJarTask.configure {
     archiveClassifier.set('')
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-    minimize()
+    minimize {
+        exclude(dependency('com.github.luben:zstd-jni:.*'))
+    }
     relocate('io.github.slimjar', "${lib}.slimjar")
     relocate('org.bstats', "${lib}.bstats")
     relocate('com.github.retrooper.packetevents', "${lib}.packetevents.api")
@@ -107,6 +109,18 @@ tasks.named('test').configure {
     useJUnitPlatform()
 }
 
+tasks.register('bandwidthHarness', JavaExec) {
+    group = 'verification'
+    description = 'Runs the Wormholes bandwidth comparison harness across entity, transport, and replication scenarios.'
+    dependsOn(tasks.named('testClasses'))
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'art.arcane.wormholes.perf.WormholesBandwidthHarness'
+    systemProperties = System.properties.findAll {
+        String key = it.key.toString()
+        return key.startsWith('scenarios') || key.startsWith('duration') || key.startsWith('subscribers') || key.startsWith('chunks') || key.startsWith('activity')
+    }
+}
+
 slimJar {
     relocate('org.bstats', "${lib}.bstats")
     relocate('com.github.retrooper.packetevents', "${lib}.packetevents.api")
@@ -136,6 +150,7 @@ repositories {
 
 dependencies {
     implementation('de.crazydev22.slimjar.helper:spigot:2.1.9')
+    implementation('com.github.luben:zstd-jni:1.5.6-9')
     compileOnly(libs.paper)
     compileOnly(libs.fastutil)
     testImplementation(libs.paper)
@@ -151,11 +166,14 @@ dependencies {
         exclude(group: 'net.kyori')
     }
     slim(libs.toml4j)
-    slim('net.kyori:adventure-api:4.24.0')
-    slim('net.kyori:adventure-text-minimessage:4.24.0')
-    slim('net.kyori:adventure-text-serializer-legacy:4.24.0')
-    slim('net.kyori:adventure-text-serializer-plain:4.24.0')
-    slim('net.kyori:adventure-platform-bukkit:4.4.1') {
+    slim(libs.adventureApi)
+    slim(libs.adventureNbt)
+    slim(libs.adventureMiniMessage)
+    slim(libs.adventureSerializerGson)
+    slim(libs.adventureSerializerJson)
+    slim(libs.adventureSerializerLegacy)
+    slim(libs.adventureSerializerPlain)
+    slim(libs.adventurePlatformBukkit) {
         exclude group: 'net.md-5', module: 'bungeecord-chat'
     }
 }

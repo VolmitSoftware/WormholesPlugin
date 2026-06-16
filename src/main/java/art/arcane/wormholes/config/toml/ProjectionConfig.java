@@ -14,7 +14,7 @@ public class ProjectionConfig {
         "Higher values let the client see a deeper portal volume, but cost grows quickly because more local cells must be tested.",
         "This is capped by the player's negotiated client view distance when client-view-distance-cap is true."
     })
-    public double range = 32.0;
+    public double range = 48.0;
 
     @ConfigDescription({
         "Projector refresh interval in server ticks.",

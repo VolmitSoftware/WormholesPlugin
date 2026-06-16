@@ -55,10 +55,9 @@ public final class ImportExportService {
 
         PortalCode code = new PortalCode(
             network.getLocalName(),
-            config.role,
             advertiseHost,
             alternateHosts(advertiseHost),
-            config.listenPort,
+            network.getBoundListenPort(),
             Bukkit.getPort(),
             network.getPublicKey(),
             portal.getId(),
@@ -104,7 +103,6 @@ public final class ImportExportService {
         entry.port = code.wormholePort();
         entry.publicHost = code.advertiseHost();
         entry.publicPort = code.gamePort() > 0 ? code.gamePort() : 25565;
-        entry.relationship = code.role();
         network.savePeer(entry);
 
         if (!config.enabled) {
@@ -132,13 +130,11 @@ public final class ImportExportService {
     }
 
     private String resolveAdvertiseHost(CommandSender sender, NetworkConfig config) {
-        if (config.advertiseHost != null && !config.advertiseHost.isBlank()) {
-            return config.advertiseHost;
+        if (config.advertiseHostOverride != null && !config.advertiseHostOverride.isBlank()) {
+            return config.advertiseHostOverride;
         }
-        String publicIp = AddressResolver.detectPublicAddress();
-        String resolved = publicIp != null ? publicIp : network.getAdvertiseHost();
-        network.setInferredAdvertiseHost(resolved);
-        WormholesAudience.sendMessage(sender, Component.text("Using " + resolved + " in this portal code. Set advertise-host in network.toml only if that address is wrong.", NamedTextColor.GRAY));
+        String resolved = network.getAdvertiseHost();
+        WormholesAudience.sendMessage(sender, Component.text("Using " + resolved + " in this portal code. Set advertise-host-override in network.toml only if that address is wrong.", NamedTextColor.GRAY));
         return resolved;
     }
 

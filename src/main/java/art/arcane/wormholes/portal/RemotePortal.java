@@ -14,6 +14,16 @@ public class RemotePortal extends Portal implements IRemotePortal {
     private final PortalType type;
     private final boolean open;
     private final AxisAlignedBB area;
+    private volatile ProjectionMode mirroredProjectionMode;
+    private volatile PortalPermissionMode mirroredPermissionMode;
+    private volatile boolean mirroredOutgoingTraversalsEnabled;
+    private volatile boolean mirroredIncomingTraversalsEnabled;
+    private volatile int mirroredNetworkViewDepth;
+    private volatile int mirroredNetworkViewLateralPad;
+    private volatile int mirroredNetworkViewHeartbeatTicks;
+    private volatile int mirroredNetworkViewEntityIntervalTicks;
+    private volatile int mirroredNetworkViewUnsubscribeGraceSeconds;
+    private volatile String mirroredNetworkViewFallbackBlock;
 
     public RemotePortal(UUID id, RemoteWorld server, Vector origin, PortalType type, boolean open, AxisAlignedBB area) {
         super(id, origin);
@@ -21,6 +31,16 @@ public class RemotePortal extends Portal implements IRemotePortal {
         this.type = type;
         this.open = open;
         this.area = area;
+        this.mirroredProjectionMode = ProjectionMode.ON;
+        this.mirroredPermissionMode = PortalPermissionMode.BLACKLIST;
+        this.mirroredOutgoingTraversalsEnabled = true;
+        this.mirroredIncomingTraversalsEnabled = true;
+        this.mirroredNetworkViewDepth = 32;
+        this.mirroredNetworkViewLateralPad = 8;
+        this.mirroredNetworkViewHeartbeatTicks = 60;
+        this.mirroredNetworkViewEntityIntervalTicks = 10;
+        this.mirroredNetworkViewUnsubscribeGraceSeconds = 30;
+        this.mirroredNetworkViewFallbackBlock = "minecraft:air";
     }
 
     public static RemotePortal fromInfo(String serverName, PortalInfo info) {
@@ -57,5 +77,85 @@ public class RemotePortal extends Portal implements IRemotePortal {
 
     public AxisAlignedBB getArea() {
         return area;
+    }
+
+    public ProjectionMode getMirroredProjectionMode() {
+        return mirroredProjectionMode;
+    }
+
+    public void setMirroredProjectionMode(ProjectionMode mode) {
+        this.mirroredProjectionMode = mode == null ? ProjectionMode.ON : mode;
+    }
+
+    public PortalPermissionMode getMirroredPermissionMode() {
+        return mirroredPermissionMode;
+    }
+
+    public void setMirroredPermissionMode(PortalPermissionMode mode) {
+        this.mirroredPermissionMode = mode == null ? PortalPermissionMode.BLACKLIST : mode;
+    }
+
+    public boolean isMirroredOutgoingTraversalsEnabled() {
+        return mirroredOutgoingTraversalsEnabled;
+    }
+
+    public void setMirroredOutgoingTraversalsEnabled(boolean enabled) {
+        this.mirroredOutgoingTraversalsEnabled = enabled;
+    }
+
+    public boolean isMirroredIncomingTraversalsEnabled() {
+        return mirroredIncomingTraversalsEnabled;
+    }
+
+    public void setMirroredIncomingTraversalsEnabled(boolean enabled) {
+        this.mirroredIncomingTraversalsEnabled = enabled;
+    }
+
+    public int getMirroredNetworkViewDepth() {
+        return mirroredNetworkViewDepth;
+    }
+
+    public void setMirroredNetworkViewDepth(int depth) {
+        this.mirroredNetworkViewDepth = depth;
+    }
+
+    public int getMirroredNetworkViewLateralPad() {
+        return mirroredNetworkViewLateralPad;
+    }
+
+    public void setMirroredNetworkViewLateralPad(int lateralPad) {
+        this.mirroredNetworkViewLateralPad = lateralPad;
+    }
+
+    public int getMirroredNetworkViewHeartbeatTicks() {
+        return mirroredNetworkViewHeartbeatTicks;
+    }
+
+    public void setMirroredNetworkViewHeartbeatTicks(int ticks) {
+        this.mirroredNetworkViewHeartbeatTicks = ticks;
+    }
+
+    public int getMirroredNetworkViewEntityIntervalTicks() {
+        return mirroredNetworkViewEntityIntervalTicks;
+    }
+
+    public void setMirroredNetworkViewEntityIntervalTicks(int ticks) {
+        this.mirroredNetworkViewEntityIntervalTicks = ticks;
+    }
+
+    public int getMirroredNetworkViewUnsubscribeGraceSeconds() {
+        return mirroredNetworkViewUnsubscribeGraceSeconds;
+    }
+
+    public void setMirroredNetworkViewUnsubscribeGraceSeconds(int seconds) {
+        this.mirroredNetworkViewUnsubscribeGraceSeconds = seconds;
+    }
+
+    public String getMirroredNetworkViewFallbackBlock() {
+        return mirroredNetworkViewFallbackBlock;
+    }
+
+    public void setMirroredNetworkViewFallbackBlock(String blockState) {
+        this.mirroredNetworkViewFallbackBlock = blockState == null ? "minecraft:air" : blockState;
     }
 }

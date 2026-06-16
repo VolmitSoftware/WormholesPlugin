@@ -28,18 +28,17 @@ public final class PlayerTransfer {
     }
 
     private static boolean shouldUseProxy(NetworkConfig.PeerEntry peer) {
-        if (peer.publicHost == null || peer.publicHost.isBlank()) {
-            return true;
-        }
-        return peer.relationship != null && peer.relationship.equalsIgnoreCase("boat");
+        return peer.useProxy;
     }
 
     private static boolean sendViaTransferPacket(Player player, NetworkConfig.PeerEntry peer) {
-        if (peer.publicHost == null || peer.publicHost.isBlank()) {
-            Wormholes.w("net: peer " + peer.name + " has no public-host configured; cannot transfer " + player.getName());
+        String host = peer.publicHost == null || peer.publicHost.isBlank() ? peer.host : peer.publicHost;
+        int port = peer.publicPort > 0 ? peer.publicPort : 25565;
+        if (host == null || host.isBlank()) {
+            Wormholes.w("net: peer " + peer.name + " has no reachable host; cannot transfer " + player.getName());
             return false;
         }
-        player.transfer(peer.publicHost, peer.publicPort);
+        player.transfer(host, port);
         return true;
     }
 

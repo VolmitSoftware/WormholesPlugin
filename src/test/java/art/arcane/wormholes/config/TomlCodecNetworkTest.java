@@ -23,13 +23,10 @@ class TomlCodecNetworkTest {
         NetworkConfig original = new NetworkConfig();
         original.enabled = true;
         original.serverName = "anchor";
-        original.role = "anchor";
         original.listenEnabled = true;
-        original.advertiseHost = "10.0.0.1";
-        original.listenHost = "10.0.0.1";
+        original.advertiseHostOverride = "10.0.0.1";
         original.listenPort = 9100;
         original.trustOnFirstUse = false;
-        original.relayEnabled = true;
         original.transferMode = "packet";
         original.handoffTimeoutMs = 3000L;
 
@@ -42,13 +39,10 @@ class TomlCodecNetworkTest {
         NetworkConfig loaded = TomlCodec.loadOrCreate(file, NetworkConfig.class);
         assertEquals(true, loaded.enabled);
         assertEquals("anchor", loaded.serverName);
-        assertEquals("anchor", loaded.role);
         assertEquals(true, loaded.listenEnabled);
-        assertEquals("10.0.0.1", loaded.advertiseHost);
-        assertEquals("10.0.0.1", loaded.listenHost);
+        assertEquals("10.0.0.1", loaded.advertiseHostOverride);
         assertEquals(9100, loaded.listenPort);
         assertEquals(false, loaded.trustOnFirstUse);
-        assertEquals(true, loaded.relayEnabled);
         assertEquals("packet", loaded.transferMode);
         assertEquals(3000L, loaded.handoffTimeoutMs);
     }

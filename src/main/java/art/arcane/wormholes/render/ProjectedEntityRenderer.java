@@ -239,7 +239,8 @@ public final class ProjectedEntityRenderer {
             state = null;
         }
         if (state == null) {
-            state = new SpoofedEntity(NEXT_FAKE_ID.getAndIncrement(), UUID.randomUUID(), visual.isPlayer(), upsideDown);
+            state = new SpoofedEntity(NEXT_FAKE_ID.getAndIncrement(), UUID.randomUUID(), visual.isPlayer(), upsideDown,
+                visual.isPlayer() || isLivingType(visual.typeKey()));
             spoofed.put(visual.id(), state);
             if (visual.isPlayer()) {
                 sendRemotePlayerInfo(observer, remoteView.getProfile(visual.id()), state, upsideDown);
@@ -343,6 +344,26 @@ public final class ProjectedEntityRenderer {
         return EntityTypes.getByName(typeKey);
     }
 
+    private static boolean isLivingType(String typeKey) {
+        if (typeKey == null || typeKey.isBlank()) {
+            return false;
+        }
+        try {
+            NamespacedKey key = NamespacedKey.fromString(typeKey.toLowerCase(java.util.Locale.ROOT));
+            if (key == null) {
+                return false;
+            }
+            org.bukkit.entity.EntityType bukkitType = org.bukkit.Registry.ENTITY_TYPE.get(key);
+            if (bukkitType == null) {
+                return false;
+            }
+            Class<? extends Entity> entityClass = bukkitType.getEntityClass();
+            return entityClass != null && LivingEntity.class.isAssignableFrom(entityClass);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     public void close(Player observer) {
         if (observer != null && observer.isOnline()) {
             destroySpoofedEntities(observer, spoofed.values());
@@ -363,7 +384,10 @@ public final class ProjectedEntityRenderer {
             return;
         }
         SpoofedEntity state = spoofed.get(sourceId);
-        if (state == null) {
+        if (state == null || !state.living) {
+            // Swing/hurt animations are LivingEntity-only on the client (handleAnimate casts to
+            // LivingEntity); sending one for a projected non-living entity (e.g. an arrow) crashes
+            // the viewer with a ClassCastException.
             return;
         }
         sendCounted(observer, new WrapperPlayServerEntityAnimation(state.fakeId, type));
@@ -374,7 +398,7 @@ public final class ProjectedEntityRenderer {
             return;
         }
         SpoofedEntity state = spoofed.get(sourceId);
-        if (state == null) {
+        if (state == null || !state.living) {
             return;
         }
         sendCounted(observer, new WrapperPlayServerEntityAnimation(state.fakeId, EntityAnimationType.HURT));
@@ -438,7 +462,8 @@ public final class ProjectedEntityRenderer {
         }
         if (state == null) {
             boolean playerEntity = entity instanceof Player;
-            state = new SpoofedEntity(NEXT_FAKE_ID.getAndIncrement(), UUID.randomUUID(), playerEntity, upsideDown);
+            state = new SpoofedEntity(NEXT_FAKE_ID.getAndIncrement(), UUID.randomUUID(), playerEntity, upsideDown,
+                entity instanceof LivingEntity);
             spoofed.put(entity.getUniqueId(), state);
             if (playerEntity) {
                 sendPlayerInfo(observer, (Player) entity, state, upsideDown);
@@ -871,6 +896,7 @@ public final class ProjectedEntityRenderer {
         private final UUID fakeUuid;
         private final boolean playerEntry;
         private final boolean upsideDown;
+        private final boolean living;
         private int remoteStateVersion = -1;
         private float yaw;
         private float pitch;
@@ -885,11 +911,12 @@ public final class ProjectedEntityRenderer {
         private boolean positionKnown;
         private int metadataRefreshPasses;
 
-        private SpoofedEntity(int fakeId, UUID fakeUuid, boolean playerEntry, boolean upsideDown) {
+        private SpoofedEntity(int fakeId, UUID fakeUuid, boolean playerEntry, boolean upsideDown, boolean living) {
             this.fakeId = fakeId;
             this.fakeUuid = fakeUuid;
             this.playerEntry = playerEntry;
             this.upsideDown = upsideDown;
+            this.living = living;
             this.yaw = 0.0F;
             this.pitch = 0.0F;
             this.velocityX = 0.0D;

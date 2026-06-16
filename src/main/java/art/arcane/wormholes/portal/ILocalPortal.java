@@ -72,10 +72,6 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 
 	public Window uiCreatePortalMenu(Player p);
 
-	public void uiOpenConfigMenu(Player p);
-
-	public Window uiCreateConfigMenu(Player p);
-
 	public void uiChooseMode(Player p);
 
 	public void uiChooseDestination(Player p);

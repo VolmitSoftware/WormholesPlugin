@@ -1,12 +1,15 @@
 package art.arcane.wormholes.commands;
 
 import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.service.StatsSnapshotWriter;
 import art.arcane.volmlib.util.director.annotations.Director;
 import art.arcane.volmlib.util.director.annotations.Param;
 import org.bukkit.ChatColor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
+
+import java.nio.file.Path;
 
 @Director(name = "wormholes", aliases = {"wh", "wormhole"}, description = "Wormholes command root")
 public class CommandWormholes {
@@ -65,6 +68,27 @@ public class CommandWormholes {
         }
         plugin.reloadAll();
         sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Wormholes configuration reloaded.");
+    }
+
+    @Director(name = "stats", sync = true, description = "Print the live stats-snapshot file path, optionally force a refresh with now=true")
+    public void stats(@Param(name = "sender", contextual = true) CommandSender sender,
+                      @Param(name = "now", description = "Force-rebuild the snapshot synchronously", defaultValue = "false") boolean now) {
+        if (!sender.hasPermission("wormholes.admin")) {
+            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
+            return;
+        }
+        StatsSnapshotWriter writer = plugin.getStatsSnapshotWriter();
+        if (writer == null) {
+            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Stats snapshot writer is disabled (network.toml stats.enabled).");
+            return;
+        }
+        if (now) {
+            writer.writeNow();
+            sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Snapshot refreshed.");
+        }
+        Path output = writer.getOutputFile();
+        sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "Snapshot file: " + ChatColor.WHITE + output.toAbsolutePath());
+        sender.sendMessage(Wormholes.tag + ChatColor.DARK_GRAY + "Tail this file to share live network/view state. The file is overwritten in place each interval.");
     }
 
     @Director(name = "info", sync = true, description = "Show portal building instructions")

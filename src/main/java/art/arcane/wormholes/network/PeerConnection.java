@@ -5,7 +5,7 @@ import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
-import java.net.Socket;
+import java.io.OutputStream;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -29,21 +29,36 @@ public final class PeerConnection {
         void onClosed(PeerConnection connection, String reason);
     }
 
+    public interface CompressionProvider {
+        WireCompression compression();
+
+        boolean compressionEnabled();
+
+        CompressionDictionary currentDictionary();
+
+        void onDictionaryAdvertised(PeerConnection connection, byte[] peerDictHash, int peerDictVersion);
+
+        void onDictionaryNegotiated(PeerConnection connection, int dictVersion);
+    }
+
     private static final int HANDSHAKE_TIMEOUT_MS = 10_000;
     private static final int READ_TIMEOUT_MS = 30_000;
     private static final int WRITE_QUEUE_CAPACITY = 1024;
     private static final byte[] CLOSE_SENTINEL = new byte[0];
 
-    private final Socket socket;
+    private final PeerTransport.PeerChannel channel;
     private final boolean dialer;
     private final LocalIdentity identity;
     private final byte[] expectedPeerPublicKey;
     private final Listener listener;
+    private final CompressionProvider compressionProvider;
+    private final WireCompression compression;
     private final LinkedBlockingQueue<byte[]> writeQueue = new LinkedBlockingQueue<>(WRITE_QUEUE_CAPACITY);
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicReference<State> state = new AtomicReference<>(State.HANDSHAKING);
     private final AtomicLong lastInboundMillis = new AtomicLong(System.currentTimeMillis());
     private final AtomicLong rttMillis = new AtomicLong(-1L);
+    private final AtomicBoolean dictNegotiated = new AtomicBoolean(false);
 
     private volatile String peerName;
     private volatile String expectedPeerName;
@@ -51,17 +66,23 @@ public final class PeerConnection {
     private volatile byte[] peerPublicKey;
     private volatile int peerWormholePort = -1;
     private volatile int peerGamePort = -1;
+    private volatile boolean peerCompressionSupported;
+    private volatile byte[] peerDictHash;
+    private volatile int peerDictVersion;
+    private volatile int negotiatedDictVersion;
     private Thread readerThread;
     private Thread writerThread;
 
-    public PeerConnection(Socket socket, boolean dialer, LocalIdentity identity, String expectedPeerName, byte[] expectedPeerPublicKey, Listener listener) {
-        this.socket = socket;
+    public PeerConnection(PeerTransport.PeerChannel channel, boolean dialer, LocalIdentity identity, String expectedPeerName, byte[] expectedPeerPublicKey, Listener listener, CompressionProvider compressionProvider) {
+        this.channel = channel;
         this.dialer = dialer;
         this.identity = identity;
         this.expectedPeerName = expectedPeerName;
         this.expectedPeerPublicKey = expectedPeerPublicKey == null ? null : expectedPeerPublicKey.clone();
         this.peerName = expectedPeerName;
         this.listener = listener;
+        this.compressionProvider = compressionProvider;
+        this.compression = compressionProvider == null ? null : compressionProvider.compression();
     }
 
     public void start() {
@@ -82,7 +103,7 @@ public final class PeerConnection {
         }
         byte[] frame;
         try {
-            frame = WireCodec.encodeFrame(message);
+            frame = WireCodec.encodeFrame(message, compression, dictNegotiated.get());
         } catch (IOException e) {
             return false;
         }
@@ -101,7 +122,7 @@ public final class PeerConnection {
         writeQueue.clear();
         writeQueue.offer(CLOSE_SENTINEL);
         try {
-            socket.close();
+            channel.close();
         } catch (IOException ignored) {
         }
         listener.onClosed(this, reason);
@@ -124,7 +145,7 @@ public final class PeerConnection {
         if (advertised != null && !advertised.isBlank()) {
             return advertised;
         }
-        return socket.getInetAddress() == null ? null : socket.getInetAddress().getHostAddress();
+        return channel.describeRemote();
     }
 
     public int getPeerWormholePort() {
@@ -139,6 +160,36 @@ public final class PeerConnection {
         return peerPublicKey == null ? null : peerPublicKey.clone();
     }
 
+    public byte[] getPeerDictHash() {
+        return peerDictHash == null ? null : peerDictHash.clone();
+    }
+
+    public int getPeerDictVersion() {
+        return peerDictVersion;
+    }
+
+    public boolean isPeerCompressionSupported() {
+        return peerCompressionSupported;
+    }
+
+    public boolean isDictionaryNegotiated() {
+        return dictNegotiated.get();
+    }
+
+    public int getNegotiatedDictVersion() {
+        return negotiatedDictVersion;
+    }
+
+    public void enableDictionary(int dictVersion) {
+        negotiatedDictVersion = dictVersion;
+        dictNegotiated.set(true);
+    }
+
+    public void disableDictionary() {
+        dictNegotiated.set(false);
+        negotiatedDictVersion = 0;
+    }
+
     public long getLastInboundMillis() {
         return lastInboundMillis.get();
     }
@@ -148,15 +199,19 @@ public final class PeerConnection {
     }
 
     public String describeRemote() {
-        return socket.getInetAddress() == null ? "unknown" : socket.getInetAddress().getHostAddress() + ":" + socket.getPort();
+        return channel.describeRemote();
+    }
+
+    public PeerTransport.PeerChannel channel() {
+        return channel;
     }
 
     private void runReader() {
         String failure = null;
         try {
-            socket.setTcpNoDelay(true);
-            socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
-            DataInputStream in = new DataInputStream(new BufferedInputStream(socket.getInputStream(), 65536));
+            channel.setTcpNoDelay(true);
+            channel.setReadTimeout(HANDSHAKE_TIMEOUT_MS);
+            DataInputStream in = new DataInputStream(new BufferedInputStream(channel.getInputStream(), 65536));
 
             if (dialer) {
                 handshakeAsDialer(in);
@@ -164,13 +219,13 @@ public final class PeerConnection {
                 handshakeAsAcceptor(in);
             }
 
-            socket.setSoTimeout(READ_TIMEOUT_MS);
+            channel.setReadTimeout(READ_TIMEOUT_MS);
             state.set(State.READY);
             lastInboundMillis.set(System.currentTimeMillis());
             listener.onReady(this);
 
             while (!closed.get()) {
-                WireMessage message = WireCodec.readFrame(in);
+                WireMessage message = WireCodec.readFrame(in, compression);
                 lastInboundMillis.set(System.currentTimeMillis());
                 if (message instanceof WireMessage.Ping ping) {
                     send(new WireMessage.Pong(ping.sentAtMillis()));
@@ -193,9 +248,10 @@ public final class PeerConnection {
     private void handshakeAsDialer(DataInputStream in) throws IOException, HandshakeException {
         byte[] dialerNonce = Handshake.newNonce();
         sendNow(new WireMessage.Hello(WireCodec.PROTOCOL_VERSION, identity.mcVersion(), identity.pluginVersion(), identity.serverName(),
-            identity.advertiseHost(), identity.wormholePort(), identity.gamePort(), dialerNonce, identity.publicKey()));
+            identity.advertiseHost() == null ? "" : identity.advertiseHost(), identity.wormholePort(), identity.gamePort(), dialerNonce, identity.publicKey(),
+            localCompressionSupported(), localDictHash(), localDictVersion()));
 
-        WireMessage response = WireCodec.readFrame(in);
+        WireMessage response = WireCodec.readFrame(in, compression);
         if (!(response instanceof WireMessage.Challenge challenge)) {
             throw new HandshakeException("Expected CHALLENGE, got " + response.type());
         }
@@ -209,21 +265,26 @@ public final class PeerConnection {
             throw new HandshakeException("Peer failed authentication");
         }
         peerName = challenge.serverName();
+        peerAdvertiseHost = challenge.advertiseHost();
+        peerWormholePort = challenge.wormholePort();
+        peerGamePort = challenge.gamePort();
         peerPublicKey = challenge.publicKey();
+        absorbPeerCompression(challenge.compressionSupported(), challenge.currentDictHash(), challenge.currentDictVersion());
         if (expectedPeerPublicKey == null && !listener.approvePeer(this, challenge.serverName(), identity.mcVersion(), identity.pluginVersion(), challenge.publicKey())) {
             throw new HandshakeException("Peer '" + challenge.serverName() + "' rejected");
         }
 
         sendNow(new WireMessage.Auth(Handshake.sign(identity.privateKey(), Handshake.ROLE_DIALER, identity.serverName(), challenge.serverName(), dialerNonce, challenge.nonce(), identity.publicKey(), challenge.publicKey())));
 
-        WireMessage ready = WireCodec.readFrame(in);
+        WireMessage ready = WireCodec.readFrame(in, compression);
         if (!(ready instanceof WireMessage.Ready)) {
             throw new HandshakeException("Expected READY, got " + ready.type());
         }
+        finalizeDictNegotiation();
     }
 
     private void handshakeAsAcceptor(DataInputStream in) throws IOException, HandshakeException {
-        WireMessage first = WireCodec.readFrame(in);
+        WireMessage first = WireCodec.readFrame(in, compression);
         if (!(first instanceof WireMessage.Hello hello)) {
             throw new HandshakeException("Expected HELLO, got " + first.type());
         }
@@ -241,12 +302,15 @@ public final class PeerConnection {
         peerPublicKey = hello.publicKey();
         peerWormholePort = hello.wormholePort();
         peerGamePort = hello.gamePort();
+        absorbPeerCompression(hello.compressionSupported(), hello.currentDictHash(), hello.currentDictVersion());
 
         byte[] acceptorNonce = Handshake.newNonce();
-        sendNow(new WireMessage.Challenge(identity.serverName(), acceptorNonce, identity.publicKey(),
-            Handshake.sign(identity.privateKey(), Handshake.ROLE_ACCEPTOR, identity.serverName(), hello.serverName(), hello.nonce(), acceptorNonce, identity.publicKey(), hello.publicKey())));
+        sendNow(new WireMessage.Challenge(identity.serverName(), identity.advertiseHost() == null ? "" : identity.advertiseHost(), identity.wormholePort(), identity.gamePort(),
+            acceptorNonce, identity.publicKey(),
+            Handshake.sign(identity.privateKey(), Handshake.ROLE_ACCEPTOR, identity.serverName(), hello.serverName(), hello.nonce(), acceptorNonce, identity.publicKey(), hello.publicKey()),
+            localCompressionSupported(), localDictHash(), localDictVersion()));
 
-        WireMessage second = WireCodec.readFrame(in);
+        WireMessage second = WireCodec.readFrame(in, compression);
         if (!(second instanceof WireMessage.Auth auth)) {
             throw new HandshakeException("Expected AUTH, got " + second.type());
         }
@@ -258,10 +322,47 @@ public final class PeerConnection {
         }
 
         sendNow(new WireMessage.Ready());
+        finalizeDictNegotiation();
+    }
+
+    private boolean localCompressionSupported() {
+        return compressionProvider != null && compressionProvider.compressionEnabled();
+    }
+
+    private byte[] localDictHash() {
+        CompressionDictionary current = compressionProvider == null ? null : compressionProvider.currentDictionary();
+        return current == null ? CompressionDictionary.ZERO_HASH : current.hash();
+    }
+
+    private int localDictVersion() {
+        CompressionDictionary current = compressionProvider == null ? null : compressionProvider.currentDictionary();
+        return current == null ? 0 : current.version();
+    }
+
+    private void absorbPeerCompression(boolean supported, byte[] dictHash, int dictVersion) {
+        peerCompressionSupported = supported;
+        peerDictHash = dictHash;
+        peerDictVersion = dictVersion;
+    }
+
+    private void finalizeDictNegotiation() {
+        if (compressionProvider == null || !localCompressionSupported() || !peerCompressionSupported) {
+            return;
+        }
+        compressionProvider.onDictionaryAdvertised(this, peerDictHash, peerDictVersion);
+        CompressionDictionary local = compressionProvider.currentDictionary();
+        if (local == null || peerDictHash == null) {
+            return;
+        }
+        if (!CompressionDictionary.sameHash(local.hash(), peerDictHash)) {
+            return;
+        }
+        enableDictionary(local.version());
+        compressionProvider.onDictionaryNegotiated(this, local.version());
     }
 
     private void sendNow(WireMessage message) throws IOException {
-        byte[] frame = WireCodec.encodeFrame(message);
+        byte[] frame = WireCodec.encodeFrame(message, compression, dictNegotiated.get());
         if (!writeQueue.offer(frame)) {
             throw new IOException("write queue overflow during handshake");
         }
@@ -269,7 +370,8 @@ public final class PeerConnection {
 
     private void runWriter() {
         try {
-            DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream(), 65536));
+            OutputStream rawOut = channel.getOutputStream();
+            DataOutputStream out = new DataOutputStream(new BufferedOutputStream(rawOut, 65536));
             while (!closed.get()) {
                 byte[] frame = writeQueue.poll(500, TimeUnit.MILLISECONDS);
                 if (frame == null) {

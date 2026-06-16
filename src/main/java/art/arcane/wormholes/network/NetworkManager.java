@@ -1,15 +1,22 @@
 package art.arcane.wormholes.network;
 
 import art.arcane.wormholes.config.toml.NetworkConfig;
+import art.arcane.wormholes.network.replication.ChunkReplicationManager;
+import art.arcane.wormholes.network.replication.HashProbeScheduler;
 
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
+import java.net.SocketAddress;
+import java.net.SocketTimeoutException;
+import java.net.UnixDomainSocketAddress;
+import java.net.UnknownHostException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -25,8 +32,13 @@ import java.util.function.BiConsumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-public final class NetworkManager implements PeerConnection.Listener {
+public class NetworkManager implements PeerConnection.Listener, PeerConnection.CompressionProvider {
     public record PeerStatus(String name, String address, String state, boolean dialer, long rttMillis, long lastInboundAgeMillis, String lastError) {
+    }
+
+    public record PeerSnapshot(String name, String transport, String remoteAddress, String compressionMode,
+                               int dictVersion, String dictHashHex, long lastInboundAgeMillis, long rttMillis,
+                               boolean handshakeComplete, boolean disconnected) {
     }
 
     private static final long DIAL_SCAN_INTERVAL_MS = 2_000L;
@@ -35,6 +47,7 @@ public final class NetworkManager implements PeerConnection.Listener {
     private static final long BACKOFF_MAX_MS = 30_000L;
     private static final int CONNECT_TIMEOUT_MS = 5_000;
     private static final int ROUTE_TTL = 8;
+    private static final int LISTEN_PORT_FALLBACK_RANGE = 50;
     private static final long STATUS_BRIDGE_INTERVAL_MS = 2_000L;
     private static final long STATUS_BRIDGE_READY_TTL_MS = 12_000L;
     private static final long STATUS_FRAGMENT_TTL_MS = 15L * 60_000L;
@@ -49,6 +62,7 @@ public final class NetworkManager implements PeerConnection.Listener {
     private final String mcVersion;
     private final String pluginVersion;
     private final int gamePort;
+    private final Path dataDirectory;
     private final IdentityStore identityStore;
     private final PeerTrustStore trustStore;
     private final PeerRouteStore routeStore;
@@ -70,14 +84,25 @@ public final class NetworkManager implements PeerConnection.Listener {
     private final Map<String, StatusFragmentAssembly> statusFragments = new ConcurrentHashMap<>();
     private final Map<String, String> routes = new ConcurrentHashMap<>();
     private final Map<String, List<PortalInfo>> relayedPortalDirectories = new ConcurrentHashMap<>();
+    private final Map<String, DictionaryTransfer> inboundDictionaries = new ConcurrentHashMap<>();
+    private final AtomicLong dictionaryVersionCounter = new AtomicLong();
+    private final WireCompression wireCompression;
+    private final DictionarySampleCollector sampleCollector;
+    private final ChunkReplicationManager replicationManager;
+    private final HashProbeScheduler hashProbeScheduler;
 
     private volatile NetworkConfig config;
     private volatile BiConsumer<String, WireMessage> messageSink;
     private volatile BiConsumer<String, Boolean> peerStateSink;
-    private volatile ServerSocket listenSocket;
+    private volatile TcpPeerTransport tcpTransport;
+    private volatile UnixDomainPeerTransport udsTransport;
     private volatile ScheduledExecutorService scheduler;
-    private volatile Thread acceptThread;
-    private volatile String detectedHost;
+    private volatile Thread tcpAcceptThread;
+    private volatile Thread udsAcceptThread;
+    private volatile String detectedLanHost;
+    private volatile String detectedPublicHost;
+    private volatile int boundListenPort;
+    private final PublicHostResolver publicHostResolver;
 
     public NetworkManager(Logger logger, NetworkConfig config, String mcVersion, String pluginVersion, int gamePort) {
         this(logger, config, mcVersion, pluginVersion, gamePort, Path.of("plugins", "Wormholes"));
@@ -89,6 +114,9 @@ public final class NetworkManager implements PeerConnection.Listener {
         this.mcVersion = mcVersion;
         this.pluginVersion = pluginVersion;
         this.gamePort = gamePort;
+        this.dataDirectory = dataDirectory;
+        this.wireCompression = new WireCompression(config.transport.compressionLevel);
+        this.sampleCollector = new DictionarySampleCollector(Math.max(64 * 1024, config.transport.compressionDictTrainBytes));
         try {
             this.identityStore = IdentityStore.loadOrCreate(dataDirectory);
             this.trustStore = PeerTrustStore.loadOrCreate(dataDirectory);
@@ -100,23 +128,88 @@ public final class NetworkManager implements PeerConnection.Listener {
         } catch (IOException e) {
             throw new IllegalStateException("Could not initialize Wormholes network identity", e);
         }
+        this.replicationManager = new ChunkReplicationManager(this, new ChunkReplicationManager.ReplicationConfig(config.replication == null ? 4096L : config.replication.maxQueuedDiffsPerPeer));
+        this.hashProbeScheduler = new HashProbeScheduler(this, replicationManager);
+        if (config.replication != null) {
+            this.hashProbeScheduler.configure(config.replication.hashProbeIntervalSec, config.replication.hashProbeChunksPerTick);
+        }
+        this.publicHostResolver = new PublicHostResolver(logger);
+        this.boundListenPort = config.listenPort;
+    }
+
+    public ChunkReplicationManager getReplicationManager() {
+        return replicationManager;
+    }
+
+    public HashProbeScheduler getHashProbeScheduler() {
+        return hashProbeScheduler;
+    }
+
+    @Override
+    public WireCompression compression() {
+        return wireCompression;
+    }
+
+    @Override
+    public boolean compressionEnabled() {
+        return config.transport.compressionEnabled;
+    }
+
+    @Override
+    public CompressionDictionary currentDictionary() {
+        return wireCompression.currentDictionary();
+    }
+
+    @Override
+    public void onDictionaryAdvertised(PeerConnection connection, byte[] peerDictHash, int peerDictVersion) {
+        if (peerDictHash == null || peerDictVersion <= 0 || isZeroHash(peerDictHash)) {
+            return;
+        }
+        CompressionDictionary local = wireCompression.currentDictionary();
+        if (local != null && local.version() == peerDictVersion && CompressionDictionary.sameHash(local.hash(), peerDictHash)) {
+            return;
+        }
+        if (local != null && CompressionDictionary.sameHash(local.hash(), peerDictHash)) {
+            return;
+        }
+        connection.send(new WireMessage.DictRequest(peerDictVersion));
+    }
+
+    @Override
+    public void onDictionaryNegotiated(PeerConnection connection, int dictVersion) {
+        logger.fine("net: dict v" + dictVersion + " negotiated with " + connection.getPeerName());
     }
 
     private LocalIdentity identity(NetworkConfig active) {
-        return new LocalIdentity(getLocalName(), mcVersion, pluginVersion, getAdvertiseHost(), active.listenPort, gamePort, identityStore.publicKeyBytes(), identityStore.privateKey());
+        return new LocalIdentity(getLocalName(), mcVersion, pluginVersion, getAdvertiseHost(), getBoundListenPort(), gamePort, identityStore.publicKeyBytes(), identityStore.privateKey());
     }
 
     public String getAdvertiseHost() {
         NetworkConfig active = config;
-        if (active.advertiseHost != null && !active.advertiseHost.isBlank()) {
-            return active.advertiseHost;
+        if (active.advertiseHostOverride != null && !active.advertiseHostOverride.isBlank()) {
+            return active.advertiseHostOverride;
         }
-        String detected = detectedHost;
-        if (detected == null) {
-            detected = AddressResolver.detectLanAddress();
-            detectedHost = detected;
+        String publicHost = detectedPublicHost;
+        if (publicHost == null) {
+            publicHost = publicHostResolver.cached();
         }
-        return detected;
+        if (publicHost != null && !publicHost.isBlank()) {
+            return publicHost;
+        }
+        String lan = detectedLanHost;
+        if (lan == null) {
+            lan = AddressResolver.detectLanAddress();
+            detectedLanHost = lan;
+        }
+        return lan;
+    }
+
+    public int getBoundListenPort() {
+        int bound = boundListenPort;
+        if (bound > 0) {
+            return bound;
+        }
+        return config.listenPort;
     }
 
     public String getLocalName() {
@@ -137,10 +230,12 @@ public final class NetworkManager implements PeerConnection.Listener {
 
     public void setInferredAdvertiseHost(String host) {
         NetworkConfig active = config;
-        if (host == null || host.isBlank() || (active.advertiseHost != null && !active.advertiseHost.isBlank())) {
+        if (host == null || host.isBlank() || (active.advertiseHostOverride != null && !active.advertiseHostOverride.isBlank())) {
             return;
         }
-        detectedHost = host;
+        if (PublicHostResolver.isValidHostLiteral(host)) {
+            detectedPublicHost = host;
+        }
     }
 
     public void trustPeer(String peerName, String publicKey) {
@@ -166,8 +261,7 @@ public final class NetworkManager implements PeerConnection.Listener {
     }
 
     public String getListenAddress() {
-        NetworkConfig active = config;
-        return displayListenHost(active.listenHost) + ":" + active.listenPort;
+        return "all interfaces:" + getBoundListenPort();
     }
 
     public void setMessageSink(BiConsumer<String, WireMessage> sink) {
@@ -192,56 +286,116 @@ public final class NetworkManager implements PeerConnection.Listener {
         }
 
         if (active.listenEnabled) {
-            try {
-                ServerSocket socket = new ServerSocket();
-                socket.setReuseAddress(true);
-                socket.bind(new InetSocketAddress(normalizeListenHost(active.listenHost), active.listenPort));
-                listenSocket = socket;
-            } catch (IOException e) {
-                logger.warning("net: failed to bind raw Wormholes listener " + getListenAddress() + " - " + e.getMessage() + "; game-port status sideband remains available for peers with public-host/public-port routes");
+            tcpTransport = bindWithFallback(active.listenPort);
+            if (tcpTransport == null) {
+                logger.warning("net: could not bind any raw Wormholes port in " + active.listenPort + ".." + (active.listenPort + LISTEN_PORT_FALLBACK_RANGE) + "; running sideband-only over the MC game port " + gamePort);
+                boundListenPort = 0;
             }
 
-            if (listenSocket != null) {
-                Thread accept = new Thread(this::runAcceptLoop, "Wormholes-Net-Accept");
+            if (tcpTransport != null && tcpTransport.isListening()) {
+                Thread accept = new Thread(this::runTcpAcceptLoop, "Wormholes-Net-Accept-Tcp");
                 accept.setDaemon(true);
-                acceptThread = accept;
+                tcpAcceptThread = accept;
                 accept.start();
+            }
+
+            if (active.transport.udsEnabled) {
+                try {
+                    udsTransport = UnixDomainPeerTransport.bind(localUdsSocketPath(active));
+                    Thread udsAccept = new Thread(this::runUdsAcceptLoop, "Wormholes-Net-Accept-Uds");
+                    udsAccept.setDaemon(true);
+                    udsAcceptThread = udsAccept;
+                    udsAccept.start();
+                } catch (IOException | UnsupportedOperationException e) {
+                    logger.warning("net: failed to bind UDS listener - " + e.getMessage() + "; falling back to TCP for loopback peers");
+                    udsTransport = null;
+                }
             }
         }
 
-        ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+        ScheduledExecutorService executor = Executors.newScheduledThreadPool(2, runnable -> {
             Thread thread = new Thread(runnable, "Wormholes-Net-Timer");
             thread.setDaemon(true);
             return thread;
         });
         executor.scheduleWithFixedDelay(this::scanDials, 250L, DIAL_SCAN_INTERVAL_MS, TimeUnit.MILLISECONDS);
         executor.scheduleWithFixedDelay(this::keepalive, KEEPALIVE_INTERVAL_MS, KEEPALIVE_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        long retrainSec = Math.max(30L, active.transport.compressionRetrainIntervalSec);
+        executor.scheduleWithFixedDelay(this::maybeRetrainDictionary, retrainSec, retrainSec, TimeUnit.SECONDS);
         scheduler = executor;
 
+        loadPersistedDictionary(active);
+        hashProbeScheduler.start();
+        kickOffPublicHostResolution();
+
         int peerCount = knownPeers().size();
-        if (active.listenEnabled && listenSocket != null) {
+        if (active.listenEnabled && tcpTransport != null && tcpTransport.isListening()) {
             logger.info("net: " + getLocalName() + " listening on " + getListenAddress() + " (" + peerCount + " peer" + (peerCount == 1 ? "" : "s") + ")");
         } else if (active.listenEnabled) {
-            logger.info("net: " + getLocalName() + " running without a raw Wormholes listener; status sideband will use peer game ports (" + peerCount + " peer" + (peerCount == 1 ? "" : "s") + ")");
+            logger.info("net: " + getLocalName() + " running sideband-only over game port " + gamePort + " (" + peerCount + " peer" + (peerCount == 1 ? "" : "s") + ")");
         } else {
             logger.info("net: " + getLocalName() + " running outbound-only (" + peerCount + " peer" + (peerCount == 1 ? "" : "s") + ")");
         }
+    }
+
+    private TcpPeerTransport bindWithFallback(int preferredPort) {
+        int upper = preferredPort + LISTEN_PORT_FALLBACK_RANGE;
+        java.net.BindException firstFailure = null;
+        for (int port = preferredPort; port <= upper; port++) {
+            try {
+                TcpPeerTransport transport = TcpPeerTransport.bind("0.0.0.0", port);
+                boundListenPort = port;
+                if (port != preferredPort) {
+                    logger.info("net: raw Wormholes listen-port " + preferredPort + " was busy; bound " + port + " instead");
+                }
+                return transport;
+            } catch (java.net.BindException be) {
+                if (firstFailure == null) {
+                    firstFailure = be;
+                }
+            } catch (IOException e) {
+                logger.warning("net: bind " + port + " failed: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private void kickOffPublicHostResolution() {
+        NetworkConfig active = config;
+        if (active.advertiseHostOverride != null && !active.advertiseHostOverride.isBlank()) {
+            return;
+        }
+        publicHostResolver.refreshAsync(resolved -> {
+            if (resolved != null && !resolved.isBlank()) {
+                detectedPublicHost = resolved;
+            }
+        });
     }
 
     public void stop() {
         if (!running.compareAndSet(true, false)) {
             return;
         }
+        hashProbeScheduler.stop();
         ScheduledExecutorService executor = scheduler;
         scheduler = null;
         if (executor != null) {
             executor.shutdownNow();
         }
-        ServerSocket socket = listenSocket;
-        listenSocket = null;
-        if (socket != null) {
+        TcpPeerTransport tcp = tcpTransport;
+        tcpTransport = null;
+        if (tcp != null) {
             try {
-                socket.close();
+                tcp.close();
+            } catch (IOException ignored) {
+            }
+        }
+        UnixDomainPeerTransport uds = udsTransport;
+        udsTransport = null;
+        if (uds != null) {
+            try {
+                uds.close();
             } catch (IOException ignored) {
             }
         }
@@ -258,18 +412,28 @@ public final class NetworkManager implements PeerConnection.Listener {
         nextStatusAttempt.clear();
         statusOutbox.clear();
         statusFragments.clear();
-        acceptThread = null;
+        inboundDictionaries.clear();
+        tcpAcceptThread = null;
+        udsAcceptThread = null;
+        boundListenPort = 0;
     }
 
     public void applyConfig(NetworkConfig next) {
         NetworkConfig previous = config;
         config = next;
+        if (next.replication != null) {
+            replicationManager.applyConfig(new ChunkReplicationManager.ReplicationConfig(next.replication.maxQueuedDiffsPerPeer));
+            hashProbeScheduler.configure(next.replication.hashProbeIntervalSec, next.replication.hashProbeChunksPerTick);
+        }
+        boolean overrideChanged = !blank(previous.advertiseHostOverride).equals(blank(next.advertiseHostOverride));
         boolean restartNeeded = previous.enabled != next.enabled
             || previous.listenEnabled != next.listenEnabled
             || previous.listenPort != next.listenPort
-            || !normalizeListenHost(previous.listenHost).equals(normalizeListenHost(next.listenHost))
-            || !blank(previous.advertiseHost).equals(blank(next.advertiseHost))
+            || overrideChanged
             || !blank(previous.serverName).equals(blank(next.serverName));
+        if (overrideChanged) {
+            detectedPublicHost = null;
+        }
         if (restartNeeded) {
             stop();
             start();
@@ -296,6 +460,7 @@ public final class NetworkManager implements PeerConnection.Listener {
     }
 
     public boolean send(String peerName, WireMessage message) {
+        recordWireSample(message);
         PeerConnection connection = readyPeers.get(peerName);
         if (connection != null) {
             return connection.send(message);
@@ -330,8 +495,8 @@ public final class NetworkManager implements PeerConnection.Listener {
                 statuses.add(new PeerStatus(peer.name, connection.describeRemote(), "CONNECTED", connection.isDialer(), connection.getRttMillis(), now - connection.getLastInboundMillis(), null));
             } else if (isStatusPeerReady(peer.name)) {
                 statuses.add(new PeerStatus(peer.name, statusBridgeAddress(peer), "CONNECTED", canUseStatusBridge(peer), statusRttMillis.getOrDefault(peer.name, -1L), now - statusLastSeen.getOrDefault(peer.name, now), null));
-            } else if (isBoat(peer)) {
-                statuses.add(new PeerStatus(peer.name, peerAddress(peer), running.get() ? "WAITING" : "OFFLINE", false, -1L, -1L, "waiting for outbound-only Boat peer to dial this server"));
+            } else if (!isDialable(peer)) {
+                statuses.add(new PeerStatus(peer.name, peerAddress(peer), running.get() ? "WAITING" : "OFFLINE", false, -1L, -1L, "no dial address; waiting for the peer to reach this server"));
             } else {
                 statuses.add(new PeerStatus(peer.name, peerAddress(peer), running.get() ? "CONNECTING" : "OFFLINE", false, -1L, -1L, lastDialError.get(peer.name)));
             }
@@ -348,6 +513,111 @@ public final class NetworkManager implements PeerConnection.Listener {
         return statuses;
     }
 
+    public List<PeerSnapshot> peerSnapshots() {
+        long now = System.currentTimeMillis();
+        List<PeerSnapshot> result = new ArrayList<>(readyPeers.size() + statusLastSeen.size());
+        for (PeerConnection connection : readyPeers.values()) {
+            String name = connection.getPeerName();
+            if (name == null) {
+                continue;
+            }
+            boolean connected = connection.getState() == PeerConnection.State.READY;
+            boolean disconnected = connection.getState() == PeerConnection.State.CLOSED;
+            String remote = connection.describeRemote();
+            String transport = remote != null && remote.startsWith("uds:") ? "UDS" : "TCP";
+            String mode = compressionModeFor(connection);
+            int dictVersion = connection.getNegotiatedDictVersion();
+            String dictHashHex = compressionDictHashHex(connection);
+            result.add(new PeerSnapshot(
+                name,
+                transport,
+                remote,
+                mode,
+                dictVersion,
+                dictHashHex,
+                connected ? Math.max(0L, now - connection.getLastInboundMillis()) : -1L,
+                connected ? connection.getRttMillis() : -1L,
+                connected,
+                disconnected
+            ));
+        }
+        for (Map.Entry<String, Long> entry : statusLastSeen.entrySet()) {
+            String name = entry.getKey();
+            if (readyPeers.containsKey(name)) {
+                continue;
+            }
+            NetworkConfig.PeerEntry peer = learnedPeers.get(name);
+            String remote = peer == null ? "game-port sideband" : statusBridgeAddress(peer);
+            long rtt = statusRttMillis.getOrDefault(name, -1L);
+            result.add(new PeerSnapshot(
+                name,
+                "SIDEBAND",
+                remote,
+                "none",
+                0,
+                "-",
+                Math.max(0L, now - entry.getValue()),
+                rtt,
+                true,
+                false
+            ));
+        }
+        for (NetworkConfig.PeerEntry peer : learnedPeers.values()) {
+            if (peer.name == null || peer.name.isBlank()) {
+                continue;
+            }
+            if (readyPeers.containsKey(peer.name) || statusLastSeen.containsKey(peer.name)) {
+                continue;
+            }
+            result.add(new PeerSnapshot(
+                peer.name,
+                "TCP",
+                peerAddress(peer),
+                "pending",
+                0,
+                "-",
+                -1L,
+                -1L,
+                false,
+                false
+            ));
+        }
+        result.sort((a, b) -> a.name().compareTo(b.name()));
+        return result;
+    }
+
+    public WireCompression wireCompressionMetrics() {
+        return wireCompression;
+    }
+
+    public DictionarySampleCollector dictionarySampleCollector() {
+        return sampleCollector;
+    }
+
+    private static String compressionModeFor(PeerConnection connection) {
+        if (connection.getState() != PeerConnection.State.READY) {
+            return "pending";
+        }
+        if (!connection.isPeerCompressionSupported()) {
+            return "none";
+        }
+        if (connection.isDictionaryNegotiated()) {
+            return "dict";
+        }
+        return "dictless";
+    }
+
+    private String compressionDictHashHex(PeerConnection connection) {
+        if (!connection.isDictionaryNegotiated()) {
+            return "-";
+        }
+        CompressionDictionary local = wireCompression.currentDictionary();
+        if (local == null) {
+            return "-";
+        }
+        return local.hashHex8();
+    }
+
     public List<String> diagnostics() {
         NetworkConfig active = config;
         List<String> messages = new ArrayList<>();
@@ -355,21 +625,20 @@ public final class NetworkManager implements PeerConnection.Listener {
             messages.add("Networking is disabled.");
             return messages;
         }
+        int bound = boundListenPort;
         if (active.listenEnabled) {
-            if (active.listenPort == gamePort) {
-                messages.add("Wormholes listen-port is the same as the Minecraft game port " + gamePort + ". The raw listener cannot bind the server's existing game socket, so peers must use the signed game-port status sideband or a separate raw Wormholes port.");
+            if (bound <= 0) {
+                messages.add("Raw Wormholes listener is unbound; running sideband-only over the MC game port " + gamePort + ". Open any port in " + active.listenPort + ".." + (active.listenPort + LISTEN_PORT_FALLBACK_RANGE) + " to enable high-throughput projection streaming.");
+            } else if (bound == gamePort) {
+                messages.add("Wormholes listen-port resolved to the Minecraft game port " + gamePort + "; the raw listener cannot bind the existing game socket. Peers use the signed status sideband instead.");
             } else {
-                messages.add("Raw Wormholes peers dial " + active.listenPort + ". If that port is not reachable, imported peers with public-host/public-port can still exchange small signed control frames over the Minecraft game port " + gamePort + "; open the raw port for high-throughput projection streaming.");
+                messages.add("Raw Wormholes peers dial " + bound + ". If that port is not reachable, imported peers with public-host/public-port can still exchange small signed control frames over the Minecraft game port " + gamePort + "; open the raw port for high-throughput projection streaming.");
             }
         } else {
-            messages.add("This server is outbound-only Boat mode. It will not accept inbound raw Wormholes sockets; it needs a reachable Anchor route or game-port status sideband route.");
+            messages.add("This server is outbound-only. It will not accept inbound raw Wormholes sockets; it relies on dialed peers or the game-port status sideband.");
         }
         for (NetworkConfig.PeerEntry peer : knownPeers()) {
             if (peer.name == null || peer.name.isBlank() || isPeerReady(peer.name)) {
-                continue;
-            }
-            if (isBoat(peer)) {
-                messages.add("Peer " + peer.name + " is marked Boat, so this server waits for it to dial in.");
                 continue;
             }
             String publicAddress = peer.publicHost == null || peer.publicHost.isBlank() ? "no player address" : peer.publicHost + ":" + peer.publicPort;
@@ -494,7 +763,6 @@ public final class NetworkManager implements PeerConnection.Listener {
         learned.port = config.listenPort;
         learned.publicHost = replyHost;
         learned.publicPort = packet.replyPort() > 0 ? packet.replyPort() : 25565;
-        learned.relationship = "direct";
         savePeer(learned);
     }
 
@@ -537,25 +805,73 @@ public final class NetworkManager implements PeerConnection.Listener {
 
     private void learnPeer(PeerConnection connection) {
         String name = connection.getPeerName();
-        if (connection.isDialer() || findKnownPeer(name) != null) {
+        if (name == null || name.isBlank()) {
             return;
         }
-        String host = connection.getPeerAdvertiseHost();
-        if (host == null || connection.getPeerWormholePort() <= 0) {
+        NetworkConfig.PeerEntry known = findKnownPeer(name);
+        if (known == null) {
+            if (connection.isDialer()) {
+                return;
+            }
+            String host = connection.getPeerAdvertiseHost();
+            if (host == null || connection.getPeerWormholePort() <= 0) {
+                return;
+            }
+            NetworkConfig.PeerEntry learned = new NetworkConfig.PeerEntry();
+            learned.name = name;
+            learned.host = host;
+            learned.port = connection.getPeerWormholePort();
+            learned.publicHost = host;
+            learned.publicPort = connection.getPeerGamePort() > 0 ? connection.getPeerGamePort() : 25565;
+            savePeer(learned);
             return;
         }
-        NetworkConfig.PeerEntry learned = new NetworkConfig.PeerEntry();
-        learned.name = name;
-        learned.host = host;
-        learned.port = connection.getPeerWormholePort();
-        learned.publicHost = host;
-        learned.publicPort = connection.getPeerGamePort() > 0 ? connection.getPeerGamePort() : 25565;
-        learned.relationship = "boat";
-        savePeer(learned);
+        if (autoPopulatePeer(known, connection)) {
+            savePeer(known);
+        }
+    }
+
+    private boolean autoPopulatePeer(NetworkConfig.PeerEntry peer, PeerConnection connection) {
+        boolean changed = false;
+        String advertised = connection.getPeerAdvertiseHost();
+        int peerWirePort = connection.getPeerWormholePort();
+        int peerGamePort = connection.getPeerGamePort();
+        if ((peer.publicHost == null || peer.publicHost.isBlank()) && advertised != null && !advertised.isBlank()) {
+            peer.publicHost = advertised;
+            changed = true;
+        }
+        if (peer.publicPort <= 0 || peer.publicPort == 25565) {
+            if (peerGamePort > 0 && peerGamePort != peer.publicPort) {
+                peer.publicPort = peerGamePort;
+                changed = true;
+            }
+        }
+        if ((peer.host == null || peer.host.isBlank()) && advertised != null && !advertised.isBlank()) {
+            peer.host = advertised;
+            changed = true;
+        }
+        if (peer.port <= 0 && peerWirePort > 0) {
+            peer.port = peerWirePort;
+            changed = true;
+        }
+        return changed;
     }
 
     @Override
     public void onMessage(PeerConnection connection, WireMessage message) {
+        if (message instanceof WireMessage.DictOffer offer) {
+            handleDictOffer(connection, offer);
+            return;
+        }
+        if (message instanceof WireMessage.DictRequest request) {
+            handleDictRequest(connection, request);
+            return;
+        }
+        if (message instanceof WireMessage.DictData data) {
+            handleDictData(connection, data);
+            return;
+        }
+        recordWireSample(message);
         if (message instanceof WireMessage.Routed routed) {
             handleRouted(connection.getPeerName(), routed);
             return;
@@ -563,6 +879,217 @@ public final class NetworkManager implements PeerConnection.Listener {
         cacheRelayAnnouncement(connection.getPeerName(), message);
         relayPortalAnnouncement(connection.getPeerName(), connection.getPeerName(), ROUTE_TTL, message);
         deliverMessage(connection.getPeerName(), message);
+    }
+
+    private void recordWireSample(WireMessage message) {
+        if (!config.transport.compressionEnabled) {
+            return;
+        }
+        try {
+            sampleCollector.record(WireCodec.encodePayload(message));
+        } catch (IOException ignored) {
+        }
+    }
+
+    private void handleDictOffer(PeerConnection connection, WireMessage.DictOffer offer) {
+        if (!config.transport.compressionEnabled || offer.version() <= 0) {
+            return;
+        }
+        CompressionDictionary local = wireCompression.currentDictionary();
+        if (local != null && CompressionDictionary.sameHash(local.hash(), offer.hash())) {
+            return;
+        }
+        connection.send(new WireMessage.DictRequest(offer.version()));
+    }
+
+    private void handleDictRequest(PeerConnection connection, WireMessage.DictRequest request) {
+        CompressionDictionary local = wireCompression.currentDictionary();
+        if (local == null || local.version() != request.version()) {
+            return;
+        }
+        byte[] bytes = local.bytes();
+        int chunkSize = WireMessage.DictData.MAX_CHUNK_BYTES;
+        int total = Math.max(1, (bytes.length + chunkSize - 1) / chunkSize);
+        for (int index = 0; index < total; index++) {
+            int offset = index * chunkSize;
+            int length = Math.min(chunkSize, bytes.length - offset);
+            byte[] chunk = new byte[length];
+            System.arraycopy(bytes, offset, chunk, 0, length);
+            connection.send(new WireMessage.DictData(local.version(), index, total, local.hash(), chunk));
+        }
+    }
+
+    private void handleDictData(PeerConnection connection, WireMessage.DictData data) {
+        if (data.version() <= 0 || data.chunkTotal() <= 0 || data.chunkIndex() < 0 || data.chunkIndex() >= data.chunkTotal()) {
+            return;
+        }
+        String key = connection.getPeerName() + "@" + data.version();
+        byte[] completedBytes = null;
+        synchronized (inboundDictionaries) {
+            DictionaryTransfer transfer = inboundDictionaries.get(key);
+            if (transfer == null || transfer.total != data.chunkTotal() || transfer.version != data.version()) {
+                transfer = new DictionaryTransfer(data.version(), data.chunkTotal(), data.hash());
+                inboundDictionaries.put(key, transfer);
+            }
+            transfer.addChunk(data.chunkIndex(), data.chunk());
+            if (transfer.isComplete()) {
+                completedBytes = transfer.assemble();
+                inboundDictionaries.remove(key);
+            }
+        }
+        if (completedBytes == null) {
+            return;
+        }
+        installInboundDictionary(connection, completedBytes, data.version(), data.hash());
+    }
+
+    private void installInboundDictionary(PeerConnection connection, byte[] dictBytes, int version, byte[] expectedHash) {
+        try {
+            CompressionDictionary candidate = CompressionDictionary.of(dictBytes, version);
+            if (!CompressionDictionary.sameHash(candidate.hash(), expectedHash)) {
+                logger.warning("net: dict v" + version + " from " + connection.getPeerName() + " failed hash check, ignoring");
+                return;
+            }
+            wireCompression.installDictionary(candidate);
+            try {
+                candidate.save(dataDirectory.resolve("dict"));
+            } catch (IOException e) {
+                logger.warning("net: could not persist dict v" + version + ": " + e.getMessage());
+            }
+            broadcastDictOffer(candidate);
+            renegotiateDictionaryWithPeers(candidate);
+        } catch (RuntimeException e) {
+            logger.log(Level.WARNING, "net: failed to install inbound dictionary v" + version + " from " + connection.getPeerName(), e);
+        }
+    }
+
+    private void renegotiateDictionaryWithPeers(CompressionDictionary local) {
+        for (PeerConnection connection : readyPeers.values()) {
+            byte[] peerHash = connection.getPeerDictHash();
+            if (peerHash != null && CompressionDictionary.sameHash(local.hash(), peerHash)) {
+                connection.enableDictionary(local.version());
+            }
+        }
+    }
+
+    private void broadcastDictOffer(CompressionDictionary local) {
+        WireMessage.DictOffer offer = new WireMessage.DictOffer(local.version(), local.hash(), local.bytes().length);
+        for (PeerConnection connection : readyPeers.values()) {
+            connection.send(offer);
+        }
+    }
+
+    private void loadPersistedDictionary(NetworkConfig active) {
+        if (!active.transport.compressionEnabled) {
+            return;
+        }
+        Path dictDir = dataDirectory.resolve("dict");
+        if (!Files.isDirectory(dictDir)) {
+            return;
+        }
+        try (java.util.stream.Stream<Path> stream = Files.list(dictDir)) {
+            Path latest = stream.filter(path -> path.getFileName().toString().endsWith(".zdict"))
+                .reduce((a, b) -> a.toFile().lastModified() >= b.toFile().lastModified() ? a : b)
+                .orElse(null);
+            if (latest == null) {
+                return;
+            }
+            int version = (int) Math.max(1L, latest.toFile().lastModified() / 1000L);
+            CompressionDictionary loaded = CompressionDictionary.load(latest, version);
+            wireCompression.installDictionary(loaded);
+            dictionaryVersionCounter.set(version);
+            logger.info("net: restored compression dict v" + version + " from " + latest.getFileName());
+        } catch (IOException e) {
+            logger.warning("net: could not restore compression dict: " + e.getMessage());
+        }
+    }
+
+    private void maybeRetrainDictionary() {
+        NetworkConfig active = config;
+        if (!active.transport.compressionEnabled) {
+            return;
+        }
+        if (!sampleCollector.isFull()) {
+            return;
+        }
+        List<byte[]> snapshot = sampleCollector.snapshot();
+        if (snapshot.isEmpty()) {
+            return;
+        }
+        int version = (int) dictionaryVersionCounter.incrementAndGet();
+        try {
+            CompressionDictionary trained = CompressionDictionary.train(snapshot, active.transport.compressionDictTargetSize, version);
+            CompressionDictionary existing = wireCompression.currentDictionary();
+            if (existing != null && CompressionDictionary.sameHash(existing.hash(), trained.hash())) {
+                return;
+            }
+            wireCompression.installDictionary(trained);
+            try {
+                trained.save(dataDirectory.resolve("dict"));
+            } catch (IOException e) {
+                logger.warning("net: could not persist trained dict v" + version + ": " + e.getMessage());
+            }
+            broadcastDictOffer(trained);
+            sampleCollector.reset();
+        } catch (RuntimeException e) {
+            logger.log(Level.WARNING, "net: dict training failed", e);
+        }
+    }
+
+    private static boolean isZeroHash(byte[] hash) {
+        if (hash == null || hash.length == 0) {
+            return true;
+        }
+        for (byte b : hash) {
+            if (b != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static final class DictionaryTransfer {
+        private final int version;
+        private final int total;
+        private final byte[] expectedHash;
+        private final byte[][] chunks;
+        private int received;
+
+        private DictionaryTransfer(int version, int total, byte[] expectedHash) {
+            this.version = version;
+            this.total = total;
+            this.expectedHash = expectedHash;
+            this.chunks = new byte[total][];
+        }
+
+        private void addChunk(int index, byte[] chunk) {
+            if (index < 0 || index >= total) {
+                return;
+            }
+            if (chunks[index] != null) {
+                return;
+            }
+            chunks[index] = chunk;
+            received++;
+        }
+
+        private boolean isComplete() {
+            return received == total;
+        }
+
+        private byte[] assemble() {
+            int totalBytes = 0;
+            for (byte[] chunk : chunks) {
+                totalBytes += chunk.length;
+            }
+            byte[] dict = new byte[totalBytes];
+            int offset = 0;
+            for (byte[] chunk : chunks) {
+                System.arraycopy(chunk, 0, dict, offset, chunk.length);
+                offset += chunk.length;
+            }
+            return dict;
+        }
     }
 
     private void receiveStatusBridgeMessages(String peerName, List<WireMessage> messages) {
@@ -675,7 +1202,7 @@ public final class NetworkManager implements PeerConnection.Listener {
             }
             return;
         }
-        if (!config.relayEnabled || routed.ttl() <= 0) {
+        if (routed.ttl() <= 0) {
             return;
         }
         forwardRouted(inboundPeer, routed.sourceServer(), routed.targetServer(), routed.ttl() - 1, routed.innerType(), routed.payload());
@@ -711,17 +1238,33 @@ public final class NetworkManager implements PeerConnection.Listener {
         }
     }
 
-    private void runAcceptLoop() {
-        ServerSocket socket = listenSocket;
-        while (running.get() && socket != null && !socket.isClosed()) {
+    private void runTcpAcceptLoop() {
+        TcpPeerTransport transport = tcpTransport;
+        while (running.get() && transport != null && transport.isListening()) {
             try {
-                Socket client = socket.accept();
-                PeerConnection connection = new PeerConnection(client, false, identity(config), null, null, this);
+                PeerTransport.PeerChannel channel = transport.accept();
+                PeerConnection connection = new PeerConnection(channel, false, identity(config), null, null, this, this);
                 pending.add(connection);
                 connection.start();
             } catch (IOException e) {
                 if (running.get()) {
-                    logger.warning("net: accept failed: " + e.getMessage());
+                    logger.warning("net: tcp accept failed: " + e.getMessage());
+                }
+            }
+        }
+    }
+
+    private void runUdsAcceptLoop() {
+        UnixDomainPeerTransport transport = udsTransport;
+        while (running.get() && transport != null && transport.isListening()) {
+            try {
+                PeerTransport.PeerChannel channel = transport.accept();
+                PeerConnection connection = new PeerConnection(channel, false, identity(config), null, null, this, this);
+                pending.add(connection);
+                connection.start();
+            } catch (IOException e) {
+                if (running.get()) {
+                    logger.warning("net: uds accept failed: " + e.getMessage());
                 }
             }
         }
@@ -755,16 +1298,77 @@ public final class NetworkManager implements PeerConnection.Listener {
         }
         int index = dialCandidateIndex.getOrDefault(peer.name, 0) % candidates.size();
         String host = candidates.get(index);
+        if (active.transport.udsEnabled && hostResolvesToLoopback(host)) {
+            PeerTransport.PeerChannel udsChannel = tryDialUds(active, peer);
+            if (udsChannel != null) {
+                PeerConnection connection = new PeerConnection(udsChannel, true, identity(active), peer.name, trustStore.get(peer.name), this, this);
+                pending.add(connection);
+                connection.start();
+                return;
+            }
+        }
         try {
-            Socket socket = new Socket();
-            socket.connect(new InetSocketAddress(host, peer.port), CONNECT_TIMEOUT_MS);
-            PeerConnection connection = new PeerConnection(socket, true, identity(active), peer.name, trustStore.get(peer.name), this);
+            PeerTransport.PeerChannel channel = TcpPeerTransport.dialDirect(host, peer.port, CONNECT_TIMEOUT_MS);
+            PeerConnection connection = new PeerConnection(channel, true, identity(active), peer.name, trustStore.get(peer.name), this, this);
             pending.add(connection);
             connection.start();
         } catch (IOException e) {
             lastDialError.put(peer.name, host + ":" + peer.port + " - " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
             dialCandidateIndex.put(peer.name, index + 1);
             registerDialFailure(peer.name);
+        }
+    }
+
+    private PeerTransport.PeerChannel tryDialUds(NetworkConfig active, NetworkConfig.PeerEntry peer) {
+        Path socketPath = peerUdsSocketPath(active, peer);
+        if (socketPath == null || !Files.exists(socketPath)) {
+            return null;
+        }
+        try {
+            return UnixDomainPeerTransport.dial(socketPath);
+        } catch (IOException | UnsupportedOperationException e) {
+            return null;
+        }
+    }
+
+    private Path udsDirectory(NetworkConfig active) {
+        String configured = active.transport.udsDir;
+        if (configured != null && !configured.isBlank()) {
+            return Path.of(configured);
+        }
+        return dataDirectory.resolve("uds");
+    }
+
+    private Path localUdsSocketPath(NetworkConfig active) {
+        return udsDirectory(active).resolve("peer-" + sanitizeForFile(getLocalName()) + ".sock");
+    }
+
+    private Path peerUdsSocketPath(NetworkConfig active, NetworkConfig.PeerEntry peer) {
+        if (peer == null || peer.name == null || peer.name.isBlank()) {
+            return null;
+        }
+        return udsDirectory(active).resolve("peer-" + sanitizeForFile(peer.name) + ".sock");
+    }
+
+    private static String sanitizeForFile(String value) {
+        StringBuilder builder = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            boolean safe = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.';
+            builder.append(safe ? ch : '_');
+        }
+        return builder.toString();
+    }
+
+    private static boolean hostResolvesToLoopback(String host) {
+        if (host == null || host.isBlank()) {
+            return false;
+        }
+        try {
+            InetAddress address = InetAddress.getByName(host);
+            return address.isLoopbackAddress();
+        } catch (UnknownHostException e) {
+            return false;
         }
     }
 
@@ -1009,15 +1613,21 @@ public final class NetworkManager implements PeerConnection.Listener {
         List<NetworkConfig.PeerEntry> peers = knownPeers();
         List<NetworkConfig.PeerEntry> dialable = new ArrayList<>(peers.size());
         for (NetworkConfig.PeerEntry peer : peers) {
-            if (!isBoat(peer)) {
+            if (isDialable(peer)) {
                 dialable.add(peer);
             }
         }
         return dialable;
     }
 
-    private static boolean isBoat(NetworkConfig.PeerEntry peer) {
-        return peer.relationship != null && peer.relationship.equalsIgnoreCase("boat");
+    private static boolean isDialable(NetworkConfig.PeerEntry peer) {
+        if (peer == null) {
+            return false;
+        }
+        if (peer.host != null && !peer.host.isBlank()) {
+            return true;
+        }
+        return peer.fallbackHosts != null && !peer.fallbackHosts.isBlank();
     }
 
     private boolean isStatusPeerReady(String name) {
@@ -1034,7 +1644,7 @@ public final class NetworkManager implements PeerConnection.Listener {
     }
 
     private boolean canQueueStatusBridge(NetworkConfig.PeerEntry peer) {
-        return peer != null && (isBoat(peer) || canUseStatusBridge(peer) || isStatusPeerReady(peer.name));
+        return peer != null && (canUseStatusBridge(peer) || isStatusPeerReady(peer.name));
     }
 
     private static String peerAddress(NetworkConfig.PeerEntry peer) {
@@ -1055,18 +1665,6 @@ public final class NetworkManager implements PeerConnection.Listener {
 
     private String generatedServerName() {
         return "wh-" + getPublicKeyFingerprint().replace(":", "");
-    }
-
-    private static String normalizeListenHost(String listenHost) {
-        if (listenHost == null || listenHost.isBlank() || listenHost.equalsIgnoreCase("auto")) {
-            return "0.0.0.0";
-        }
-        return listenHost;
-    }
-
-    private static String displayListenHost(String listenHost) {
-        String normalized = normalizeListenHost(listenHost);
-        return normalized.equals("0.0.0.0") ? "all interfaces" : normalized;
     }
 
     private static String blank(String value) {
@@ -1135,7 +1733,7 @@ public final class NetworkManager implements PeerConnection.Listener {
     }
 
     private void relayPortalAnnouncement(String sourceServer, String inboundPeer, int ttl, WireMessage message) {
-        if (!config.relayEnabled || ttl <= 0 || !isRelayAnnouncement(message)) {
+        if (ttl <= 0 || !isRelayAnnouncement(message)) {
             return;
         }
         for (NetworkConfig.PeerEntry peer : knownPeers()) {
@@ -1155,9 +1753,6 @@ public final class NetworkManager implements PeerConnection.Listener {
     }
 
     private void sendRelayedDirectoriesTo(String targetServer) {
-        if (!config.relayEnabled) {
-            return;
-        }
         PeerConnection connection = readyPeers.get(targetServer);
         NetworkConfig.PeerEntry targetPeer = findKnownPeer(targetServer);
         if (connection == null && !canQueueStatusBridge(targetPeer)) {

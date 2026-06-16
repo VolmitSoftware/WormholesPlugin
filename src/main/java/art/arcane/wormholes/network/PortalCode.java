@@ -12,7 +12,6 @@ import java.util.UUID;
 
 public record PortalCode(
     String serverName,
-    String role,
     String advertiseHost,
     List<String> fallbackHosts,
     int wormholePort,
@@ -21,7 +20,7 @@ public record PortalCode(
     UUID portalId,
     String portalName
 ) {
-    public static final String PREFIX = "WHP4.";
+    public static final String PREFIX = "WHP5.";
     private static final int MAX_CODE_LENGTH = 2048;
     private static final int MAX_FALLBACK_HOSTS = 4;
 
@@ -30,7 +29,6 @@ public record PortalCode(
             ByteArrayOutputStream buffer = new ByteArrayOutputStream(192);
             DataOutputStream out = new DataOutputStream(buffer);
             out.writeUTF(serverName);
-            out.writeUTF(role);
             out.writeUTF(advertiseHost);
             out.writeByte(Math.min(fallbackHosts.size(), MAX_FALLBACK_HOSTS));
             for (int i = 0; i < Math.min(fallbackHosts.size(), MAX_FALLBACK_HOSTS); i++) {
@@ -60,7 +58,6 @@ public record PortalCode(
             byte[] data = Base64.getUrlDecoder().decode(trimmed.substring(PREFIX.length()));
             DataInputStream in = new DataInputStream(new ByteArrayInputStream(data));
             String serverName = in.readUTF();
-            String role = in.readUTF();
             String advertiseHost = in.readUTF();
             int fallbackCount = in.readUnsignedByte();
             if (fallbackCount > MAX_FALLBACK_HOSTS) {
@@ -75,10 +72,10 @@ public record PortalCode(
             String publicKey = in.readUTF();
             UUID portalId = new UUID(in.readLong(), in.readLong());
             String portalName = in.readUTF();
-            if (serverName.isBlank() || role.isBlank() || advertiseHost.isBlank() || wormholePort <= 0 || Handshake.decodePublicKeyText(publicKey) == null) {
+            if (serverName.isBlank() || advertiseHost.isBlank() || wormholePort <= 0 || Handshake.decodePublicKeyText(publicKey) == null) {
                 return null;
             }
-            return new PortalCode(serverName, role, advertiseHost, List.copyOf(fallbackHosts), wormholePort, gamePort, publicKey, portalId, portalName);
+            return new PortalCode(serverName, advertiseHost, List.copyOf(fallbackHosts), wormholePort, gamePort, publicKey, portalId, portalName);
         } catch (IllegalArgumentException | IOException e) {
             return null;
         }

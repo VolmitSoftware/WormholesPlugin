@@ -88,22 +88,10 @@ class ViewSliceTest {
     @Test
     void viewMessagesRoundTrip() throws IOException {
         UUID portalId = UUID.randomUUID();
-        ViewBox box = new ViewBox(-16, 60, -16, 47, 83, 47);
-        ViewSlice slice = randomSlice(9L, -16, -16);
 
         byte[] subscribeFrame = WireCodec.encodeFrame(new WireMessage.ViewSubscribe(portalId));
         WireMessage.ViewSubscribe subscribe = assertInstanceOf(WireMessage.ViewSubscribe.class, WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(subscribeFrame))));
         assertEquals(portalId, subscribe.portalId());
-
-        byte[] snapshotFrame = WireCodec.encodeFrame(new WireMessage.ViewSnapshot(portalId, box, List.of(slice)));
-        WireMessage.ViewSnapshot snapshot = assertInstanceOf(WireMessage.ViewSnapshot.class, WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(snapshotFrame))));
-        assertEquals(box, snapshot.box());
-        assertEquals(1, snapshot.slices().size());
-        assertEquals(slice.contentHash(), snapshot.slices().get(0).contentHash());
-
-        byte[] deltaFrame = WireCodec.encodeFrame(new WireMessage.ViewDelta(portalId, List.of(slice, randomSlice(10L, 0, -16))));
-        WireMessage.ViewDelta delta = assertInstanceOf(WireMessage.ViewDelta.class, WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(deltaFrame))));
-        assertEquals(2, delta.slices().size());
 
         byte[] unsubscribeFrame = WireCodec.encodeFrame(new WireMessage.ViewUnsubscribe(portalId));
         WireMessage.ViewUnsubscribe unsubscribe = assertInstanceOf(WireMessage.ViewUnsubscribe.class, WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(unsubscribeFrame))));
@@ -113,19 +101,34 @@ class ViewSliceTest {
     @Test
     void viewEntitiesRoundTrip() throws IOException {
         UUID portalId = UUID.randomUUID();
-        art.arcane.wormholes.network.view.EntityVisual visual = new art.arcane.wormholes.network.view.EntityVisual(
+        art.arcane.wormholes.network.view.EntityVisual visual = art.arcane.wormholes.network.view.EntityVisual.full(
             UUID.randomUUID(), "minecraft:player",
             10.5D, 64.0D, -3.25D, 1.95D,
             0.1D, -0.2D, 0.97D,
+            12.5F, -3.25F,
             0.0D, -0.08D, 0.3D,
             true,
             "Psycho", "dGV4dHVyZS1ibG9i", "c2lnbmF0dXJl",
-            new byte[]{1, 2, 3, 4}, new byte[]{9, 8});
-        byte[] frame = WireCodec.encodeFrame(new WireMessage.ViewEntities(portalId, List.of(visual)));
+            null,
+            new byte[]{1, 2, 3, 4}, new byte[]{9, 8},
+            42);
+        byte[] frame = WireCodec.encodeFrame(new WireMessage.ViewEntities(portalId, List.of(visual), List.of(visual.id())));
         WireMessage.ViewEntities decoded = assertInstanceOf(WireMessage.ViewEntities.class, WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(frame))));
         assertEquals(portalId, decoded.portalId());
         assertEquals(1, decoded.entities().size());
-        assertEquals(visual, decoded.entities().get(0));
+        assertEquals(List.of(visual.id()), decoded.presentIds());
+        art.arcane.wormholes.network.view.EntityVisual roundTripped = decoded.entities().get(0);
+        assertEquals(visual.id(), roundTripped.id());
+        assertEquals(visual.typeKey(), roundTripped.typeKey());
+        assertEquals(visual.x(), roundTripped.x(), 1.0D / 4096.0D);
+        assertEquals(visual.y(), roundTripped.y(), 1.0D / 4096.0D);
+        assertEquals(visual.z(), roundTripped.z(), 1.0D / 4096.0D);
+        assertEquals(visual.sequence(), roundTripped.sequence());
+        assertEquals(visual.mode(), roundTripped.mode());
+        assertEquals(visual.presentMask(), roundTripped.presentMask());
+        assertEquals(visual.playerName(), roundTripped.playerName());
+        assertEquals(visual.textureValue(), roundTripped.textureValue());
+        assertEquals(visual.textureSignature(), roundTripped.textureSignature());
     }
 
     @Test

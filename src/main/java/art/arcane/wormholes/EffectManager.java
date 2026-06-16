@@ -89,7 +89,6 @@ public class EffectManager implements Listener
 			return;
 		}
 
-		boolean openConfigs = player.isSneaking();
 		for(ILocalPortal portal : Wormholes.portalManager.getLocalPortals())
 		{
 			if(!portal.isLookingAt(player))
@@ -98,14 +97,7 @@ public class EffectManager implements Listener
 			}
 
 			e.setCancelled(true);
-			if(openConfigs)
-			{
-				portal.uiOpenConfigMenu(player);
-			}
-			else
-			{
-				portal.onWanded(player);
-			}
+			portal.onWanded(player);
 			return;
 		}
 	}

@@ -99,7 +99,7 @@ public final class PeerRouteStore {
         copy.port = source.port;
         copy.publicHost = source.publicHost;
         copy.publicPort = source.publicPort;
-        copy.relationship = source.relationship;
+        copy.useProxy = source.useProxy;
         return copy;
     }
 
@@ -117,7 +117,7 @@ public final class PeerRouteStore {
             out.writeShort(route.port);
             out.writeUTF(blank(route.publicHost));
             out.writeShort(route.publicPort);
-            out.writeUTF(blank(route.relationship));
+            out.writeBoolean(route.useProxy);
             out.flush();
             return Base64.getUrlEncoder().withoutPadding().encodeToString(buffer.toByteArray());
         } catch (IOException e) {
@@ -139,7 +139,9 @@ public final class PeerRouteStore {
             route.port = in.readUnsignedShort();
             route.publicHost = in.readUTF();
             route.publicPort = in.readUnsignedShort();
-            route.relationship = in.readUTF();
+            if (in.available() > 0) {
+                route.useProxy = in.readBoolean();
+            }
             return route;
         } catch (IllegalArgumentException | IOException e) {
             return null;

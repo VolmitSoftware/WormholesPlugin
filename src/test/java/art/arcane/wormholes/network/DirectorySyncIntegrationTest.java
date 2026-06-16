@@ -64,8 +64,7 @@ class DirectorySyncIntegrationTest {
         NetworkConfig config = new NetworkConfig();
         config.enabled = true;
         config.serverName = serverName;
-        config.listenHost = "127.0.0.1";
-        config.advertiseHost = "127.0.0.1";
+        config.advertiseHostOverride = "127.0.0.1";
         config.listenPort = listenPort;
         return config;
     }
@@ -87,7 +86,9 @@ class DirectorySyncIntegrationTest {
             new TraversalService(manager),
             new art.arcane.wormholes.network.view.ViewServer(manager),
             viewCache,
-            new art.arcane.wormholes.network.view.ViewSubscriptionManager(manager, viewCache)
+            new art.arcane.wormholes.network.view.ViewSubscriptionManager(manager, viewCache),
+            manager.getReplicationManager(),
+            manager
         );
     }
 

@@ -4,11 +4,17 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
+import art.arcane.wormholes.network.replication.ChunkBulk;
+import art.arcane.wormholes.network.replication.ChunkDiffBatch;
+import art.arcane.wormholes.network.replication.ChunkHashProbe;
+import art.arcane.wormholes.network.replication.ChunkResyncRequest;
+import art.arcane.wormholes.network.replication.ReplicationVarint;
 import art.arcane.wormholes.network.view.EntityVisual;
-import art.arcane.wormholes.network.view.ViewBox;
 import art.arcane.wormholes.network.view.ViewSlice;
 
 public sealed interface WireMessage {
@@ -16,7 +22,7 @@ public sealed interface WireMessage {
 
     void write(DataOutputStream out) throws IOException;
 
-    record Hello(int protocolVersion, String mcVersion, String pluginVersion, String serverName, String advertiseHost, int wormholePort, int gamePort, byte[] nonce, byte[] publicKey) implements WireMessage {
+    record Hello(int protocolVersion, String mcVersion, String pluginVersion, String serverName, String advertiseHost, int wormholePort, int gamePort, byte[] nonce, byte[] publicKey, boolean compressionSupported, byte[] currentDictHash, int currentDictVersion) implements WireMessage {
         @Override
         public WireMessageType type() {
             return WireMessageType.HELLO;
@@ -33,6 +39,9 @@ public sealed interface WireMessage {
             out.writeShort(gamePort);
             WireCodec.writeFixedBytes(out, nonce, Handshake.NONCE_LENGTH);
             WireCodec.writeByteArray(out, publicKey, Handshake.PUBLIC_KEY_MAX_LENGTH);
+            out.writeBoolean(compressionSupported);
+            WireCodec.writeFixedBytes(out, currentDictHash, CompressionDictionary.HASH_LENGTH);
+            out.writeInt(currentDictVersion);
         }
 
         public static Hello read(DataInputStream in) throws IOException {
@@ -45,11 +54,14 @@ public sealed interface WireMessage {
             int gamePort = in.readUnsignedShort();
             byte[] nonce = WireCodec.readFixedBytes(in, Handshake.NONCE_LENGTH);
             byte[] publicKey = WireCodec.readByteArray(in, Handshake.PUBLIC_KEY_MAX_LENGTH);
-            return new Hello(protocolVersion, mcVersion, pluginVersion, serverName, advertiseHost, wormholePort, gamePort, nonce, publicKey);
+            boolean compressionSupported = in.readBoolean();
+            byte[] currentDictHash = WireCodec.readFixedBytes(in, CompressionDictionary.HASH_LENGTH);
+            int currentDictVersion = in.readInt();
+            return new Hello(protocolVersion, mcVersion, pluginVersion, serverName, advertiseHost, wormholePort, gamePort, nonce, publicKey, compressionSupported, currentDictHash, currentDictVersion);
         }
     }
 
-    record Challenge(String serverName, byte[] nonce, byte[] publicKey, byte[] signature) implements WireMessage {
+    record Challenge(String serverName, String advertiseHost, int wormholePort, int gamePort, byte[] nonce, byte[] publicKey, byte[] signature, boolean compressionSupported, byte[] currentDictHash, int currentDictVersion) implements WireMessage {
         @Override
         public WireMessageType type() {
             return WireMessageType.CHALLENGE;
@@ -58,17 +70,29 @@ public sealed interface WireMessage {
         @Override
         public void write(DataOutputStream out) throws IOException {
             out.writeUTF(serverName);
+            out.writeUTF(advertiseHost);
+            out.writeShort(wormholePort);
+            out.writeShort(gamePort);
             WireCodec.writeFixedBytes(out, nonce, Handshake.NONCE_LENGTH);
             WireCodec.writeByteArray(out, publicKey, Handshake.PUBLIC_KEY_MAX_LENGTH);
             WireCodec.writeByteArray(out, signature, Handshake.SIGNATURE_MAX_LENGTH);
+            out.writeBoolean(compressionSupported);
+            WireCodec.writeFixedBytes(out, currentDictHash, CompressionDictionary.HASH_LENGTH);
+            out.writeInt(currentDictVersion);
         }
 
         public static Challenge read(DataInputStream in) throws IOException {
             String serverName = in.readUTF();
+            String advertiseHost = in.readUTF();
+            int wormholePort = in.readUnsignedShort();
+            int gamePort = in.readUnsignedShort();
             byte[] nonce = WireCodec.readFixedBytes(in, Handshake.NONCE_LENGTH);
             byte[] publicKey = WireCodec.readByteArray(in, Handshake.PUBLIC_KEY_MAX_LENGTH);
             byte[] signature = WireCodec.readByteArray(in, Handshake.SIGNATURE_MAX_LENGTH);
-            return new Challenge(serverName, nonce, publicKey, signature);
+            boolean compressionSupported = in.readBoolean();
+            byte[] currentDictHash = WireCodec.readFixedBytes(in, CompressionDictionary.HASH_LENGTH);
+            int currentDictVersion = in.readInt();
+            return new Challenge(serverName, advertiseHost, wormholePort, gamePort, nonce, publicKey, signature, compressionSupported, currentDictHash, currentDictVersion);
         }
     }
 
@@ -160,6 +184,70 @@ public sealed interface WireMessage {
             }
             byte[] payload = WireCodec.readByteArray(in, WireCodec.MAX_FRAME_BYTES);
             return new Routed(sourceServer, targetServer, ttl, innerType, payload);
+        }
+    }
+
+    record DictOffer(int version, byte[] hash, int sizeBytes) implements WireMessage {
+        @Override
+        public WireMessageType type() {
+            return WireMessageType.DICT_OFFER;
+        }
+
+        @Override
+        public void write(DataOutputStream out) throws IOException {
+            out.writeInt(version);
+            WireCodec.writeFixedBytes(out, hash, CompressionDictionary.HASH_LENGTH);
+            out.writeInt(sizeBytes);
+        }
+
+        public static DictOffer read(DataInputStream in) throws IOException {
+            int version = in.readInt();
+            byte[] hash = WireCodec.readFixedBytes(in, CompressionDictionary.HASH_LENGTH);
+            int sizeBytes = in.readInt();
+            return new DictOffer(version, hash, sizeBytes);
+        }
+    }
+
+    record DictRequest(int version) implements WireMessage {
+        @Override
+        public WireMessageType type() {
+            return WireMessageType.DICT_REQUEST;
+        }
+
+        @Override
+        public void write(DataOutputStream out) throws IOException {
+            out.writeInt(version);
+        }
+
+        public static DictRequest read(DataInputStream in) throws IOException {
+            return new DictRequest(in.readInt());
+        }
+    }
+
+    record DictData(int version, int chunkIndex, int chunkTotal, byte[] hash, byte[] chunk) implements WireMessage {
+        public static final int MAX_CHUNK_BYTES = 64 * 1024;
+
+        @Override
+        public WireMessageType type() {
+            return WireMessageType.DICT_DATA;
+        }
+
+        @Override
+        public void write(DataOutputStream out) throws IOException {
+            out.writeInt(version);
+            out.writeInt(chunkIndex);
+            out.writeInt(chunkTotal);
+            WireCodec.writeFixedBytes(out, hash, CompressionDictionary.HASH_LENGTH);
+            WireCodec.writeByteArray(out, chunk, MAX_CHUNK_BYTES);
+        }
+
+        public static DictData read(DataInputStream in) throws IOException {
+            int version = in.readInt();
+            int chunkIndex = in.readInt();
+            int chunkTotal = in.readInt();
+            byte[] hash = WireCodec.readFixedBytes(in, CompressionDictionary.HASH_LENGTH);
+            byte[] chunk = WireCodec.readByteArray(in, MAX_CHUNK_BYTES);
+            return new DictData(version, chunkIndex, chunkTotal, hash, chunk);
         }
     }
 
@@ -364,72 +452,9 @@ public sealed interface WireMessage {
         }
     }
 
-    record ViewSnapshot(UUID portalId, ViewBox box, List<ViewSlice> slices) implements WireMessage {
-        private static final int MAX_SLICES = 4096;
-
-        @Override
-        public WireMessageType type() {
-            return WireMessageType.VIEW_SNAPSHOT;
-        }
-
-        @Override
-        public void write(DataOutputStream out) throws IOException {
-            writeUuid(out, portalId);
-            box.write(out);
-            out.writeInt(slices.size());
-            for (ViewSlice slice : slices) {
-                slice.write(out);
-            }
-        }
-
-        public static ViewSnapshot read(DataInputStream in) throws IOException {
-            UUID portalId = readUuid(in);
-            ViewBox box = ViewBox.read(in);
-            int count = in.readInt();
-            if (count < 0 || count > MAX_SLICES) {
-                throw new IOException("Invalid view snapshot slice count: " + count);
-            }
-            List<ViewSlice> slices = new ArrayList<>(count);
-            for (int i = 0; i < count; i++) {
-                slices.add(ViewSlice.read(in));
-            }
-            return new ViewSnapshot(portalId, box, slices);
-        }
-    }
-
-    record ViewDelta(UUID portalId, List<ViewSlice> slices) implements WireMessage {
-        private static final int MAX_SLICES = 4096;
-
-        @Override
-        public WireMessageType type() {
-            return WireMessageType.VIEW_DELTA;
-        }
-
-        @Override
-        public void write(DataOutputStream out) throws IOException {
-            writeUuid(out, portalId);
-            out.writeInt(slices.size());
-            for (ViewSlice slice : slices) {
-                slice.write(out);
-            }
-        }
-
-        public static ViewDelta read(DataInputStream in) throws IOException {
-            UUID portalId = readUuid(in);
-            int count = in.readInt();
-            if (count < 0 || count > MAX_SLICES) {
-                throw new IOException("Invalid view delta slice count: " + count);
-            }
-            List<ViewSlice> slices = new ArrayList<>(count);
-            for (int i = 0; i < count; i++) {
-                slices.add(ViewSlice.read(in));
-            }
-            return new ViewDelta(portalId, slices);
-        }
-    }
-
-    record ViewEntities(UUID portalId, List<EntityVisual> entities) implements WireMessage {
+    record ViewEntities(UUID portalId, List<EntityVisual> entities, List<UUID> presentIds) implements WireMessage {
         private static final int MAX_ENTITIES = 64;
+        private static final int MAX_PRESENT = 1024;
 
         @Override
         public WireMessageType type() {
@@ -443,6 +468,10 @@ public sealed interface WireMessage {
             for (EntityVisual entity : entities) {
                 entity.write(out);
             }
+            out.writeInt(presentIds.size());
+            for (UUID id : presentIds) {
+                writeUuid(out, id);
+            }
         }
 
         public static ViewEntities read(DataInputStream in) throws IOException {
@@ -455,7 +484,15 @@ public sealed interface WireMessage {
             for (int i = 0; i < count; i++) {
                 entities.add(EntityVisual.read(in));
             }
-            return new ViewEntities(portalId, entities);
+            int presentCount = in.readInt();
+            if (presentCount < 0 || presentCount > MAX_PRESENT) {
+                throw new IOException("Invalid present-id count: " + presentCount);
+            }
+            List<UUID> presentIds = new ArrayList<>(presentCount);
+            for (int i = 0; i < presentCount; i++) {
+                presentIds.add(readUuid(in));
+            }
+            return new ViewEntities(portalId, entities, presentIds);
         }
     }
 
@@ -493,6 +530,168 @@ public sealed interface WireMessage {
 
         public static ViewTime read(DataInputStream in) throws IOException {
             return new ViewTime(readUuid(in), in.readUnsignedByte());
+        }
+    }
+
+    record ChunkBulkBatch(List<ChunkBulk> chunks) implements WireMessage {
+        private static final int MAX_CHUNKS = 1024;
+
+        @Override
+        public WireMessageType type() {
+            return WireMessageType.CHUNK_BULK;
+        }
+
+        @Override
+        public void write(DataOutputStream out) throws IOException {
+            ReplicationVarint.writeUInt(out, chunks.size());
+            for (ChunkBulk chunk : chunks) {
+                chunk.writeTo(out);
+            }
+        }
+
+        public static ChunkBulkBatch read(DataInputStream in) throws IOException {
+            int count = ReplicationVarint.readUInt(in);
+            if (count < 0 || count > MAX_CHUNKS) {
+                throw new IOException("Invalid chunk bulk batch count: " + count);
+            }
+            List<ChunkBulk> chunks = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) {
+                chunks.add(ChunkBulk.read(in));
+            }
+            return new ChunkBulkBatch(chunks);
+        }
+    }
+
+    record ChunkDiff(List<ChunkDiffBatch> batches) implements WireMessage {
+        private static final int MAX_BATCHES = 8192;
+
+        @Override
+        public WireMessageType type() {
+            return WireMessageType.CHUNK_DIFF;
+        }
+
+        @Override
+        public void write(DataOutputStream out) throws IOException {
+            ReplicationVarint.writeUInt(out, batches.size());
+            for (ChunkDiffBatch batch : batches) {
+                batch.writeTo(out);
+            }
+        }
+
+        public static ChunkDiff read(DataInputStream in) throws IOException {
+            int count = ReplicationVarint.readUInt(in);
+            if (count < 0 || count > MAX_BATCHES) {
+                throw new IOException("Invalid chunk diff batch count: " + count);
+            }
+            List<ChunkDiffBatch> batches = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) {
+                batches.add(ChunkDiffBatch.read(in));
+            }
+            return new ChunkDiff(batches);
+        }
+    }
+
+    record ChunkHashProbeMessage(ChunkHashProbe probe) implements WireMessage {
+        @Override
+        public WireMessageType type() {
+            return WireMessageType.CHUNK_HASH_PROBE;
+        }
+
+        @Override
+        public void write(DataOutputStream out) throws IOException {
+            probe.writeTo(out);
+        }
+
+        public static ChunkHashProbeMessage read(DataInputStream in) throws IOException {
+            return new ChunkHashProbeMessage(ChunkHashProbe.read(in));
+        }
+    }
+
+    record ViewBulkComplete(UUID portalId) implements WireMessage {
+        @Override
+        public WireMessageType type() {
+            return WireMessageType.VIEW_BULK_COMPLETE;
+        }
+
+        @Override
+        public void write(DataOutputStream out) throws IOException {
+            writeUuid(out, portalId);
+        }
+
+        public static ViewBulkComplete read(DataInputStream in) throws IOException {
+            return new ViewBulkComplete(readUuid(in));
+        }
+    }
+
+    record PortalSettingsUpdate(UUID portalId, Map<String, String> settings) implements WireMessage {
+        private static final int MAX_ENTRIES = 64;
+        private static final int MAX_KEY_BYTES = 64;
+        private static final int MAX_VALUE_BYTES = 1024;
+
+        @Override
+        public WireMessageType type() {
+            return WireMessageType.PORTAL_SETTINGS_UPDATE;
+        }
+
+        @Override
+        public void write(DataOutputStream out) throws IOException {
+            writeUuid(out, portalId);
+            if (settings.size() > MAX_ENTRIES) {
+                throw new IOException("Portal settings update too large: " + settings.size() + " > " + MAX_ENTRIES);
+            }
+            out.writeInt(settings.size());
+            for (Map.Entry<String, String> entry : settings.entrySet()) {
+                String key = entry.getKey();
+                String value = entry.getValue() == null ? "" : entry.getValue();
+                if (key == null || key.isEmpty()) {
+                    throw new IOException("Portal settings key must be non-empty");
+                }
+                if (key.length() > MAX_KEY_BYTES) {
+                    throw new IOException("Portal settings key too long: " + key.length() + " > " + MAX_KEY_BYTES);
+                }
+                if (value.length() > MAX_VALUE_BYTES) {
+                    throw new IOException("Portal settings value too long: " + value.length() + " > " + MAX_VALUE_BYTES);
+                }
+                out.writeUTF(key);
+                out.writeUTF(value);
+            }
+        }
+
+        public static PortalSettingsUpdate read(DataInputStream in) throws IOException {
+            UUID portalId = readUuid(in);
+            int count = in.readInt();
+            if (count < 0 || count > MAX_ENTRIES) {
+                throw new IOException("Invalid portal settings entry count: " + count);
+            }
+            Map<String, String> settings = new LinkedHashMap<>(count);
+            for (int i = 0; i < count; i++) {
+                String key = in.readUTF();
+                String value = in.readUTF();
+                if (key.length() > MAX_KEY_BYTES) {
+                    throw new IOException("Portal settings key too long: " + key.length() + " > " + MAX_KEY_BYTES);
+                }
+                if (value.length() > MAX_VALUE_BYTES) {
+                    throw new IOException("Portal settings value too long: " + value.length() + " > " + MAX_VALUE_BYTES);
+                }
+                settings.put(key, value);
+            }
+            return new PortalSettingsUpdate(portalId, settings);
+        }
+    }
+
+    record ChunkResyncRequestMessage(ChunkResyncRequest request) implements WireMessage {
+        @Override
+        public WireMessageType type() {
+            return WireMessageType.CHUNK_RESYNC_REQUEST;
+        }
+
+        @Override
+        public void write(DataOutputStream out) throws IOException {
+            request.writeTo(out);
+        }
+
+        public static ChunkResyncRequestMessage read(DataInputStream in) throws IOException {
+            return new ChunkResyncRequestMessage(ChunkResyncRequest.read(in));
         }
     }
 

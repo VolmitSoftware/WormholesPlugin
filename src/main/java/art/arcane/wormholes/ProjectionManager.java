@@ -375,7 +375,10 @@ public class ProjectionManager implements Listener {
         if (portal == null || !portal.supportsProjections() || !portal.isProjecting() || !portal.isOpen()) {
             return false;
         }
-        return portal.getProjectionMode() == ProjectionMode.MIRROR || portal.hasTunnel();
+        if (portal.getProjectionMode() != ProjectionMode.MIRROR && !portal.hasTunnel()) {
+            return false;
+        }
+        return true;
     }
 
     private boolean isInsideInterestGrace(ILocalPortal portal, Player observer) {
@@ -438,37 +441,6 @@ public class ProjectionManager implements Listener {
 
         private void sort() {
             portals.sort(Comparator.comparingDouble(portal -> distanceSquared(observer, portal)));
-        }
-    }
-
-    private void projectActiveObservers(ILocalPortal portal, Set<UUID> activeObservers, boolean updateBlocks, boolean updateEntities) {
-        Map<UUID, PortalProjector> portalProjectors = projectors.get(portal.getId());
-        if (portalProjectors == null) {
-            return;
-        }
-
-        for (UUID observerId : activeObservers) {
-            Player observer = Bukkit.getPlayer(observerId);
-            if (observer == null || !observer.isOnline()) {
-                continue;
-            }
-
-            PortalProjector projector = portalProjectors.get(observerId);
-            if (projector == null) {
-                projector = new PortalProjector(portal, observer, claimArbiter);
-                portalProjectors.put(observerId, projector);
-                Wormholes.v("[ProjectionManager] new projector portal=" + portal.getName()
-                        + " observer=" + observer.getName()
-                        + " portalCenter=" + formatLoc(portal.getCenter())
-                        + " observerLoc=" + formatLoc(observer.getLocation()));
-            }
-
-            try {
-                projector.project(updateBlocks, updateEntities);
-            } catch (Throwable ex) {
-                Wormholes.instance.getLogger().log(Level.WARNING,
-                        "[ProjectionManager] projection error portal=" + portal.getName() + " observer=" + observer.getName(), ex);
-            }
         }
     }
 

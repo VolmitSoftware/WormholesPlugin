@@ -10,6 +10,9 @@ import java.util.Objects;
 import java.util.UUID;
 
 public record EntityVisual(
+    byte mode,
+    int sequence,
+    int presentMask,
     UUID id,
     String typeKey,
     double x,
@@ -19,6 +22,8 @@ public record EntityVisual(
     double lookX,
     double lookY,
     double lookZ,
+    float yaw,
+    float pitch,
     double velocityX,
     double velocityY,
     double velocityZ,
@@ -26,10 +31,32 @@ public record EntityVisual(
     String playerName,
     String textureValue,
     String textureSignature,
+    UUID passengerOf,
+    UUID leashHolder,
     byte[] metadata,
     byte[] equipment
 ) {
     public static final String PLAYER_TYPE_KEY = "minecraft:player";
+    public static final byte MODE_FULL = 0;
+    public static final byte MODE_DELTA = 1;
+
+    public static final int FIELD_POSITION = 1 << 0;
+    public static final int FIELD_YAW_PITCH = 1 << 1;
+    public static final int FIELD_VELOCITY = 1 << 2;
+    public static final int FIELD_EQUIPMENT = 1 << 3;
+    public static final int FIELD_METADATA = 1 << 4;
+    public static final int FIELD_TYPE = 1 << 5;
+    public static final int FIELD_PASSENGER = 1 << 6;
+    public static final int FIELD_ON_GROUND = 1 << 7;
+    public static final int FIELD_HEIGHT = 1 << 8;
+    public static final int FIELD_PROFILE = 1 << 9;
+    public static final int FIELD_LOOK_VEC = 1 << 10;
+    public static final int FIELD_LEASH = 1 << 11;
+    public static final int FIELD_ALL_FULL = FIELD_POSITION | FIELD_YAW_PITCH | FIELD_VELOCITY | FIELD_EQUIPMENT
+        | FIELD_METADATA | FIELD_TYPE | FIELD_PASSENGER | FIELD_ON_GROUND | FIELD_HEIGHT | FIELD_PROFILE | FIELD_LOOK_VEC | FIELD_LEASH;
+
+    public static final double POSITION_QUANTUM = 1.0D / 4096.0D;
+
     private static final int MAX_BLOB_BYTES = 64 * 1024;
 
     public boolean isPlayer() {
@@ -40,48 +67,240 @@ public record EntityVisual(
         return textureValue != null && !textureValue.isEmpty();
     }
 
+    public boolean isFull() {
+        return mode == MODE_FULL;
+    }
+
+    public static EntityVisual full(
+        UUID id,
+        String typeKey,
+        double x,
+        double y,
+        double z,
+        double height,
+        double lookX,
+        double lookY,
+        double lookZ,
+        float yaw,
+        float pitch,
+        double velocityX,
+        double velocityY,
+        double velocityZ,
+        boolean onGround,
+        String playerName,
+        String textureValue,
+        String textureSignature,
+        UUID passengerOf,
+        UUID leashHolder,
+        byte[] metadata,
+        byte[] equipment,
+        int sequence
+    ) {
+        return new EntityVisual(
+            MODE_FULL,
+            sequence,
+            FIELD_ALL_FULL,
+            id,
+            typeKey,
+            x, y, z,
+            height,
+            lookX, lookY, lookZ,
+            yaw, pitch,
+            velocityX, velocityY, velocityZ,
+            onGround,
+            playerName == null ? "" : playerName,
+            textureValue == null ? "" : textureValue,
+            textureSignature == null ? "" : textureSignature,
+            passengerOf,
+            leashHolder,
+            metadata == null ? PacketBlobs.EMPTY : metadata,
+            equipment == null ? PacketBlobs.EMPTY : equipment
+        );
+    }
+
     public void write(DataOutputStream out) throws IOException {
+        out.writeByte(mode);
+        out.writeInt(sequence);
+        out.writeInt(presentMask);
         out.writeLong(id.getMostSignificantBits());
         out.writeLong(id.getLeastSignificantBits());
-        out.writeUTF(typeKey);
-        out.writeDouble(x);
-        out.writeDouble(y);
-        out.writeDouble(z);
-        out.writeDouble(height);
-        out.writeDouble(lookX);
-        out.writeDouble(lookY);
-        out.writeDouble(lookZ);
-        out.writeDouble(velocityX);
-        out.writeDouble(velocityY);
-        out.writeDouble(velocityZ);
-        out.writeBoolean(onGround);
-        out.writeUTF(playerName == null ? "" : playerName);
-        out.writeUTF(textureValue == null ? "" : textureValue);
-        out.writeUTF(textureSignature == null ? "" : textureSignature);
-        WireCodec.writeByteArray(out, metadata == null ? PacketBlobs.EMPTY : metadata, MAX_BLOB_BYTES);
-        WireCodec.writeByteArray(out, equipment == null ? PacketBlobs.EMPTY : equipment, MAX_BLOB_BYTES);
+        if ((presentMask & FIELD_TYPE) != 0) {
+            out.writeUTF(typeKey == null ? "" : typeKey);
+        }
+        if ((presentMask & FIELD_POSITION) != 0) {
+            out.writeInt(quantize(x));
+            out.writeInt(quantize(y));
+            out.writeInt(quantize(z));
+        }
+        if ((presentMask & FIELD_HEIGHT) != 0) {
+            out.writeDouble(height);
+        }
+        if ((presentMask & FIELD_LOOK_VEC) != 0) {
+            out.writeDouble(lookX);
+            out.writeDouble(lookY);
+            out.writeDouble(lookZ);
+        }
+        if ((presentMask & FIELD_YAW_PITCH) != 0) {
+            out.writeByte(quantizeAngle(yaw));
+            out.writeByte(quantizeAngle(pitch));
+        }
+        if ((presentMask & FIELD_VELOCITY) != 0) {
+            out.writeDouble(velocityX);
+            out.writeDouble(velocityY);
+            out.writeDouble(velocityZ);
+        }
+        if ((presentMask & FIELD_ON_GROUND) != 0) {
+            out.writeBoolean(onGround);
+        }
+        if ((presentMask & FIELD_PROFILE) != 0) {
+            out.writeUTF(playerName == null ? "" : playerName);
+            out.writeUTF(textureValue == null ? "" : textureValue);
+            out.writeUTF(textureSignature == null ? "" : textureSignature);
+        }
+        if ((presentMask & FIELD_PASSENGER) != 0) {
+            boolean hasPassengerOf = passengerOf != null;
+            out.writeBoolean(hasPassengerOf);
+            if (hasPassengerOf) {
+                out.writeLong(passengerOf.getMostSignificantBits());
+                out.writeLong(passengerOf.getLeastSignificantBits());
+            }
+        }
+        if ((presentMask & FIELD_LEASH) != 0) {
+            boolean hasLeashHolder = leashHolder != null;
+            out.writeBoolean(hasLeashHolder);
+            if (hasLeashHolder) {
+                out.writeLong(leashHolder.getMostSignificantBits());
+                out.writeLong(leashHolder.getLeastSignificantBits());
+            }
+        }
+        if ((presentMask & FIELD_METADATA) != 0) {
+            WireCodec.writeByteArray(out, metadata == null ? PacketBlobs.EMPTY : metadata, MAX_BLOB_BYTES);
+        }
+        if ((presentMask & FIELD_EQUIPMENT) != 0) {
+            WireCodec.writeByteArray(out, equipment == null ? PacketBlobs.EMPTY : equipment, MAX_BLOB_BYTES);
+        }
     }
 
     public static EntityVisual read(DataInputStream in) throws IOException {
+        byte mode = in.readByte();
+        int sequence = in.readInt();
+        int presentMask = in.readInt();
         UUID id = new UUID(in.readLong(), in.readLong());
-        String typeKey = in.readUTF();
-        double x = in.readDouble();
-        double y = in.readDouble();
-        double z = in.readDouble();
-        double height = in.readDouble();
-        double lookX = in.readDouble();
-        double lookY = in.readDouble();
-        double lookZ = in.readDouble();
-        double velocityX = in.readDouble();
-        double velocityY = in.readDouble();
-        double velocityZ = in.readDouble();
-        boolean onGround = in.readBoolean();
-        String playerName = in.readUTF();
-        String textureValue = in.readUTF();
-        String textureSignature = in.readUTF();
-        byte[] metadata = WireCodec.readByteArray(in, MAX_BLOB_BYTES);
-        byte[] equipment = WireCodec.readByteArray(in, MAX_BLOB_BYTES);
-        return new EntityVisual(id, typeKey, x, y, z, height, lookX, lookY, lookZ, velocityX, velocityY, velocityZ, onGround, playerName, textureValue, textureSignature, metadata, equipment);
+        String typeKey = (presentMask & FIELD_TYPE) != 0 ? in.readUTF() : "";
+        double x = 0.0D;
+        double y = 0.0D;
+        double z = 0.0D;
+        if ((presentMask & FIELD_POSITION) != 0) {
+            x = dequantize(in.readInt());
+            y = dequantize(in.readInt());
+            z = dequantize(in.readInt());
+        }
+        double height = 0.0D;
+        if ((presentMask & FIELD_HEIGHT) != 0) {
+            height = in.readDouble();
+        }
+        double lookX = 0.0D;
+        double lookY = 0.0D;
+        double lookZ = 0.0D;
+        if ((presentMask & FIELD_LOOK_VEC) != 0) {
+            lookX = in.readDouble();
+            lookY = in.readDouble();
+            lookZ = in.readDouble();
+        }
+        float yaw = 0.0F;
+        float pitch = 0.0F;
+        if ((presentMask & FIELD_YAW_PITCH) != 0) {
+            yaw = dequantizeAngle(in.readByte());
+            pitch = dequantizeAngle(in.readByte());
+        }
+        double velocityX = 0.0D;
+        double velocityY = 0.0D;
+        double velocityZ = 0.0D;
+        if ((presentMask & FIELD_VELOCITY) != 0) {
+            velocityX = in.readDouble();
+            velocityY = in.readDouble();
+            velocityZ = in.readDouble();
+        }
+        boolean onGround = false;
+        if ((presentMask & FIELD_ON_GROUND) != 0) {
+            onGround = in.readBoolean();
+        }
+        String playerName = "";
+        String textureValue = "";
+        String textureSignature = "";
+        if ((presentMask & FIELD_PROFILE) != 0) {
+            playerName = in.readUTF();
+            textureValue = in.readUTF();
+            textureSignature = in.readUTF();
+        }
+        UUID passengerOf = null;
+        if ((presentMask & FIELD_PASSENGER) != 0) {
+            boolean hasPassengerOf = in.readBoolean();
+            if (hasPassengerOf) {
+                passengerOf = new UUID(in.readLong(), in.readLong());
+            }
+        }
+        UUID leashHolder = null;
+        if ((presentMask & FIELD_LEASH) != 0) {
+            boolean hasLeashHolder = in.readBoolean();
+            if (hasLeashHolder) {
+                leashHolder = new UUID(in.readLong(), in.readLong());
+            }
+        }
+        byte[] metadata = PacketBlobs.EMPTY;
+        if ((presentMask & FIELD_METADATA) != 0) {
+            metadata = WireCodec.readByteArray(in, MAX_BLOB_BYTES);
+        }
+        byte[] equipment = PacketBlobs.EMPTY;
+        if ((presentMask & FIELD_EQUIPMENT) != 0) {
+            equipment = WireCodec.readByteArray(in, MAX_BLOB_BYTES);
+        }
+        return new EntityVisual(
+            mode,
+            sequence,
+            presentMask,
+            id,
+            typeKey,
+            x, y, z,
+            height,
+            lookX, lookY, lookZ,
+            yaw, pitch,
+            velocityX, velocityY, velocityZ,
+            onGround,
+            playerName,
+            textureValue,
+            textureSignature,
+            passengerOf,
+            leashHolder,
+            metadata,
+            equipment
+        );
+    }
+
+    public static int quantize(double value) {
+        double scaled = value * 4096.0D;
+        if (scaled > (double) Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        if (scaled < (double) Integer.MIN_VALUE) {
+            return Integer.MIN_VALUE;
+        }
+        return (int) Math.round(scaled);
+    }
+
+    public static double dequantize(int quantized) {
+        return ((double) quantized) * POSITION_QUANTUM;
+    }
+
+    public static int quantizeAngle(float degrees) {
+        float wrapped = ((degrees % 360.0F) + 360.0F) % 360.0F;
+        int scaled = Math.round(wrapped * 256.0F / 360.0F);
+        return scaled & 0xFF;
+    }
+
+    public static float dequantizeAngle(byte quantized) {
+        int unsigned = quantized & 0xFF;
+        return ((float) unsigned) * 360.0F / 256.0F;
     }
 
     @Override
@@ -92,23 +311,28 @@ public record EntityVisual(
         if (!(other instanceof EntityVisual visual)) {
             return false;
         }
-        return id.equals(visual.id)
-            && typeKey.equals(visual.typeKey)
+        return mode == visual.mode
+            && sequence == visual.sequence
+            && presentMask == visual.presentMask
+            && id.equals(visual.id)
+            && Objects.equals(typeKey, visual.typeKey)
             && x == visual.x && y == visual.y && z == visual.z
             && height == visual.height
             && lookX == visual.lookX && lookY == visual.lookY && lookZ == visual.lookZ
+            && yaw == visual.yaw && pitch == visual.pitch
             && velocityX == visual.velocityX && velocityY == visual.velocityY && velocityZ == visual.velocityZ
             && onGround == visual.onGround
             && Objects.equals(playerName, visual.playerName)
             && Objects.equals(textureValue, visual.textureValue)
             && Objects.equals(textureSignature, visual.textureSignature)
+            && Objects.equals(passengerOf, visual.passengerOf)
             && Arrays.equals(metadata, visual.metadata)
             && Arrays.equals(equipment, visual.equipment);
     }
 
     @Override
     public int hashCode() {
-        int result = Objects.hash(id, typeKey, x, y, z, height, lookX, lookY, lookZ, velocityX, velocityY, velocityZ, onGround, playerName, textureValue, textureSignature);
+        int result = Objects.hash(mode, sequence, presentMask, id, typeKey, x, y, z, height, lookX, lookY, lookZ, yaw, pitch, velocityX, velocityY, velocityZ, onGround, playerName, textureValue, textureSignature, passengerOf);
         result = 31 * result + Arrays.hashCode(metadata);
         result = 31 * result + Arrays.hashCode(equipment);
         return result;
