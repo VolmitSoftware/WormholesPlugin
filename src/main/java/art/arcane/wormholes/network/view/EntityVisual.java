@@ -326,13 +326,14 @@ public record EntityVisual(
             && Objects.equals(textureValue, visual.textureValue)
             && Objects.equals(textureSignature, visual.textureSignature)
             && Objects.equals(passengerOf, visual.passengerOf)
+            && Objects.equals(leashHolder, visual.leashHolder)
             && Arrays.equals(metadata, visual.metadata)
             && Arrays.equals(equipment, visual.equipment);
     }
 
     @Override
     public int hashCode() {
-        int result = Objects.hash(mode, sequence, presentMask, id, typeKey, x, y, z, height, lookX, lookY, lookZ, yaw, pitch, velocityX, velocityY, velocityZ, onGround, playerName, textureValue, textureSignature, passengerOf);
+        int result = Objects.hash(mode, sequence, presentMask, id, typeKey, x, y, z, height, lookX, lookY, lookZ, yaw, pitch, velocityX, velocityY, velocityZ, onGround, playerName, textureValue, textureSignature, passengerOf, leashHolder);
         result = 31 * result + Arrays.hashCode(metadata);
         result = 31 * result + Arrays.hashCode(equipment);
         return result;

@@ -22,6 +22,8 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public final class ChunkSnapshotComparator {
+    private static final int SURFACE_SCAN_MARGIN = 8;
+
     private final Plugin plugin;
     private final ChunkReplicationManager replication;
     private final RegionalDiffAccumulator accumulator;
@@ -148,12 +150,16 @@ public final class ChunkSnapshotComparator {
         }
         int minHeight = world.getMinHeight();
         int maxHeight = world.getMaxHeight();
+        FoliaScheduler.runAsync(plugin, () -> compareSnapshot(world, chunkKey, chunkX, chunkZ, snapshot, minHeight, maxHeight));
+    }
+
+    private void compareSnapshot(World world, long chunkKey, int chunkX, int chunkZ, ChunkSnapshot snapshot, int minHeight, int maxHeight) {
         ChunkSurfaceShadow shadow = shadowFor(world, chunkKey);
         boolean diverged = false;
+        int ceiling = maxHeight - 1;
         for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
-                int highest = snapshot.getHighestBlockYAt(x, z);
-                int top = Math.min(maxHeight - 1, highest);
+                int top = Math.min(ceiling, snapshot.getHighestBlockYAt(x, z) + SURFACE_SCAN_MARGIN);
                 for (int y = minHeight; y <= top; y++) {
                     BlockData data;
                     try {

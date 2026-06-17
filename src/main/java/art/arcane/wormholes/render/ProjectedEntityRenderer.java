@@ -1,6 +1,7 @@
 package art.arcane.wormholes.render;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -43,9 +44,11 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEn
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityRelativeMove;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityRelativeMoveAndRotation;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityRotation;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerAttachEntity;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityTeleport;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityVelocity;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerHurtAnimation;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetPassengers;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoRemove;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity;
@@ -194,8 +197,63 @@ public final class ProjectedEntityRenderer {
             count++;
         }
 
+        applyEntityRelationships(observer, remoteView.getEntities());
         destroyHidden(observer);
         restoreLocalEntities(observer);
+    }
+
+    private static final int[] NO_PASSENGERS = new int[0];
+
+    private void applyEntityRelationships(Player observer, List<EntityVisual> visuals) {
+        Map<UUID, List<Integer>> ridersByVehicle = new HashMap<UUID, List<Integer>>();
+        for (EntityVisual visual : visuals) {
+            UUID vehicle = visual.passengerOf();
+            if (vehicle == null) {
+                continue;
+            }
+            SpoofedEntity rider = spoofed.get(visual.id());
+            if (rider == null) {
+                continue;
+            }
+            ridersByVehicle.computeIfAbsent(vehicle, ignored -> new ArrayList<Integer>()).add(rider.fakeId);
+        }
+        for (Map.Entry<UUID, SpoofedEntity> entry : spoofed.entrySet()) {
+            SpoofedEntity vehicleState = entry.getValue();
+            List<Integer> riders = ridersByVehicle.get(entry.getKey());
+            if (riders == null) {
+                if (vehicleState.lastPassengers != null && vehicleState.lastPassengers.length > 0) {
+                    vehicleState.lastPassengers = NO_PASSENGERS;
+                    sendCounted(observer, new WrapperPlayServerSetPassengers(vehicleState.fakeId, NO_PASSENGERS));
+                }
+                continue;
+            }
+            int[] passengers = new int[riders.size()];
+            for (int i = 0; i < passengers.length; i++) {
+                passengers[i] = riders.get(i).intValue();
+            }
+            if (!Arrays.equals(passengers, vehicleState.lastPassengers)) {
+                vehicleState.lastPassengers = passengers;
+                sendCounted(observer, new WrapperPlayServerSetPassengers(vehicleState.fakeId, passengers));
+            }
+        }
+        for (EntityVisual visual : visuals) {
+            SpoofedEntity mob = spoofed.get(visual.id());
+            if (mob == null) {
+                continue;
+            }
+            int holderFakeId = -1;
+            UUID holderUuid = visual.leashHolder();
+            if (holderUuid != null) {
+                SpoofedEntity holder = spoofed.get(holderUuid);
+                if (holder != null) {
+                    holderFakeId = holder.fakeId;
+                }
+            }
+            if (holderFakeId != mob.leashedToFakeId) {
+                mob.leashedToFakeId = holderFakeId;
+                sendCounted(observer, new WrapperPlayServerAttachEntity(mob.fakeId, holderFakeId, true));
+            }
+        }
     }
 
     private boolean projectRemoteVisual(Player observer,
@@ -897,6 +955,8 @@ public final class ProjectedEntityRenderer {
         private final boolean playerEntry;
         private final boolean upsideDown;
         private final boolean living;
+        private int leashedToFakeId = Integer.MIN_VALUE;
+        private int[] lastPassengers;
         private int remoteStateVersion = -1;
         private float yaw;
         private float pitch;

@@ -1,7 +1,11 @@
 package art.arcane.wormholes.network.replication.capture;
 
+import art.arcane.volmlib.util.scheduling.FoliaScheduler;
+import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.network.replication.BlockChange;
+import art.arcane.wormholes.network.view.ViewSlice;
 
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
@@ -17,6 +21,7 @@ import org.bukkit.event.block.BlockFadeEvent;
 import org.bukkit.event.block.BlockFormEvent;
 import org.bukkit.event.block.BlockFromToEvent;
 import org.bukkit.event.block.BlockGrowEvent;
+import org.bukkit.event.block.BlockPhysicsEvent;
 import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
@@ -47,6 +52,25 @@ public final class BlockChangeCapture implements Listener {
     public void onBlockBreak(BlockBreakEvent event) {
         Block block = event.getBlock();
         recordAirAt(block);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBlockPhysics(BlockPhysicsEvent event) {
+        Block block = event.getBlock();
+        if (!isRail(block.getType())) {
+            return;
+        }
+        World world = block.getWorld();
+        long chunkKey = ViewSlice.columnKey(block.getX() >> 4, block.getZ() >> 4);
+        if (!accumulator.isRelevant(world, chunkKey)) {
+            return;
+        }
+        int worldX = block.getX();
+        int worldY = block.getY();
+        int worldZ = block.getZ();
+        Location location = block.getLocation();
+        FoliaScheduler.runRegion(Wormholes.instance, location,
+            () -> recordRaw(world, worldX, worldY, worldZ, world.getBlockAt(worldX, worldY, worldZ).getBlockData()), 1L);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -154,6 +178,13 @@ public final class BlockChangeCapture implements Listener {
         if (blockEntityCapture != null) {
             blockEntityCapture.captureFromBlock(block);
         }
+    }
+
+    private static boolean isRail(Material type) {
+        return type == Material.RAIL
+            || type == Material.POWERED_RAIL
+            || type == Material.DETECTOR_RAIL
+            || type == Material.ACTIVATOR_RAIL;
     }
 
     private void explodeBlocks(World world, List<Block> blocks) {

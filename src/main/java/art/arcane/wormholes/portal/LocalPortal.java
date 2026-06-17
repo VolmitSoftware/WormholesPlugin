@@ -63,8 +63,8 @@ import net.md_5.bungee.api.ChatColor;
 
 public class LocalPortal extends Portal implements ILocalPortal, IProgressivePortal, IFXPortal, IOwnablePortal, Listener
 {
-	private static final long TELEPORT_COOLDOWN_MILLIS = 1000L;
-	private static final long POST_TRAVERSAL_GRACE_MILLIS = 10_000L;
+	private static final long REENTRY_LATCH_TTL_MILLIS = 60_000L;
+	private static final double REENTRY_EXIT_MARGIN = 2.0D;
 	private static final int DEFAULT_NETWORK_VIEW_DEPTH = 64;
 	private static final int DEFAULT_NETWORK_VIEW_LATERAL_PAD = 48;
 	private static final int DEFAULT_NETWORK_VIEW_HEARTBEAT_TICKS = 60;
@@ -73,7 +73,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private static final String DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK = "minecraft:air";
 	private static final ParticleEffect.OrdinaryColor OUTLINE_PARTICLE_COLOR = new ParticleEffect.OrdinaryColor(150, 80, 255);
 	private static final ConcurrentHashMap<UUID, Long> TELEPORT_COOLDOWNS = new ConcurrentHashMap<UUID, Long>();
-	private static final ConcurrentHashMap<UUID, Long> POST_TRAVERSAL_GRACE = new ConcurrentHashMap<UUID, Long>();
+	private static final ConcurrentHashMap<UUID, ReentryLatch> REENTRY_LATCHES = new ConcurrentHashMap<UUID, ReentryLatch>();
 
 	private PhantomSpinner spinner;
 	private PortalStructure structure;
@@ -288,6 +288,24 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		pruneTeleportCooldowns(now);
 		for(Entity i : getStructure().getCaptureZone().getEntities(getStructure().getWorld()))
 		{
+			UUID entityId = i.getUniqueId();
+			ReentryLatch latch = REENTRY_LATCHES.get(entityId);
+			if(latch != null)
+			{
+				if(getId().equals(latch.portalId()))
+				{
+					if(isOccupyingPortal(i))
+					{
+						latch.armed = true;
+					}
+					else if(latch.armed)
+					{
+						clearReentryLatch(entityId);
+					}
+				}
+				continue;
+			}
+
 			Traversive traversive = rayTeleport(i);
 			if(traversive == null)
 			{
@@ -300,20 +318,32 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				continue;
 			}
 
-			if(isInPostTraversalGrace(i.getUniqueId(), now))
+			if(isTeleportCoolingDown(entityId, now))
 			{
 				continue;
 			}
 
-			if(isTeleportCoolingDown(i.getUniqueId(), now))
-			{
-				continue;
-			}
-
-			markTeleportCooldown(i.getUniqueId(), now);
-			markPostTraversalGrace(i.getUniqueId());
+			markTeleportCooldown(entityId, now);
 			pushTraversive(traversive);
 		}
+	}
+
+	private boolean isOccupyingPortal(Entity entity)
+	{
+		PortalStructure portalStructure = getStructure();
+		if(portalStructure == null || portalStructure.getArea() == null)
+		{
+			return false;
+		}
+		Location location = entity.getLocation();
+		if(location.getWorld() == null || portalStructure.getWorld() == null || !portalStructure.getWorld().equals(location.getWorld()))
+		{
+			return false;
+		}
+		AxisAlignedBB area = portalStructure.getArea();
+		return location.getX() >= area.getXa() - REENTRY_EXIT_MARGIN && location.getX() <= area.getXb() + REENTRY_EXIT_MARGIN
+			&& location.getY() >= area.getYa() - REENTRY_EXIT_MARGIN && location.getY() <= area.getYb() + REENTRY_EXIT_MARGIN
+			&& location.getZ() >= area.getZa() - REENTRY_EXIT_MARGIN && location.getZ() <= area.getZb() + REENTRY_EXIT_MARGIN;
 	}
 
 	private Traversive rayTeleport(Entity i)
@@ -804,6 +834,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			p.setVelocity(outVelocity);
 			art.arcane.wormholes.service.WormholesTelemetry.countTraversal();
 			markTeleportCooldown(p.getUniqueId(), System.currentTimeMillis());
+			latchReentry(p.getUniqueId(), getId());
 			playEffect(PortalEffect.PUSH, exit);
 
 			if(Settings.DEBUG_TRAVERSABLES)
@@ -843,6 +874,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		Vector outVelocity = t.getOutVelocity(getFrame());
 		entity.setVelocity(outVelocity);
 		markTeleportCooldown(entity.getUniqueId(), System.currentTimeMillis());
+		latchReentry(entity.getUniqueId(), getId());
 		art.arcane.wormholes.service.WormholesTelemetry.countTraversal();
 		playEffect(PortalEffect.PUSH, entity.getLocation());
 	}
@@ -914,32 +946,53 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	static void markTeleportCooldown(UUID entityId, long now)
 	{
-		TELEPORT_COOLDOWNS.put(entityId, Long.valueOf(now + TELEPORT_COOLDOWN_MILLIS));
+		long cooldown = Settings.TELEPORT_COOLDOWN_MILLIS;
+		if(cooldown <= 0L)
+		{
+			TELEPORT_COOLDOWNS.remove(entityId);
+			return;
+		}
+		TELEPORT_COOLDOWNS.put(entityId, Long.valueOf(now + cooldown));
 	}
 
-	public static void markPostTraversalGrace(UUID entityId)
+	public static void latchReentry(UUID entityId, UUID portalId)
 	{
-		POST_TRAVERSAL_GRACE.put(entityId, Long.valueOf(System.currentTimeMillis() + POST_TRAVERSAL_GRACE_MILLIS));
+		REENTRY_LATCHES.put(entityId, new ReentryLatch(portalId, System.currentTimeMillis()));
 	}
 
-	public static boolean isInPostTraversalGrace(UUID entityId, long now)
+	public static boolean isReentryLatched(UUID entityId)
 	{
-		Long until = POST_TRAVERSAL_GRACE.get(entityId);
-		if(until == null)
+		return REENTRY_LATCHES.containsKey(entityId);
+	}
+
+	public static void clearReentryLatch(UUID entityId)
+	{
+		REENTRY_LATCHES.remove(entityId);
+	}
+
+	public static void latchReentryIfInsidePortal(Entity entity)
+	{
+		if(entity == null || Wormholes.portalManager == null)
 		{
-			return false;
+			return;
 		}
-		if(until.longValue() <= now)
+		if(isReentryLatched(entity.getUniqueId()))
 		{
-			POST_TRAVERSAL_GRACE.remove(entityId, until);
-			return false;
+			return;
 		}
-		return true;
+		for(ILocalPortal portal : Wormholes.portalManager.getLocalPortals())
+		{
+			if(portal instanceof LocalPortal local && local.isOccupyingPortal(entity))
+			{
+				latchReentry(entity.getUniqueId(), local.getId());
+				return;
+			}
+		}
 	}
 
 	private static void pruneTeleportCooldowns(long now)
 	{
-		if(TELEPORT_COOLDOWNS.size() < 256 && POST_TRAVERSAL_GRACE.size() < 256)
+		if(TELEPORT_COOLDOWNS.size() < 256 && REENTRY_LATCHES.size() < 256)
 		{
 			return;
 		}
@@ -953,14 +1006,38 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				TELEPORT_COOLDOWNS.remove(entry.getKey(), entry.getValue());
 			}
 		}
-		Iterator<Map.Entry<UUID, Long>> graceIterator = POST_TRAVERSAL_GRACE.entrySet().iterator();
-		while(graceIterator.hasNext())
+		Iterator<Map.Entry<UUID, ReentryLatch>> latchIterator = REENTRY_LATCHES.entrySet().iterator();
+		while(latchIterator.hasNext())
 		{
-			Map.Entry<UUID, Long> entry = graceIterator.next();
-			if(entry.getValue().longValue() <= now)
+			Map.Entry<UUID, ReentryLatch> entry = latchIterator.next();
+			if(entry.getValue().stampMillis() + REENTRY_LATCH_TTL_MILLIS <= now)
 			{
-				POST_TRAVERSAL_GRACE.remove(entry.getKey(), entry.getValue());
+				REENTRY_LATCHES.remove(entry.getKey(), entry.getValue());
 			}
+		}
+	}
+
+	private static final class ReentryLatch
+	{
+		private final UUID portalId;
+		private final long stampMillis;
+		private volatile boolean armed;
+
+		private ReentryLatch(UUID portalId, long stampMillis)
+		{
+			this.portalId = portalId;
+			this.stampMillis = stampMillis;
+			this.armed = false;
+		}
+
+		private UUID portalId()
+		{
+			return portalId;
+		}
+
+		private long stampMillis()
+		{
+			return stampMillis;
 		}
 	}
 

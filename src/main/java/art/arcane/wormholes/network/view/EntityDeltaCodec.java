@@ -24,6 +24,7 @@ public final class EntityDeltaCodec {
                 current.textureValue(),
                 current.textureSignature(),
                 current.passengerOf(),
+                current.leashHolder(),
                 current.metadata(),
                 current.equipment(),
                 sequence
@@ -51,6 +52,9 @@ public final class EntityDeltaCodec {
         if (!Objects.equals(current.passengerOf(), previous.passengerOf())) {
             mask |= EntityVisual.FIELD_PASSENGER;
         }
+        if (!Objects.equals(current.leashHolder(), previous.leashHolder())) {
+            mask |= EntityVisual.FIELD_LEASH;
+        }
         if (current.onGround() != previous.onGround()) {
             mask |= EntityVisual.FIELD_ON_GROUND;
         }
@@ -76,6 +80,7 @@ public final class EntityDeltaCodec {
             current.textureValue() == null ? "" : current.textureValue(),
             current.textureSignature() == null ? "" : current.textureSignature(),
             current.passengerOf(),
+            current.leashHolder(),
             current.metadata() == null ? PacketBlobs.EMPTY : current.metadata(),
             current.equipment() == null ? PacketBlobs.EMPTY : current.equipment()
         );
@@ -100,6 +105,7 @@ public final class EntityDeltaCodec {
                 incoming.textureValue(),
                 incoming.textureSignature(),
                 incoming.passengerOf(),
+                incoming.leashHolder(),
                 incoming.metadata(),
                 incoming.equipment()
             );
@@ -109,6 +115,7 @@ public final class EntityDeltaCodec {
         }
         int mask = incoming.presentMask();
         UUID passengerOf = (mask & EntityVisual.FIELD_PASSENGER) != 0 ? incoming.passengerOf() : lastKnown.passengerOf();
+        UUID leashHolder = (mask & EntityVisual.FIELD_LEASH) != 0 ? incoming.leashHolder() : lastKnown.leashHolder();
         double x = (mask & EntityVisual.FIELD_POSITION) != 0 ? incoming.x() : lastKnown.x();
         double y = (mask & EntityVisual.FIELD_POSITION) != 0 ? incoming.y() : lastKnown.y();
         double z = (mask & EntityVisual.FIELD_POSITION) != 0 ? incoming.z() : lastKnown.z();
@@ -143,6 +150,7 @@ public final class EntityDeltaCodec {
             textureValue,
             textureSignature,
             passengerOf,
+            leashHolder,
             metadata,
             equipment
         );

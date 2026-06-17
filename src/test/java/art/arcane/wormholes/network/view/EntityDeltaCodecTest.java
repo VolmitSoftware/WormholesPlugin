@@ -28,6 +28,7 @@ class EntityDeltaCodecTest {
             "",
             "",
             null,
+            null,
             new byte[]{1, 2, 3},
             new byte[]{4, 5, 6},
             sequence
@@ -48,6 +49,7 @@ class EntityDeltaCodecTest {
             base.textureValue(),
             base.textureSignature(),
             base.passengerOf(),
+            base.leashHolder(),
             base.metadata(),
             base.equipment(),
             sequence
@@ -177,6 +179,7 @@ class EntityDeltaCodecTest {
             previous.onGround(),
             previous.playerName(), previous.textureValue(), previous.textureSignature(),
             previous.passengerOf(),
+            previous.leashHolder(),
             previous.metadata(), previous.equipment()
         );
         EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 1, 0.05D);
@@ -200,6 +203,7 @@ class EntityDeltaCodecTest {
             previous.onGround(),
             previous.playerName(), previous.textureValue(), previous.textureSignature(),
             previous.passengerOf(),
+            previous.leashHolder(),
             previous.metadata(), new byte[]{9, 9, 9, 9}
         );
         EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 1, 0.05D);

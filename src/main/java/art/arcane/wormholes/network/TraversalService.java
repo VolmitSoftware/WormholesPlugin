@@ -379,7 +379,8 @@ public final class TraversalService implements Listener {
     @EventHandler
     public void on(PlayerJoinEvent event) {
         Player player = event.getPlayer();
-        LocalPortal.markPostTraversalGrace(player.getUniqueId());
+        LocalPortal.latchReentryIfInsidePortal(player);
+        unlockTransfer(player.getUniqueId());
         PendingArrival arrival = pendingArrivals.remove(player.getUniqueId());
         if (arrival == null || arrival.expiresAtMillis() < System.currentTimeMillis()) {
             return;
@@ -388,6 +389,7 @@ public final class TraversalService implements Listener {
         if (exit == null || exit.getStructure() == null || exit.getStructure().getWorld() == null) {
             return;
         }
+        LocalPortal.latchReentry(player.getUniqueId(), exit.getId());
         Traversive traversive = arrival.traversive().toTraversive(player);
         if (!exit.canArrive(player)) {
             exit.rejectRemoteArrival(player, traversive);

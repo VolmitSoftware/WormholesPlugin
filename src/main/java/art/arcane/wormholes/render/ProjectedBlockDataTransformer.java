@@ -9,6 +9,7 @@ import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Directional;
 import org.bukkit.block.data.MultipleFacing;
 import org.bukkit.block.data.Orientable;
+import org.bukkit.block.data.Rail;
 import org.bukkit.block.data.Rotatable;
 
 import art.arcane.wormholes.portal.PortalFrame;
@@ -24,6 +25,7 @@ public final class ProjectedBlockDataTransformer {
         transformRotatable(copy, fromFrame, toFrame, scratch3);
         transformOrientable(copy, fromFrame, toFrame, scratch3);
         transformMultipleFacing(copy, fromFrame, toFrame, scratch3);
+        transformRail(copy, fromFrame, toFrame, scratch3);
         return copy;
     }
 
@@ -31,7 +33,8 @@ public final class ProjectedBlockDataTransformer {
         return source instanceof Directional
             || source instanceof Rotatable
             || source instanceof Orientable
-            || source instanceof MultipleFacing;
+            || source instanceof MultipleFacing
+            || source instanceof Rail;
     }
 
     private static void transformDirectional(BlockData data, PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {
@@ -101,6 +104,103 @@ public final class ProjectedBlockDataTransformer {
                 multiple.setFace(targetFace, true);
             }
         }
+    }
+
+    private static void transformRail(BlockData data, PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {
+        if (!(data instanceof Rail)) {
+            return;
+        }
+        Rail rail = (Rail) data;
+        Rail.Shape transformed = rotateRailShape(rail.getShape(), fromFrame, toFrame, scratch3);
+        if (transformed != null && rail.getShapes().contains(transformed)) {
+            rail.setShape(transformed);
+        }
+    }
+
+    private static Rail.Shape rotateRailShape(Rail.Shape shape, PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {
+        switch(shape) {
+            case NORTH_SOUTH:
+                return straightRailShape(rotateHorizontal(Direction.N, fromFrame, toFrame, scratch3));
+            case EAST_WEST:
+                return straightRailShape(rotateHorizontal(Direction.E, fromFrame, toFrame, scratch3));
+            case ASCENDING_NORTH:
+                return ascendingRailShape(rotateHorizontal(Direction.N, fromFrame, toFrame, scratch3), shape);
+            case ASCENDING_SOUTH:
+                return ascendingRailShape(rotateHorizontal(Direction.S, fromFrame, toFrame, scratch3), shape);
+            case ASCENDING_EAST:
+                return ascendingRailShape(rotateHorizontal(Direction.E, fromFrame, toFrame, scratch3), shape);
+            case ASCENDING_WEST:
+                return ascendingRailShape(rotateHorizontal(Direction.W, fromFrame, toFrame, scratch3), shape);
+            case SOUTH_EAST:
+                return curvedRailShape(rotateHorizontal(Direction.S, fromFrame, toFrame, scratch3), rotateHorizontal(Direction.E, fromFrame, toFrame, scratch3));
+            case SOUTH_WEST:
+                return curvedRailShape(rotateHorizontal(Direction.S, fromFrame, toFrame, scratch3), rotateHorizontal(Direction.W, fromFrame, toFrame, scratch3));
+            case NORTH_WEST:
+                return curvedRailShape(rotateHorizontal(Direction.N, fromFrame, toFrame, scratch3), rotateHorizontal(Direction.W, fromFrame, toFrame, scratch3));
+            case NORTH_EAST:
+                return curvedRailShape(rotateHorizontal(Direction.N, fromFrame, toFrame, scratch3), rotateHorizontal(Direction.E, fromFrame, toFrame, scratch3));
+            default:
+                return null;
+        }
+    }
+
+    private static BlockFace rotateHorizontal(Direction source, PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {
+        BlockFace face = toBlockFace(rotate(source, fromFrame, toFrame, scratch3));
+        if (face == BlockFace.NORTH || face == BlockFace.SOUTH || face == BlockFace.EAST || face == BlockFace.WEST) {
+            return face;
+        }
+        return null;
+    }
+
+    private static Rail.Shape straightRailShape(BlockFace face) {
+        if (face == BlockFace.NORTH || face == BlockFace.SOUTH) {
+            return Rail.Shape.NORTH_SOUTH;
+        }
+        if (face == BlockFace.EAST || face == BlockFace.WEST) {
+            return Rail.Shape.EAST_WEST;
+        }
+        return null;
+    }
+
+    private static Rail.Shape ascendingRailShape(BlockFace face, Rail.Shape fallback) {
+        if (face == null) {
+            return fallback;
+        }
+        switch(face) {
+            case NORTH:
+                return Rail.Shape.ASCENDING_NORTH;
+            case SOUTH:
+                return Rail.Shape.ASCENDING_SOUTH;
+            case EAST:
+                return Rail.Shape.ASCENDING_EAST;
+            case WEST:
+                return Rail.Shape.ASCENDING_WEST;
+            default:
+                return fallback;
+        }
+    }
+
+    private static Rail.Shape curvedRailShape(BlockFace a, BlockFace b) {
+        if (a == null || b == null) {
+            return null;
+        }
+        boolean north = a == BlockFace.NORTH || b == BlockFace.NORTH;
+        boolean south = a == BlockFace.SOUTH || b == BlockFace.SOUTH;
+        boolean east = a == BlockFace.EAST || b == BlockFace.EAST;
+        boolean west = a == BlockFace.WEST || b == BlockFace.WEST;
+        if (south && east) {
+            return Rail.Shape.SOUTH_EAST;
+        }
+        if (south && west) {
+            return Rail.Shape.SOUTH_WEST;
+        }
+        if (north && west) {
+            return Rail.Shape.NORTH_WEST;
+        }
+        if (north && east) {
+            return Rail.Shape.NORTH_EAST;
+        }
+        return null;
     }
 
     private static Direction rotate(Direction source, PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {

@@ -110,6 +110,7 @@ class ViewSliceTest {
             true,
             "Psycho", "dGV4dHVyZS1ibG9i", "c2lnbmF0dXJl",
             null,
+            null,
             new byte[]{1, 2, 3, 4}, new byte[]{9, 8},
             42);
         byte[] frame = WireCodec.encodeFrame(new WireMessage.ViewEntities(portalId, List.of(visual), List.of(visual.id())));

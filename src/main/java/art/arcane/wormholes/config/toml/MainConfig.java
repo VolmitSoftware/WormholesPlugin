@@ -44,4 +44,11 @@ public class MainConfig {
         "Useful for diagnosing velocity/look rotation; disable on live servers if players should not see debug messages."
     })
     public boolean debugTraversables = true;
+
+    @ConfigDescription({
+        "Milliseconds an entity must wait before the same portal can teleport it again.",
+        "This is only a safety backstop against double-fires: an entity must also fully leave the portal opening and",
+        "re-enter before another teleport triggers, so this can be kept low. Set to 0 to rely purely on the leave-and-return rule."
+    })
+    public int teleportCooldownMillis = 1000;
 }

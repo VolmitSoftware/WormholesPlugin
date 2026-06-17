@@ -296,6 +296,7 @@ public final class WormholesBandwidthHarness {
                     currentFull.textureValue(),
                     currentFull.textureSignature(),
                     currentFull.passengerOf(),
+                    currentFull.leashHolder(),
                     currentFull.metadata(),
                     currentFull.equipment(),
                     sendState.allocateSequence()
@@ -333,6 +334,7 @@ public final class WormholesBandwidthHarness {
             "",
             "",
             "",
+            null,
             null,
             metadata,
             equipment,

@@ -514,6 +514,16 @@ public final class ViewServer implements Listener {
             }
         }
         UUID passengerOf = entity.getVehicle() == null ? null : entity.getVehicle().getUniqueId();
+        UUID leashHolder = null;
+        if (entity instanceof LivingEntity living && living.isLeashed()) {
+            try {
+                Entity holder = living.getLeashHolder();
+                if (holder != null) {
+                    leashHolder = holder.getUniqueId();
+                }
+            } catch (IllegalStateException ignored) {
+            }
+        }
         byte[] metadata = PacketBlobs.captureMetadata(entity);
         byte[] equipment = PacketBlobs.captureEquipment(entity);
         return EntityVisual.full(
@@ -529,6 +539,7 @@ public final class ViewServer implements Listener {
             textureValue,
             textureSignature,
             passengerOf,
+            leashHolder,
             metadata,
             equipment,
             0
@@ -552,6 +563,7 @@ public final class ViewServer implements Listener {
             source.textureValue(),
             source.textureSignature(),
             source.passengerOf(),
+            source.leashHolder(),
             source.metadata(),
             source.equipment()
         );

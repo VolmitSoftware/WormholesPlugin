@@ -23,6 +23,7 @@ class RemoteViewCacheEntityMergeTest {
             true,
             "", "", "",
             null,
+            null,
             new byte[0], new byte[0],
             1);
     }

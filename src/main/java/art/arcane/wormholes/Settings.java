@@ -39,6 +39,7 @@ public final class Settings {
     public static volatile int PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK = 4;
     public static volatile int PROJECTION_INTEREST_GRACE_TICKS = 5;
     public static volatile int PROJECTION_INITIAL_RESEND_PASSES = 4;
+    public static volatile long TELEPORT_COOLDOWN_MILLIS = 1000L;
     public static volatile boolean DEBUG = false;
 
     private Settings() {
@@ -57,6 +58,7 @@ public final class Settings {
         PORTAL_COLAPSE_SPEED = clampDouble(main.portalCollapseSpeed, 0.0D, 1.0D);
         DEBUG_RENDERING = main.debugRendering;
         DEBUG_TRAVERSABLES = main.debugTraversables;
+        TELEPORT_COOLDOWN_MILLIS = clampInt(main.teleportCooldownMillis, 0, 60_000);
         DEBUG = main.verboseLogging;
 
         FRUSTUM_CULLING_RATIO = clampDouble(projection.frustumCullingRatio, 0.0D, 1.0D);
