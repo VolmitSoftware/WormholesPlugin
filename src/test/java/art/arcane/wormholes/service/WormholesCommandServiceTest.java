@@ -31,6 +31,7 @@ class WormholesCommandServiceTest {
         assertNotNull(findChild(root, "wand"));
         assertNotNull(findChild(root, "reload"));
         assertNotNull(findChild(root, "info"));
+        assertNotNull(findChild(root, "debug"));
         DirectorRuntimeNode network = findChild(root, "network");
         assertNotNull(network);
         assertNotNull(findChild(network, "status"));
@@ -39,7 +40,6 @@ class WormholesCommandServiceTest {
         assertNotNull(findChild(root, "admin"));
         assertNull(findChild(root, "rune"));
         assertNull(findChild(root, "reset"));
-        assertNull(findChild(root, "debug"));
     }
 
     private DirectorRuntimeNode findChild(DirectorRuntimeNode root, String name) {

@@ -92,6 +92,7 @@ public final class TraversalService implements Listener {
         long now = System.currentTimeMillis();
         pruneTransferLocks(now);
         if (isTransferLocked(player.getUniqueId(), now)) {
+            Wormholes.v("[handoff] BLOCKED " + player.getName() + " -> " + peerName + ": transfer-locked (recent transfer not yet cleared)");
             return;
         }
 
@@ -99,6 +100,7 @@ public final class TraversalService implements Listener {
         long deadline = now + config.handoffTimeoutMs;
         lockTransfer(player.getUniqueId(), deadline);
         pendingHandoffs.put(transferId, new PendingHandoff(player.getUniqueId(), peerName, sourcePortalId(sourcePortal), traversive, deadline));
+        Wormholes.v("[handoff] begin " + player.getName() + " -> peer=" + peerName + " destPortal=" + tunnel.getDestinationPortalId() + " transferId=" + transferId + " optimistic=" + config.optimisticHandoff);
         network.send(peerName, new WireMessage.HandoffRequest(transferId, player.getUniqueId(), player.getName(), tunnel.getDestinationPortalId(), WireTraversive.fromTraversive(traversive)));
         if (Wormholes.viewServer != null) {
             Wormholes.viewServer.onPortalTraversed(peerName, tunnel.getDestinationPortalId());
@@ -237,6 +239,7 @@ public final class TraversalService implements Listener {
         pruneArrivals();
         Traversive traversive = request.traversive().toTraversive(null);
         pendingArrivals.put(request.playerId(), new PendingArrival(exit.getId(), request.traversive(), System.currentTimeMillis() + ARRIVAL_TTL_MILLIS));
+        Wormholes.v("[handoff] request RX from peer=" + peerName + " player=" + request.playerName() + " exitPortal=" + exit.getId() + " — registered pendingArrival, acking");
         warmArrivalChunk(exit, traversive);
         network.send(peerName, new WireMessage.HandoffAck(request.transferId()));
     }
@@ -275,6 +278,7 @@ public final class TraversalService implements Listener {
                 return;
             }
             completedTransfers.incrementAndGet();
+            Wormholes.v("[handoff] ack RX from peer=" + peerName + " — transfer of " + player.getName() + " dispatched");
             lockTransfer(handoff.playerId(), System.currentTimeMillis() + ARRIVAL_TTL_MILLIS);
         });
     }
@@ -383,19 +387,23 @@ public final class TraversalService implements Listener {
         unlockTransfer(player.getUniqueId());
         PendingArrival arrival = pendingArrivals.remove(player.getUniqueId());
         if (arrival == null || arrival.expiresAtMillis() < System.currentTimeMillis()) {
+            Wormholes.v("[arrival] join " + player.getName() + " at " + locStr(player.getLocation()) + " — NO pending cross-server arrival (arrival=" + (arrival == null ? "null" : "expired") + "); not managed, relying on join-latch");
             return;
         }
         ILocalPortal exit = Wormholes.portalManager == null ? null : Wormholes.portalManager.getLocalPortal(arrival.exitPortalId());
         if (exit == null || exit.getStructure() == null || exit.getStructure().getWorld() == null) {
+            Wormholes.v("[arrival] join " + player.getName() + " — pending arrival exitPortal=" + arrival.exitPortalId() + " UNRESOLVED (portal/world missing); cannot place at gateway");
             return;
         }
         LocalPortal.latchReentry(player.getUniqueId(), exit.getId());
         Traversive traversive = arrival.traversive().toTraversive(player);
         if (!exit.canArrive(player)) {
+            Wormholes.v("[arrival] join " + player.getName() + " DENIED at exitPortal=" + exit.getId() + " (incoming disabled/permission)");
             exit.rejectRemoteArrival(player, traversive);
             return;
         }
         Location target = exit.computeExitTarget(traversive);
+        Wormholes.v("[arrival] join " + player.getName() + " spawnLoc=" + locStr(player.getLocation()) + " exitPortal=" + exit.getId() + " -> teleport target=" + locStr(target) + " (latched to exit)");
         FoliaScheduler.runEntity(Wormholes.instance, player, () ->
             player.teleportAsync(target, PlayerTeleportEvent.TeleportCause.PLUGIN).thenAccept(success -> {
                 if (success) {
@@ -407,6 +415,14 @@ public final class TraversalService implements Listener {
 
     private static UUID sourcePortalId(ILocalPortal portal) {
         return portal == null ? null : portal.getId();
+    }
+
+    private static String locStr(Location loc) {
+        if (loc == null) {
+            return "null";
+        }
+        String worldName = loc.getWorld() == null ? "?" : loc.getWorld().getName();
+        return worldName + " " + (int) Math.floor(loc.getX()) + "," + (int) Math.floor(loc.getY()) + "," + (int) Math.floor(loc.getZ());
     }
 
     private void rejectSource(Player player, PendingHandoff handoff) {

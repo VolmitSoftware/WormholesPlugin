@@ -38,6 +38,7 @@ public final class PlayerTransfer {
             Wormholes.w("net: peer " + peer.name + " has no reachable host; cannot transfer " + player.getName());
             return false;
         }
+        Wormholes.v("[xfer] transfer-packet " + player.getName() + " -> " + host + ":" + port + " (peer=" + peer.name + " publicHost=" + peer.publicHost + " publicPort=" + peer.publicPort + ")");
         player.transfer(host, port);
         return true;
     }

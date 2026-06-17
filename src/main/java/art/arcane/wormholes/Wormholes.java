@@ -108,6 +108,8 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         boolean success = true;
         String errorMessage = "";
 
+        preloadPersistenceClasses();
+
         try {
             settings = WormholesSettings.loadAll(getDataFolder().toPath());
             Settings.refresh(settings);
@@ -204,6 +206,32 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         }
         FoliaScheduler.cancelTasks(this);
         drain();
+    }
+
+    private void preloadPersistenceClasses() {
+        ClassLoader loader = getClass().getClassLoader();
+        String[] names = {
+            "art.arcane.wormholes.util.JSONString",
+            "art.arcane.wormholes.util.JSONObject",
+            "art.arcane.wormholes.util.JSONArray",
+            "art.arcane.wormholes.util.JSONStringer",
+            "art.arcane.wormholes.util.JSONWriter",
+            "art.arcane.wormholes.util.JSONTokener",
+            "art.arcane.wormholes.util.JSONException"
+        };
+        for (String name : names) {
+            try {
+                Class.forName(name, true, loader);
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            art.arcane.wormholes.util.JSONObject warm = new art.arcane.wormholes.util.JSONObject();
+            warm.put("warmup", true);
+            warm.put("list", new art.arcane.wormholes.util.JSONArray().put(1));
+            warm.toString();
+        } catch (Throwable ignored) {
+        }
     }
 
     private void unregisterIntegrationService() {

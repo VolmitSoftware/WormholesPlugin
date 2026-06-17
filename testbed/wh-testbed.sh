@@ -96,7 +96,7 @@ configure_props() { # instance-name game-port motd
   set_prop "$props" server-port "$gport"
   set_prop "$props" online-mode false
   set_prop "$props" gamemode creative
-  set_prop "$props" level-type "minecraft:flat"
+  set_prop "$props" level-type "minecraft:normal"
   set_prop "$props" spawn-protection 0
   set_prop "$props" view-distance 8
   set_prop "$props" simulation-distance 6

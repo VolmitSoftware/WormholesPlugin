@@ -5,6 +5,7 @@ import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import com.github.retrooper.packetevents.PacketEvents;
 import com.github.retrooper.packetevents.protocol.player.TextureProperty;
 import com.github.retrooper.packetevents.protocol.player.UserProfile;
+import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.config.toml.NetworkConfig;
 import art.arcane.wormholes.network.NetworkManager;
@@ -36,6 +37,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class ViewServer implements Listener {
@@ -43,6 +45,7 @@ public final class ViewServer implements Listener {
     }
 
     private static final long DIRTY_DRAIN_INTERVAL_TICKS = 2L;
+    private static final int MAX_BULK_SNAPSHOTS_PER_TICK = 8;
 
     private final NetworkManager network;
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
@@ -174,20 +177,34 @@ public final class ViewServer implements Listener {
         session.sentProfiles.clear();
         session.sendStates.remove(peerName);
         ChunkReplicationManager replication = network.getReplicationManager();
-        List<CompletableFuture<Void>> bulkFutures = new ArrayList<>(session.columns.size());
+        for (long[] column : session.columns) {
+            replication.subscribe(peerName, session.world, ViewSlice.columnKey((int) column[0], (int) column[1]));
+        }
+        int totalColumns = session.columns.size();
+        if (totalColumns == 0) {
+            network.send(peerName, new WireMessage.ViewBulkComplete(portalId));
+            startTask();
+            return;
+        }
+        AtomicInteger remainingBulks = new AtomicInteger(totalColumns);
+        int columnIndex = 0;
         for (long[] column : session.columns) {
             int chunkX = (int) column[0];
             int chunkZ = (int) column[1];
-            long chunkKey = ViewSlice.columnKey(chunkX, chunkZ);
-            replication.subscribe(peerName, session.world, chunkKey);
-            bulkFutures.add(sendInitialBulk(session, peerName, chunkX, chunkZ));
+            long delayTicks = (long) (columnIndex / MAX_BULK_SNAPSHOTS_PER_TICK) * DIRTY_DRAIN_INTERVAL_TICKS;
+            columnIndex++;
+            FoliaScheduler.runAsync(Wormholes.instance, () -> {
+                if (!session.peers.contains(peerName)) {
+                    remainingBulks.decrementAndGet();
+                    return;
+                }
+                sendInitialBulk(session, peerName, chunkX, chunkZ).whenComplete((unused, error) -> {
+                    if (remainingBulks.decrementAndGet() == 0 && session.peers.contains(peerName)) {
+                        network.send(peerName, new WireMessage.ViewBulkComplete(portalId));
+                    }
+                });
+            }, delayTicks);
         }
-        CompletableFuture.allOf(bulkFutures.toArray(new CompletableFuture[0])).whenComplete((unused, error) -> {
-            if (!session.peers.contains(peerName)) {
-                return;
-            }
-            network.send(peerName, new WireMessage.ViewBulkComplete(portalId));
-        });
         startTask();
     }
 
@@ -483,6 +500,15 @@ public final class ViewServer implements Listener {
                 }
                 Set<UUID> previousPresent = session.lastSentPresentIds.get(peerName);
                 boolean presentChanged = previousPresent == null || !previousPresent.equals(presentIds);
+                if (Settings.DEBUG && presentChanged && previousPresent != null) {
+                    Set<UUID> left = new HashSet<>(previousPresent);
+                    left.removeAll(presentIds);
+                    Set<UUID> joined = new HashSet<>(presentIds);
+                    joined.removeAll(previousPresent);
+                    if (!left.isEmpty() || !joined.isEmpty()) {
+                        Wormholes.v("[stream] portal=" + session.portalId + " peer=" + peerName + " present=" + presentIds.size() + (left.isEmpty() ? "" : " LEFT=" + left) + (joined.isEmpty() ? "" : " JOINED=" + joined));
+                    }
+                }
                 if (outbound.isEmpty() && !presentChanged) {
                     continue;
                 }

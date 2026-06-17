@@ -296,11 +296,16 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				{
 					if(isOccupyingPortal(i))
 					{
-						latch.armed = true;
+						if(!latch.armed)
+						{
+							latch.armed = true;
+							Wormholes.v("[latch] " + i.getName() + " inside portal " + getId() + " - reentry latch ARMED (no teleport until they fully leave)");
+						}
 					}
 					else if(latch.armed)
 					{
 						clearReentryLatch(entityId);
+						Wormholes.v("[latch] " + i.getName() + " left portal " + getId() + " - reentry latch CLEARED (eligible again)");
 					}
 				}
 				continue;
@@ -324,6 +329,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			}
 
 			markTeleportCooldown(entityId, now);
+			Wormholes.v("[cross] " + i.getName() + " crossing portal " + getId() + " -> " + (getTunnel() instanceof UniversalTunnel ? "CROSS-SERVER handoff" : "local teleport"));
 			pushTraversive(traversive);
 		}
 	}
@@ -876,6 +882,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		markTeleportCooldown(entity.getUniqueId(), System.currentTimeMillis());
 		latchReentry(entity.getUniqueId(), getId());
 		art.arcane.wormholes.service.WormholesTelemetry.countTraversal();
+		Wormholes.v("[arrival] completeRemoteArrival " + entity.getName() + " settled near portal " + getId() + ", latched + cooldown set");
 		playEffect(PortalEffect.PUSH, entity.getLocation());
 	}
 

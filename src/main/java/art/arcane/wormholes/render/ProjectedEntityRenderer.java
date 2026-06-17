@@ -312,6 +312,7 @@ public final class ProjectedEntityRenderer {
             state.remoteStateVersion = remoteView.getStateVersion(visual.id());
             sendRemoteEntityState(observer, remoteView, visual, state);
             state.resetMetadataCooldown();
+            Wormholes.v("[spoof] SPAWN " + (visual.isPlayer() ? "player" : "entity") + " src=" + visual.id() + " type=" + visual.typeKey() + " fakeId=" + state.fakeId + " -> " + observer.getName());
             return true;
         }
 
@@ -616,6 +617,7 @@ public final class ProjectedEntityRenderer {
             if (state.playerEntry) {
                 playerInfos.add(state.fakeUuid);
             }
+            Wormholes.v("[spoof] CULL " + (state.playerEntry ? "player" : "entity") + " src=" + entry.getKey() + " fakeId=" + state.fakeId + " -> " + observer.getName() + " (no longer in view)");
             iterator.remove();
         }
 

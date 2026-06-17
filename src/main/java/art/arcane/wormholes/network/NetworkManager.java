@@ -840,11 +840,9 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
             peer.publicHost = advertised;
             changed = true;
         }
-        if (peer.publicPort <= 0 || peer.publicPort == 25565) {
-            if (peerGamePort > 0 && peerGamePort != peer.publicPort) {
-                peer.publicPort = peerGamePort;
-                changed = true;
-            }
+        if (peerGamePort > 0 && peerGamePort != peer.publicPort) {
+            peer.publicPort = peerGamePort;
+            changed = true;
         }
         if ((peer.host == null || peer.host.isBlank()) && advertised != null && !advertised.isBlank()) {
             peer.host = advertised;

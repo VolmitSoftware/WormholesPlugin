@@ -1,5 +1,7 @@
 package art.arcane.wormholes.network.replication.capture;
 
+import art.arcane.wormholes.Settings;
+import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.network.replication.BlockChange;
 import art.arcane.wormholes.network.replication.BlockChangeFeed;
 import art.arcane.wormholes.network.replication.BlockEntityDiff;
@@ -59,12 +61,18 @@ public final class RegionalDiffAccumulator {
         int chunkZ = worldZ >> 4;
         long chunkKey = ViewSlice.columnKey(chunkX, chunkZ);
         if (!replication.hasSubscribers(world, chunkKey)) {
+            if (Settings.DEBUG) {
+                Wormholes.v("[block] DROP " + worldX + "," + worldY + "," + worldZ + " chunk=" + chunkX + "," + chunkZ + " - no view subscriber for that chunk (not inside any viewed gateway's capture box)");
+            }
             return;
         }
         int lx = worldX & 0xF;
         int lz = worldZ & 0xF;
         int packed = BlockChange.pack(lx, worldY, lz);
         String stateString = newData.getAsString();
+        if (Settings.DEBUG) {
+            Wormholes.v("[block] CAPTURE " + stateString + " at " + worldX + "," + worldY + "," + worldZ + " chunk=" + chunkX + "," + chunkZ + " -> queued diff");
+        }
         ChunkDirtySet set = dirtySetFor(world, chunkKey);
         int currentCap = settings.maxQueuedDiffsPerChunk();
         if (set.blockCount() >= currentCap) {
