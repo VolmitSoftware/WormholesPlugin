@@ -7,6 +7,10 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 
 public final class WireCodec {
+    public interface PayloadSampler {
+        void sample(byte[] payload);
+    }
+
     public static final int PROTOCOL_VERSION = 11;
     public static final int MAX_FRAME_BYTES = 4 * 1024 * 1024;
     private static final int FRAME_PREFIX_OVERHEAD = 4 + 1;
@@ -16,11 +20,18 @@ public final class WireCodec {
     }
 
     public static byte[] encodeFrame(WireMessage message) throws IOException {
-        return encodeFrame(message, null, false);
+        return encodeFrame(message, null, false, null);
     }
 
     public static byte[] encodeFrame(WireMessage message, WireCompression compression, boolean dictNegotiated) throws IOException {
+        return encodeFrame(message, compression, dictNegotiated, null);
+    }
+
+    public static byte[] encodeFrame(WireMessage message, WireCompression compression, boolean dictNegotiated, PayloadSampler sampler) throws IOException {
         byte[] payload = encodePayload(message);
+        if (sampler != null) {
+            sampler.sample(payload);
+        }
         byte[] body = compression == null ? prependPlainMode(payload) : compression.encode(payload, dictNegotiated);
         int frameLength = 1 + body.length;
         if (frameLength + 4 > MAX_FRAME_BYTES) {

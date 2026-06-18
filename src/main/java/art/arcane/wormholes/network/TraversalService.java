@@ -22,12 +22,9 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -499,11 +496,17 @@ public final class TraversalService implements Listener {
 
     private static boolean isEntityTypeDenied(EntitySnapshot snapshot) {
         NetworkConfig config = Wormholes.settings.getNetwork();
-        if (config.entityTransferDenyTypes == null || config.entityTransferDenyTypes.isBlank()) {
+        String denyList = config.entityTransferDenyTypes;
+        if (denyList == null || denyList.isBlank()) {
             return false;
         }
-        Set<String> denied = new HashSet<>(Arrays.asList(config.entityTransferDenyTypes.toUpperCase(Locale.ROOT).split("\\s*,\\s*")));
-        return denied.contains(snapshot.getEntityType().name());
+        String entityType = snapshot.getEntityType().name();
+        for (String token : denyList.split(",")) {
+            if (token.trim().equalsIgnoreCase(entityType)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void notifyUnreachable(Player player, String reason) {

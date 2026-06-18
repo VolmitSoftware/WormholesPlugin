@@ -110,13 +110,14 @@ public final class PortalSyncService {
     }
 
     private void sendSettings(LocalPortal local) {
+        String linkedPeer = linkedPeerName(local);
         Map<String, String> settings = collectSettings(local);
         WireMessage.PortalSettingsUpdate update = new WireMessage.PortalSettingsUpdate(local.getId(), settings);
-        String linkedPeer = linkedPeerName(local);
+        if (linkedPeer != null) {
+            network.send(linkedPeer, update);
+            return;
+        }
         for (NetworkManager.PeerStatus peer : network.status()) {
-            if (linkedPeer != null && !linkedPeer.equals(peer.name())) {
-                continue;
-            }
             network.send(peer.name(), update);
         }
     }

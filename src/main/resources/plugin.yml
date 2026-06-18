@@ -12,7 +12,7 @@ commands:
   wormholes:
     aliases: [ wh, wormhole ]
     description: Wormholes base command.
-    usage: /wormholes [wand|info|reload|network|admin]
+    usage: /wormholes [wand|info|reload|debug|stats|network|admin]
     permission: wormholes.admin
 permissions:
   wormholes.*:

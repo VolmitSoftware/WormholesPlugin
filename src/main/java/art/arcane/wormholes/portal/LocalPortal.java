@@ -33,6 +33,7 @@ import java.time.Duration;
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.geometry.Raycast;
+import art.arcane.wormholes.network.PortalSyncService;
 import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.volmlib.util.scheduling.AR;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
@@ -100,7 +101,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private int networkViewUnsubscribeGraceSeconds;
 	private String networkViewFallbackBlock;
 	private boolean settingsSyncEnabled;
-	private final java.util.Map<UUID, UIWindow> openMenus = new java.util.concurrent.ConcurrentHashMap<UUID, UIWindow>();
+	private final Map<UUID, UIWindow> openMenus = new ConcurrentHashMap<UUID, UIWindow>();
 
 	public LocalPortal(UUID id, PortalType type, PortalStructure structure)
 	{
@@ -1156,6 +1157,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private void rebuildPortalMenuElements(UIWindow window, Player p)
 	{
+		window.batch(() ->
+		{
 		window.clearElements();
 		window.setElement(0, 0, portalPlacardElement());
 
@@ -1272,6 +1275,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 						});
 					})));
 		}
+		});
 	}
 
 	private void uiOpenNetworkViewMenu(Player p)
@@ -2077,6 +2081,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 		save();
 		broadcastSettingsIfEnabled();
+		refreshOpenMenusUnlessApplyingRemote();
 	}
 
 	private static ProjectionMode resolveProjectionMode(JSONObject j)
@@ -2114,6 +2119,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		permissionMode = normalized;
 		save();
 		broadcastSettingsIfEnabled();
+		refreshOpenMenusUnlessApplyingRemote();
 	}
 
 	@Override
@@ -2138,6 +2144,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		outgoingTraversalsEnabled = enabled;
 		save();
 		broadcastSettingsIfEnabled();
+		refreshOpenMenusUnlessApplyingRemote();
 	}
 
 	@Override
@@ -2147,16 +2154,17 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	}
 
 	@Override
-		public void setIncomingTraversalsEnabled(boolean enabled)
+	public void setIncomingTraversalsEnabled(boolean enabled)
+	{
+		if(incomingTraversalsEnabled == enabled)
 		{
-			if(incomingTraversalsEnabled == enabled)
-			{
-				return;
+			return;
 		}
-			incomingTraversalsEnabled = enabled;
-			save();
-			broadcastSettingsIfEnabled();
-		}
+		incomingTraversalsEnabled = enabled;
+		save();
+		broadcastSettingsIfEnabled();
+		refreshOpenMenusUnlessApplyingRemote();
+	}
 
 		@Override
 		public int getNetworkViewDepth()
@@ -2278,6 +2286,15 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				Wormholes.projectionManager.removeProjector(this);
 			}
 			broadcastSettingsIfEnabled();
+			refreshOpenMenusUnlessApplyingRemote();
+		}
+
+		private void refreshOpenMenusUnlessApplyingRemote()
+		{
+			if(PortalSyncService.isApplyingRemote())
+			{
+				return;
+			}
 			refreshOpenMenus();
 		}
 
@@ -2287,7 +2304,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			{
 				return;
 			}
-			for(java.util.Map.Entry<UUID, UIWindow> entry : openMenus.entrySet())
+			for(Map.Entry<UUID, UIWindow> entry : openMenus.entrySet())
 			{
 				UUID viewerId = entry.getKey();
 				UIWindow window = entry.getValue();
@@ -2305,7 +2322,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 						return;
 					}
 					rebuildPortalMenuElements(window, viewer);
-					window.updateInventory();
 				});
 			}
 		}
@@ -2323,11 +2339,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			}
 			settingsSyncEnabled = enabled;
 			save();
-			if(isGateway() && Wormholes.portalSyncService != null && !art.arcane.wormholes.network.PortalSyncService.isApplyingRemote())
+			if(isGateway() && Wormholes.portalSyncService != null && !PortalSyncService.isApplyingRemote())
 			{
 				Wormholes.portalSyncService.broadcastSettingsToggle(this);
 			}
-			refreshOpenMenus();
+			refreshOpenMenusUnlessApplyingRemote();
 		}
 
 		private void broadcastSettingsIfEnabled()
@@ -2336,7 +2352,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			{
 				return;
 			}
-			if(art.arcane.wormholes.network.PortalSyncService.isApplyingRemote())
+			if(PortalSyncService.isApplyingRemote())
 			{
 				return;
 			}

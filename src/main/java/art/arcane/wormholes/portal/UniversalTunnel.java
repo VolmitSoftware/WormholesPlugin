@@ -2,13 +2,9 @@ package art.arcane.wormholes.portal;
 
 import java.util.UUID;
 
-import org.bukkit.entity.Entity;
-import org.bukkit.entity.Player;
-
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.network.NetworkManager;
 import art.arcane.wormholes.network.RemotePortalRegistry;
-import art.arcane.wormholes.network.TraversalService;
 import art.arcane.wormholes.util.JSONObject;
 
 public class UniversalTunnel extends Tunnel
@@ -37,21 +33,6 @@ public class UniversalTunnel extends Tunnel
 	@Override
 	public void push(Traversive t)
 	{
-		TraversalService service = Wormholes.traversalService;
-		if(service == null || t == null || !(t.getObject() instanceof Entity entity))
-		{
-			return;
-		}
-
-		if(entity instanceof Player player)
-		{
-			service.beginPlayerHandoff(player, this, t);
-		}
-
-		else
-		{
-			service.beginEntityTransfer(entity, this, t);
-		}
 	}
 
 	public UUID getDestinationPortalId()

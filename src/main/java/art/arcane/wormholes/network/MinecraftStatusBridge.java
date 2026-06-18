@@ -138,8 +138,14 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
         }
     }
 
-    public static StatusPacket create(String sourceServer, String targetServer, String mcVersion, String pluginVersion, String replyHost, int replyPort, byte[] publicKey, PrivateKey privateKey, List<WireMessage> messages) {
-        StatusPacket unsigned = new StatusPacket(sourceServer, targetServer, mcVersion, pluginVersion, replyHost, replyPort, publicKey, RANDOM.nextLong(), List.copyOf(messages), null);
+    public static StatusPacket create(String sourceServer, String targetServer, String mcVersion, String pluginVersion, String replyHost, int replyPort, byte[] publicKey, PrivateKey privateKey, List<EncodedMessage> messages) {
+        List<WireMessage> wireMessages = new ArrayList<>(messages.size());
+        List<byte[]> frames = new ArrayList<>(messages.size());
+        for (EncodedMessage message : messages) {
+            wireMessages.add(message.message());
+            frames.add(message.frame());
+        }
+        StatusPacket unsigned = new StatusPacket(sourceServer, targetServer, mcVersion, pluginVersion, replyHost, replyPort, publicKey, RANDOM.nextLong(), List.copyOf(wireMessages), List.copyOf(frames), null);
         byte[] payload = unsigned.unsignedBytes();
         return unsigned.withSignature(Handshake.sign(privateKey, payload));
     }
@@ -232,6 +238,9 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
     private record PendingRequest(StatusPacket packet, long createdAtMillis) {
     }
 
+    public record EncodedMessage(WireMessage message, byte[] frame) {
+    }
+
     public static final class StatusPacket {
         private final String sourceServer;
         private final String targetServer;
@@ -242,9 +251,10 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
         private final byte[] publicKey;
         private final long nonce;
         private final List<WireMessage> messages;
+        private final List<byte[]> encodedFrames;
         private final byte[] signature;
 
-        private StatusPacket(String sourceServer, String targetServer, String mcVersion, String pluginVersion, String replyHost, int replyPort, byte[] publicKey, long nonce, List<WireMessage> messages, byte[] signature) {
+        private StatusPacket(String sourceServer, String targetServer, String mcVersion, String pluginVersion, String replyHost, int replyPort, byte[] publicKey, long nonce, List<WireMessage> messages, List<byte[]> encodedFrames, byte[] signature) {
             this.sourceServer = sourceServer;
             this.targetServer = targetServer;
             this.mcVersion = mcVersion;
@@ -254,6 +264,7 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
             this.publicKey = publicKey == null ? new byte[0] : publicKey.clone();
             this.nonce = nonce;
             this.messages = List.copyOf(messages);
+            this.encodedFrames = encodedFrames == null ? null : List.copyOf(encodedFrames);
             this.signature = signature == null ? new byte[0] : signature.clone();
         }
 
@@ -308,7 +319,7 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
         }
 
         private StatusPacket withSignature(byte[] nextSignature) {
-            return new StatusPacket(sourceServer, targetServer, mcVersion, pluginVersion, replyHost, replyPort, publicKey, nonce, messages, nextSignature);
+            return new StatusPacket(sourceServer, targetServer, mcVersion, pluginVersion, replyHost, replyPort, publicKey, nonce, messages, encodedFrames, nextSignature);
         }
 
         private byte[] unsignedBytes() {
@@ -326,11 +337,12 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
                 out.writeLong(nonce);
                 out.writeInt(Math.min(messages.size(), MAX_MESSAGES));
                 int written = 0;
-                for (WireMessage message : messages) {
+                for (int i = 0; i < messages.size(); i++) {
                     if (written >= MAX_MESSAGES) {
                         break;
                     }
-                    WireCodec.writeByteArray(out, WireCodec.encodeFrame(message), MAX_FRAME_BYTES);
+                    byte[] frame = encodedFrames == null ? WireCodec.encodeFrame(messages.get(i)) : encodedFrames.get(i);
+                    WireCodec.writeByteArray(out, frame, MAX_FRAME_BYTES);
                     written++;
                 }
                 out.flush();
@@ -367,7 +379,7 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
                 byte[] frame = WireCodec.readByteArray(in, MAX_FRAME_BYTES);
                 messages.add(WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(frame))));
             }
-            return new StatusPacket(sourceServer, targetServer, mcVersion, pluginVersion, replyHost, replyPort, publicKey, nonce, messages, signature);
+            return new StatusPacket(sourceServer, targetServer, mcVersion, pluginVersion, replyHost, replyPort, publicKey, nonce, messages, null, signature);
         }
     }
 }

@@ -161,6 +161,14 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     }
 
     @Override
+    public void recordOutboundSample(byte[] payload) {
+        if (!config.transport.compressionEnabled || sampleCollector.isFull()) {
+            return;
+        }
+        sampleCollector.record(payload);
+    }
+
+    @Override
     public void onDictionaryAdvertised(PeerConnection connection, byte[] peerDictHash, int peerDictVersion) {
         if (peerDictHash == null || peerDictVersion <= 0 || isZeroHash(peerDictHash)) {
             return;
@@ -198,10 +206,18 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         }
         String lan = detectedLanHost;
         if (lan == null) {
-            lan = AddressResolver.detectLanAddress();
+            lan = LanAddressResolver.detectLanAddress();
             detectedLanHost = lan;
         }
         return lan;
+    }
+
+    public String getResolvedPublicHost() {
+        String publicHost = detectedPublicHost;
+        if (publicHost != null && !publicHost.isBlank()) {
+            return publicHost;
+        }
+        return publicHostResolver.cached();
     }
 
     public int getBoundListenPort() {
@@ -460,11 +476,11 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     }
 
     public boolean send(String peerName, WireMessage message) {
-        recordWireSample(message);
         PeerConnection connection = readyPeers.get(peerName);
         if (connection != null) {
             return connection.send(message);
         }
+        recordWireSample(message);
         NetworkConfig.PeerEntry peer = findKnownPeer(peerName);
         if (canQueueStatusBridge(peer) && enqueueStatusMessage(peerName, message)) {
             return true;
@@ -670,7 +686,7 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         return true;
     }
 
-    MinecraftStatusBridge.StatusPacket createStatusBridgePacket(String targetServer, List<WireMessage> messages) {
+    MinecraftStatusBridge.StatusPacket createStatusBridgePacket(String targetServer, List<MinecraftStatusBridge.EncodedMessage> messages) {
         return MinecraftStatusBridge.create(getLocalName(), targetServer, mcVersion, pluginVersion, getAdvertiseHost(), gamePort, identityStore.publicKeyBytes(), identityStore.privateKey(), messages);
     }
 
@@ -880,7 +896,7 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     }
 
     private void recordWireSample(WireMessage message) {
-        if (!config.transport.compressionEnabled) {
+        if (!config.transport.compressionEnabled || sampleCollector.isFull()) {
             return;
         }
         try {
@@ -1379,7 +1395,7 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
             return;
         }
         nextStatusAttempt.put(peer.name, now + STATUS_BRIDGE_INTERVAL_MS);
-        List<WireMessage> messages = drainStatusOutbox(peer.name);
+        List<MinecraftStatusBridge.EncodedMessage> messages = drainStatusOutbox(peer.name);
         MinecraftStatusBridge.StatusPacket request = createStatusBridgePacket(peer.name, messages);
         long started = System.currentTimeMillis();
         try {
@@ -1498,54 +1514,54 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         }
     }
 
-    private List<WireMessage> drainStatusOutbox(String peerName) {
+    private List<MinecraftStatusBridge.EncodedMessage> drainStatusOutbox(String peerName) {
         BlockingQueue<WireMessage> queue = statusOutbox.get(peerName);
         if (queue == null) {
             return List.of();
         }
-        List<WireMessage> messages = new ArrayList<>(Math.min(MinecraftStatusBridge.MAX_MESSAGES, queue.size()));
+        List<MinecraftStatusBridge.EncodedMessage> messages = new ArrayList<>(Math.min(MinecraftStatusBridge.MAX_MESSAGES, queue.size()));
         int remainingBytes = STATUS_BRIDGE_FRAME_BUDGET_BYTES;
         while (messages.size() < MinecraftStatusBridge.MAX_MESSAGES) {
             WireMessage message = queue.peek();
             if (message == null) {
                 break;
             }
-            int frameLength = statusFrameLength(peerName, message);
-            if (frameLength < 0) {
+            byte[] frame = encodeStatusFrame(peerName, message);
+            if (frame == null) {
                 queue.poll();
                 continue;
             }
-            if (frameLength > remainingBytes) {
+            if (frame.length > remainingBytes) {
                 break;
             }
             queue.poll();
-            messages.add(message);
-            remainingBytes -= frameLength;
+            messages.add(new MinecraftStatusBridge.EncodedMessage(message, frame));
+            remainingBytes -= frame.length;
         }
         return messages.isEmpty() ? List.of() : messages;
     }
 
-    private int statusFrameLength(String peerName, WireMessage message) {
+    private byte[] encodeStatusFrame(String peerName, WireMessage message) {
         try {
-            int frameLength = WireCodec.encodeFrame(message).length;
-            if (frameLength > MinecraftStatusBridge.MAX_FRAME_BYTES) {
-                warnOversizedStatusMessage(peerName, message, frameLength);
-                return -1;
+            byte[] frame = WireCodec.encodeFrame(message);
+            if (frame.length > MinecraftStatusBridge.MAX_FRAME_BYTES) {
+                warnOversizedStatusMessage(peerName, message, frame.length);
+                return null;
             }
-            return frameLength;
+            return frame;
         } catch (IOException e) {
             logger.warning("net: dropping unencodable status sideband " + message.type() + " for " + peerName + ": " + e.getMessage());
-            return -1;
+            return null;
         }
     }
 
-    private void requeueStatusMessages(String peerName, List<WireMessage> messages) {
+    private void requeueStatusMessages(String peerName, List<MinecraftStatusBridge.EncodedMessage> messages) {
         if (messages.isEmpty()) {
             return;
         }
         BlockingQueue<WireMessage> queue = statusOutbox.computeIfAbsent(peerName, ignored -> new LinkedBlockingQueue<>(STATUS_BRIDGE_QUEUE_CAPACITY));
-        for (WireMessage message : messages) {
-            queue.offer(message);
+        for (MinecraftStatusBridge.EncodedMessage message : messages) {
+            queue.offer(message.message());
         }
     }
 

@@ -138,13 +138,13 @@ public final class ImportExportService {
         return resolved;
     }
 
-    private static List<String> alternateHosts(String identityHost) {
+    private List<String> alternateHosts(String identityHost) {
         List<String> alternates = new ArrayList<>(2);
-        String publicIp = AddressResolver.detectPublicAddress();
+        String publicIp = network.getResolvedPublicHost();
         if (publicIp != null && !publicIp.equals(identityHost)) {
             alternates.add(publicIp);
         }
-        String lan = AddressResolver.detectLanAddress();
+        String lan = LanAddressResolver.detectLanAddress();
         if (lan != null && !lan.equals(identityHost) && !alternates.contains(lan)) {
             alternates.add(lan);
         }

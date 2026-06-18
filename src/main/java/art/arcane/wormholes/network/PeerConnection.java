@@ -36,6 +36,8 @@ public final class PeerConnection {
 
         CompressionDictionary currentDictionary();
 
+        void recordOutboundSample(byte[] payload);
+
         void onDictionaryAdvertised(PeerConnection connection, byte[] peerDictHash, int peerDictVersion);
 
         void onDictionaryNegotiated(PeerConnection connection, int dictVersion);
@@ -53,6 +55,7 @@ public final class PeerConnection {
     private final Listener listener;
     private final CompressionProvider compressionProvider;
     private final WireCompression compression;
+    private final WireCodec.PayloadSampler outboundSampler;
     private final LinkedBlockingQueue<byte[]> writeQueue = new LinkedBlockingQueue<>(WRITE_QUEUE_CAPACITY);
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicReference<State> state = new AtomicReference<>(State.HANDSHAKING);
@@ -83,6 +86,7 @@ public final class PeerConnection {
         this.listener = listener;
         this.compressionProvider = compressionProvider;
         this.compression = compressionProvider == null ? null : compressionProvider.compression();
+        this.outboundSampler = compressionProvider == null ? null : compressionProvider::recordOutboundSample;
     }
 
     public void start() {
@@ -103,7 +107,7 @@ public final class PeerConnection {
         }
         byte[] frame;
         try {
-            frame = WireCodec.encodeFrame(message, compression, dictNegotiated.get());
+            frame = WireCodec.encodeFrame(message, compression, dictNegotiated.get(), outboundSampler);
         } catch (IOException e) {
             return false;
         }

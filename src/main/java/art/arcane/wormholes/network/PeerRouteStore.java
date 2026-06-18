@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -54,6 +55,10 @@ public final class PeerRouteStore {
         if (route == null || route.name == null || route.name.isBlank()) {
             return;
         }
+        NetworkConfig.PeerEntry existing = routes.get(route.name);
+        if (existing != null && sameRoute(existing, route)) {
+            return;
+        }
         routes.put(route.name, copy(route));
         persist();
     }
@@ -89,6 +94,16 @@ public final class PeerRouteStore {
         } catch (IOException e) {
             throw new IllegalStateException("Could not persist Wormholes peer route store", e);
         }
+    }
+
+    private static boolean sameRoute(NetworkConfig.PeerEntry a, NetworkConfig.PeerEntry b) {
+        return Objects.equals(a.name, b.name)
+            && Objects.equals(a.host, b.host)
+            && Objects.equals(a.fallbackHosts, b.fallbackHosts)
+            && a.port == b.port
+            && Objects.equals(a.publicHost, b.publicHost)
+            && a.publicPort == b.publicPort
+            && a.useProxy == b.useProxy;
     }
 
     private static NetworkConfig.PeerEntry copy(NetworkConfig.PeerEntry source) {

@@ -52,7 +52,10 @@ public final class PeerTrustStore {
         if (serverName == null || serverName.isBlank() || publicKey == null || publicKey.length == 0) {
             return;
         }
-        trustedKeys.put(serverName, publicKey.clone());
+        byte[] previous = trustedKeys.put(serverName, publicKey.clone());
+        if (previous != null && Handshake.sameKey(previous, publicKey)) {
+            return;
+        }
         persist();
     }
 
