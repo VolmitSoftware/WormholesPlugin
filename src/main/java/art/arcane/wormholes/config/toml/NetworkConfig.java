@@ -11,7 +11,7 @@ public class NetworkConfig {
     @ConfigDescription("Master switch for cross-server networking.")
     public boolean enabled = false;
 
-    @ConfigDescription("Stable logical name (e.g. hub, survival). Blank auto-derives a wh-... name from this server's public key.")
+    @ConfigDescription("Stable logical name (e.g. hub, lobby). Blank auto-derives a wh-... name from this server's public key.")
     public String serverName = "";
 
     @ConfigDescription("Open an inbound raw Wormholes socket. Disable for outbound-only servers that always dial peers.")

@@ -48,7 +48,6 @@ import art.arcane.wormholes.util.AxisAlignedBB;
 import art.arcane.wormholes.util.Direction;
 import art.arcane.wormholes.util.F;
 import art.arcane.wormholes.util.FinalBoolean;
-import art.arcane.volmlib.util.math.FinalInteger;
 import art.arcane.volmlib.util.collection.KList;
 import art.arcane.wormholes.util.J;
 import art.arcane.wormholes.util.JSONObject;
@@ -75,6 +74,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private static final ParticleEffect.OrdinaryColor OUTLINE_PARTICLE_COLOR = new ParticleEffect.OrdinaryColor(150, 80, 255);
 	private static final ConcurrentHashMap<UUID, Long> TELEPORT_COOLDOWNS = new ConcurrentHashMap<UUID, Long>();
 	private static final ConcurrentHashMap<UUID, ReentryLatch> REENTRY_LATCHES = new ConcurrentHashMap<UUID, ReentryLatch>();
+	private static final java.util.Set<UUID> TELEPORT_IN_FLIGHT = ConcurrentHashMap.newKeySet();
 
 	private PhantomSpinner spinner;
 	private PortalStructure structure;
@@ -640,6 +640,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 	}
 
+
 	@Override
 	public void playEffect(PortalEffect effect, Location location)
 	{
@@ -683,8 +684,17 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 				break;
 			case CLOSE:
-				getStructure().getCenter().getWorld().playSound(getStructure().getCenter(), MSound.ECHEST_CLOSE.bukkitSound(), 2.25f, 0.1f);
-				getStructure().getCenter().getWorld().playSound(getStructure().getCenter(), MSound.ECHEST_CLOSE.bukkitSound(), 2.25f, 1.7f);
+				AxisAlignedBB closeArea = getStructure().getArea();
+				World closeWorld = getStructure().getWorld();
+				if(closeArea != null && closeWorld != null)
+				{
+					Location corner = new Location(closeWorld, Math.min(closeArea.getXa(), closeArea.getXb()), Math.min(closeArea.getYa(), closeArea.getYb()), Math.min(closeArea.getZa(), closeArea.getZb()));
+					double sx = Math.abs(closeArea.getXb() - closeArea.getXa());
+					double sy = Math.abs(closeArea.getYb() - closeArea.getYa());
+					double sz = Math.abs(closeArea.getZb() - closeArea.getZa());
+					FoliaScheduler.runRegion(Wormholes.instance, corner, () -> Wormholes.effectManager.playPortalClose(closeWorld, corner, sx, sy, sz), 1L);
+				}
+				getStructure().getCenter().getWorld().playSound(getStructure().getCenter(), MSound.ECHEST_CLOSE.bukkitSound(), 1.6f, 0.6f);
 				break;
 			case OPEN:
 				getStructure().getCenter().getWorld().playSound(getStructure().getCenter(), MSound.FRAME_SPAWN.bukkitSound(), 2.25f, 0.1f);
@@ -837,24 +847,47 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 			Location target = exit.clone().add(dx.toVector().normalize().multiply(1.25));
 			target.setDirection(outLook);
-			p.teleport(target, PlayerTeleportEvent.TeleportCause.PLUGIN);
-			p.setVelocity(outVelocity);
-			art.arcane.wormholes.service.WormholesTelemetry.countTraversal();
-			markTeleportCooldown(p.getUniqueId(), System.currentTimeMillis());
-			latchReentry(p.getUniqueId(), getId());
-			playEffect(PortalEffect.PUSH, exit);
 
-			if(Settings.DEBUG_TRAVERSABLES)
+			UUID entityId = p.getUniqueId();
+			if(!TELEPORT_IN_FLIGHT.add(entityId))
 			{
-				p.sendMessage("     ");
-				p.sendMessage("     ");
-				p.sendMessage("ANG: " + t.getInDirection().toString() + " -> " + getDirection().toString());
-				p.sendMessage("FCE: " + Direction.getDirection(t.getInVelocity()).reverse().toString() + " -> " + Direction.closest(outVelocity).toString());
-				p.sendMessage("MOV: " + Direction.getDirection(t.getInVelocity()).toString() + " -> " + Direction.getDirection(outVelocity).toString());
-				p.sendMessage("LOK: " + Direction.getDirection(t.getInLook()).toString() + " -> " + Direction.getDirection(outLook).toString());
-				p.sendMessage("POS: " + "(" + F.f(t.getInOffset().getX(), 1) + ", " + F.f(t.getInOffset().getY(), 1) + ", " + F.f(t.getInOffset().getZ(), 1) + ") -> (" + F.f(outOffset.getX(), 1) + ", " + F.f(outOffset.getY(), 1) + ", " + F.f(outOffset.getZ(), 1) + ")");
-				p.sendMessage("MOT: " + "(" + F.f(t.getInVelocity().getX(), 1) + ", " + F.f(t.getInVelocity().getY(), 1) + ", " + F.f(t.getInVelocity().getZ(), 1) + ") -> (" + F.f(outVelocity.getX(), 1) + ", " + F.f(outVelocity.getY(), 1) + ", " + F.f(outVelocity.getZ(), 1) + ")");
+				return;
 			}
+
+			ArrivalWarmer warmer = Wormholes.arrivalWarmer;
+			if(warmer != null && target.getWorld() != null)
+			{
+				warmer.warmAround(target.getWorld(), target.getBlockX(), target.getBlockZ());
+			}
+
+			p.teleportAsync(target, PlayerTeleportEvent.TeleportCause.PLUGIN).whenComplete((success, error) ->
+			{
+				TELEPORT_IN_FLIGHT.remove(entityId);
+				if(error != null || !Boolean.TRUE.equals(success))
+				{
+					return;
+				}
+				FoliaScheduler.runEntity(Wormholes.instance, p, () ->
+				{
+					p.setVelocity(outVelocity);
+					art.arcane.wormholes.service.WormholesTelemetry.countTraversal();
+					markTeleportCooldown(entityId, System.currentTimeMillis());
+					latchReentry(entityId, getId());
+					playEffect(PortalEffect.PUSH, exit);
+
+					if(Settings.DEBUG_TRAVERSABLES)
+					{
+						p.sendMessage("     ");
+						p.sendMessage("     ");
+						p.sendMessage("ANG: " + t.getInDirection().toString() + " -> " + getDirection().toString());
+						p.sendMessage("FCE: " + Direction.getDirection(t.getInVelocity()).reverse().toString() + " -> " + Direction.closest(outVelocity).toString());
+						p.sendMessage("MOV: " + Direction.getDirection(t.getInVelocity()).toString() + " -> " + Direction.getDirection(outVelocity).toString());
+						p.sendMessage("LOK: " + Direction.getDirection(t.getInLook()).toString() + " -> " + Direction.getDirection(outLook).toString());
+						p.sendMessage("POS: " + "(" + F.f(t.getInOffset().getX(), 1) + ", " + F.f(t.getInOffset().getY(), 1) + ", " + F.f(t.getInOffset().getZ(), 1) + ") -> (" + F.f(outOffset.getX(), 1) + ", " + F.f(outOffset.getY(), 1) + ", " + F.f(outOffset.getZ(), 1) + ")");
+						p.sendMessage("MOT: " + "(" + F.f(t.getInVelocity().getX(), 1) + ", " + F.f(t.getInVelocity().getY(), 1) + ", " + F.f(t.getInVelocity().getZ(), 1) + ") -> (" + F.f(outVelocity.getX(), 1) + ", " + F.f(outVelocity.getY(), 1) + ", " + F.f(outVelocity.getZ(), 1) + ")");
+					}
+				});
+			});
 		}
 	}
 
@@ -1097,41 +1130,49 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void destroy()
 	{
-		FinalInteger f = new FinalInteger(100);
 		tunnel = null;
 
-		Location anchor = getCenter();
-		Runnable[] tickHolder = new Runnable[1];
-		tickHolder[0] = () ->
+		AxisAlignedBB deletionArea = getStructure().getArea();
+		World deletionWorld = getStructure().getWorld();
+		Location deletionCenter = getStructure().getCenter();
+		Location anchor = deletionCenter != null ? deletionCenter : getCenter();
+
+		if(deletionArea != null && deletionWorld != null)
 		{
-			f.sub(1);
+			Location deletionCorner = new Location(deletionWorld, Math.min(deletionArea.getXa(), deletionArea.getXb()), Math.min(deletionArea.getYa(), deletionArea.getYb()), Math.min(deletionArea.getZa(), deletionArea.getZb()));
+			double sx = Math.abs(deletionArea.getXb() - deletionArea.getXa());
+			double sy = Math.abs(deletionArea.getYb() - deletionArea.getYa());
+			double sz = Math.abs(deletionArea.getZb() - deletionArea.getZa());
+			Wormholes.effectManager.playPortalDeletion(deletionWorld, deletionCorner, sx, sy, sz);
+		}
 
-			if(f.get() > 0)
+		FoliaScheduler.runRegion(Wormholes.instance, anchor, () ->
+		{
+			if(Wormholes.projectionManager != null)
 			{
-				showProgress("Destroying " + getName() + " in " + ChatColor.RED + " " + F.time(50 * f.get(), 0));
-				FoliaScheduler.runRegion(Wormholes.instance, anchor, tickHolder[0], 1L);
-				return;
+				Wormholes.projectionManager.removeProjector(LocalPortal.this);
 			}
-
-			if(f.get() == 0)
-			{
-				if(Wormholes.projectionManager != null)
-				{
-					Wormholes.projectionManager.removeProjector(LocalPortal.this);
-				}
-				Wormholes.portalManager.removeLocalPortal(LocalPortal.this);
-				Wormholes.effectManager.playNotificationFail(ChatColor.RED + getName() + " Deleted", getStructure().getCenter());
-				deleteData();
-			}
-		};
-
-		FoliaScheduler.runRegion(Wormholes.instance, anchor, tickHolder[0], 1L);
+			Wormholes.portalManager.removeLocalPortal(LocalPortal.this);
+			Wormholes.effectManager.playNotificationFail(ChatColor.RED + getName() + " Deleted", deletionCenter);
+			deleteData();
+		}, 20L);
 	}
 
 	@Override
 	public boolean hasTunnel()
 	{
 		return getTunnel() != null && getTunnel().getDestination() != null;
+	}
+
+	@Override
+	public void unlink()
+	{
+		if(tunnel == null)
+		{
+			return;
+		}
+		tunnel = null;
+		save();
 	}
 
 	@Override

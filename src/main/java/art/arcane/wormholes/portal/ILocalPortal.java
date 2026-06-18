@@ -62,6 +62,8 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 
 	public void linkRemote(String serverName, UUID portalId);
 
+	public void unlink();
+
 	public void destroy();
 
 	public String getRouter(boolean dark);

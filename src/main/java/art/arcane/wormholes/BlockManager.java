@@ -1,7 +1,9 @@
 package art.arcane.wormholes;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Set;
 
 import org.bukkit.Bukkit;
@@ -170,61 +172,61 @@ public class BlockManager implements Listener
 
 	private void construct(Player player, Block clickedBlock)
 	{
-		Set<Block> blocks = new HashSet<>();
-		KList<Block> search = new KList<>();
 		PortalBlock init = getBlock(clickedBlock);
+		if(init == null)
+		{
+			return;
+		}
 		PortalType type = init.getType();
-		search.addAll(findBlocks(blocks, clickedBlock, type));
 		Direction d = Direction.closest(player.getLocation().getDirection());
 		Vector look = player.getLocation().getDirection();
-		Location anchor = clickedBlock.getLocation();
 
-		Runnable[] tickHolder = new Runnable[1];
-		tickHolder[0] = () ->
+		Set<Block> blocks = new HashSet<>();
+		List<EffectManager.PortalBlockSnapshot> snapshots = new ArrayList<>();
+		KList<Block> search = new KList<>();
+		search.add(clickedBlock);
+
+		while(!search.isEmpty())
 		{
-			if(!M.r(Settings.PORTAL_CONSTRUCT_SPEED))
+			Block cursor = search.popRandom();
+			PortalBlock pb = getBlock(cursor);
+			if(blocks.contains(cursor) || pb == null)
 			{
-				FoliaScheduler.runRegion(Wormholes.instance, anchor, tickHolder[0], 1L);
-				return;
+				continue;
 			}
-
-			search.removeIf(i -> getBlock(i) == null);
-
-			if(!search.isEmpty())
-			{
-				Block next = search.popRandom();
-				search.addAll(findBlocks(blocks, next, type));
-				FoliaScheduler.runRegion(Wormholes.instance, anchor, tickHolder[0], 1L);
-				return;
-			}
-
-			Wormholes.constructionManager.constructPortal(player, blocks, type, d, look);
-		};
-
-		FoliaScheduler.runRegion(Wormholes.instance, anchor, tickHolder[0], 1L);
-	}
-
-	public Set<Block> findBlocks(Set<Block> blocks, Block cursor, PortalType type)
-	{
-		if(getBlock(cursor) != null)
-		{
 			blocks.add(cursor);
+			snapshots.add(new EffectManager.PortalBlockSnapshot(cursor.getLocation(), cursor.getBlockData()));
 			cursor.setType(Material.AIR);
-			Wormholes.effectManager.playPortalOpening(blocks.size(), cursor);
-			removeBlock(getBlock(cursor));
-		}
+			removeBlock(pb);
 
-		Set<Block> found = new HashSet<>();
-
-		for(Block i : W.blockFaces(cursor))
-		{
-			if(!blocks.contains(i) && isBlock(i, type))
+			for(Block i : W.blockFaces(cursor))
 			{
-				found.add(i);
+				if(!blocks.contains(i) && isBlock(i, type))
+				{
+					search.add(i);
+				}
 			}
 		}
 
-		return found;
+		if(snapshots.isEmpty())
+		{
+			return;
+		}
+
+		double sumX = 0.0D;
+		double sumY = 0.0D;
+		double sumZ = 0.0D;
+		for(EffectManager.PortalBlockSnapshot snapshot : snapshots)
+		{
+			sumX += snapshot.location().getX() + 0.5D;
+			sumY += snapshot.location().getY() + 0.5D;
+			sumZ += snapshot.location().getZ() + 0.5D;
+		}
+		int n = snapshots.size();
+		Location center = new Location(clickedBlock.getWorld(), sumX / n, sumY / n, sumZ / n);
+
+		Wormholes.effectManager.playPortalVortex(clickedBlock.getWorld(), center, snapshots);
+		Wormholes.constructionManager.constructPortal(player, blocks, type, d, look);
 	}
 
 	@EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

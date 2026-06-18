@@ -2,6 +2,7 @@ package art.arcane.wormholes;
 
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
@@ -35,6 +36,11 @@ public class ConstructionManager implements Listener
 
 	public void constructPortal(Player player, Set<Block> blocks, PortalType type, Direction d, Vector look)
 	{
+		constructPortal(player, blocks, type, d, look, null);
+	}
+
+	public void constructPortal(Player player, Set<Block> blocks, PortalType type, Direction d, Vector look, Consumer<ILocalPortal> onCreated)
+	{
 		if(blocks == null || blocks.isEmpty())
 		{
 			return;
@@ -43,10 +49,10 @@ public class ConstructionManager implements Listener
 		Block firstBlock = blocks.iterator().next();
 		Location anchor = firstBlock.getLocation();
 
-		FoliaScheduler.runRegion(Wormholes.instance, anchor, () -> performConstruct(blocks, type, d, look), 25L);
+		FoliaScheduler.runRegion(Wormholes.instance, anchor, () -> performConstruct(blocks, type, d, look, onCreated), 25L);
 	}
 
-	private void performConstruct(Set<Block> blocks, PortalType type, Direction d, Vector look)
+	private void performConstruct(Set<Block> blocks, PortalType type, Direction d, Vector look, Consumer<ILocalPortal> onCreated)
 	{
 		Cuboid c = null;
 
@@ -71,8 +77,7 @@ public class ConstructionManager implements Listener
 
 		if(success)
 		{
-			Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + "Portal opened. Hold the wand and CLICK the portal to configure.", c.getCenter());
-			Wormholes.effectManager.playPortalOpen(blocks);
+			Location center = c.getCenter();
 			PortalStructure s = new PortalStructure();
 			s.setBlocks(blocks);
 			ILocalPortal portal = createPortal(s, type);
@@ -80,6 +85,12 @@ public class ConstructionManager implements Listener
 			portal.open();
 			portal.save();
 			Wormholes.portalManager.addLocalPortal(portal);
+			if(onCreated != null)
+			{
+				onCreated.accept(portal);
+			}
+			Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + "Portal opened. Hold the wand and CLICK the portal to configure.", center);
+			Wormholes.effectManager.playPortalOpenClimax(center.getWorld(), center, c.depth(Axis.X), c.depth(Axis.Y), c.depth(Axis.Z));
 			return;
 		}
 

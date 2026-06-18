@@ -51,4 +51,31 @@ public class MainConfig {
         "re-enter before another teleport triggers, so this can be kept low. Set to 0 to rely purely on the leave-and-return rule."
     })
     public int teleportCooldownMillis = 1000;
+
+    @ConfigDescription({
+        "Pre-load and pin the destination's chunks while a player is looking at / approaching a portal.",
+        "This is what makes traversal feel seamless: the far side is already generated and resident before you cross,",
+        "so there is no region-thread hitch and the client streams chunks in a burst instead of trickling them in.",
+        "Disable to fall back to warming only at the instant of teleport."
+    })
+    public boolean arrivalPrewarmOnInterest = true;
+
+    @ConfigDescription({
+        "Radius, in chunks, of the destination area kept loaded around a portal exit (0 = just the landing chunk).",
+        "Larger values cover more of the player's view distance for a smoother arrival but pin more chunks in memory.",
+        "4 covers a 9x9 chunk area; raise toward your server view-distance for the most seamless feel."
+    })
+    public int arrivalWarmRadiusChunks = 4;
+
+    @ConfigDescription({
+        "Milliseconds the destination chunks stay pinned after the last warm before being released.",
+        "Acts as a grace window so chunks do not unload while the client is still streaming them in after arrival."
+    })
+    public int arrivalWarmHoldMillis = 5000;
+
+    @ConfigDescription({
+        "Minimum milliseconds between proactive re-warms of the same destination while a player keeps looking at a portal.",
+        "Keeps the pin alive without re-issuing chunk work every tick; keep this below the hold time."
+    })
+    public int arrivalWarmThrottleMillis = 1000;
 }

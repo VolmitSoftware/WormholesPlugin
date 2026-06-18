@@ -233,6 +233,9 @@ public class ProjectionManager implements Listener {
                 }
                 if (liveInterest) {
                     refreshInterestGrace(portal, observer);
+                    if (Wormholes.arrivalWarmer != null) {
+                        Wormholes.arrivalWarmer.warmDestinationOf(portal);
+                    }
                 }
                 ObserverProjectionPlan plan = plans.get(observer.getUniqueId());
                 if (plan == null) {

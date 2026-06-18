@@ -41,6 +41,7 @@ die() { printf '\033[31m[testbed] %s\033[0m\n' "$*" >&2; exit 1; }
 
 instance_exists() { MX instance list 2>/dev/null | grep -qF -- "$1"; }
 instance_path()   { MX instance path "$1" 2>/dev/null | tail -1; }
+game_port()       { MX runtime states 2>/dev/null | awk -v n="$1" '$1==n{print $3; exit}'; }
 
 set_prop() { # file key value
   local f="$1" k="$2" v="$3"
@@ -112,7 +113,7 @@ ensure_instance() { # name
     say "instance ${1} exists - reusing"
   else
     say "creating isolated purpur instance ${1}..."
-    MX server create "$1" --type purpur --isolated
+    MX server create "$1" --type purpur --isolated || say "create reported failure for ${1} (continuing — likely already exists)"
   fi
 }
 
@@ -130,18 +131,21 @@ cmd_up() {
   MX runtime start "$A_NAME" --no-console
   MX runtime start "$B_NAME" --no-console
   cmd_status
+  local agp bgp
+  agp="$(game_port "$A_NAME")"; agp="${agp:-$A_GAME_PORT}"
+  bgp="$(game_port "$B_NAME")"; bgp="${bgp:-$B_GAME_PORT}"
   cat <<EOF
 
 $(say "pair is up:")
-  ALPHA  game=localhost:${A_GAME_PORT}  wh-listen=${A_WH_PORT}  name=alpha
-  BETA   game=localhost:${B_GAME_PORT}  wh-listen=${B_WH_PORT}  name=beta
+  ALPHA  game=localhost:${agp}  wh-listen=${A_WH_PORT}  name=alpha
+  BETA   game=localhost:${bgp}  wh-listen=${B_WH_PORT}  name=beta
+  (the Multiplexor auto-assigns game ports - the values above are the live ones)
 
-Next (in-game, needs a player - portals are physical rune structures):
-  1. Join ALPHA (localhost:${A_GAME_PORT}). Run: /wormholes wand rune=gateway
+Cross-server GATEWAY link:
+  1. Join ALPHA (localhost:${agp}). Run: /wormholes wand rune=gateway
      Build a GATEWAY portal, open its GUI, click Export, copy the code.
   2. On BETA run: /wh import <code>   (console or in-game)
-     Then build a GATEWAY on BETA and link it to ALPHA.
-  Check the link any time with: /wh status   (or ./wh-testbed.sh status)
+     Then build a GATEWAY on BETA and link it to ALPHA. Check with /wh status.
 EOF
 }
 

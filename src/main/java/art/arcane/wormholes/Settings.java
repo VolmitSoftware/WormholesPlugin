@@ -40,6 +40,10 @@ public final class Settings {
     public static volatile int PROJECTION_INTEREST_GRACE_TICKS = 5;
     public static volatile int PROJECTION_INITIAL_RESEND_PASSES = 4;
     public static volatile long TELEPORT_COOLDOWN_MILLIS = 1000L;
+    public static volatile boolean ARRIVAL_PREWARM_ON_INTEREST = true;
+    public static volatile int ARRIVAL_WARM_RADIUS_CHUNKS = 4;
+    public static volatile long ARRIVAL_WARM_HOLD_MILLIS = 5000L;
+    public static volatile long ARRIVAL_WARM_THROTTLE_MILLIS = 1000L;
     public static volatile boolean DEBUG = false;
 
     private Settings() {
@@ -59,6 +63,10 @@ public final class Settings {
         DEBUG_RENDERING = main.debugRendering;
         DEBUG_TRAVERSABLES = main.debugTraversables;
         TELEPORT_COOLDOWN_MILLIS = clampInt(main.teleportCooldownMillis, 0, 60_000);
+        ARRIVAL_PREWARM_ON_INTEREST = main.arrivalPrewarmOnInterest;
+        ARRIVAL_WARM_RADIUS_CHUNKS = clampInt(main.arrivalWarmRadiusChunks, 0, 12);
+        ARRIVAL_WARM_HOLD_MILLIS = clampInt(main.arrivalWarmHoldMillis, 0, 60_000);
+        ARRIVAL_WARM_THROTTLE_MILLIS = clampInt(main.arrivalWarmThrottleMillis, 0, 60_000);
         DEBUG = main.verboseLogging;
 
         FRUSTUM_CULLING_RATIO = clampDouble(projection.frustumCullingRatio, 0.0D, 1.0D);
