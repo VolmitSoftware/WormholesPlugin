@@ -33,14 +33,14 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class MinecraftStatusBridge extends PacketListenerAbstract {
     private static final String HOST_PREFIX = "whs.";
     private static final String JSON_FIELD = "wormholes";
-    private static final int FORMAT_VERSION = 1;
+    private static final int FORMAT_VERSION = 2;
     private static final int CONNECT_TIMEOUT_MS = 4000;
     private static final int READ_TIMEOUT_MS = 5000;
     private static final int MAX_HOST_LENGTH = 32000;
     private static final int MAX_STATUS_RESPONSE_CHARS = 32767;
     static final int MAX_ENCODED_CHARS = 30000;
     static final int MAX_PACKET_BYTES = 24000;
-    static final int MAX_FRAME_BYTES = 20000;
+    static final int MAX_FRAME_BYTES = 5000;
     static final int MAX_MESSAGES = 16;
     private static final long PENDING_TTL_MS = 10_000L;
     private static final int MAX_PENDING_REQUESTS = 1024;
@@ -67,7 +67,7 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
             if (address == null || !address.startsWith(HOST_PREFIX)) {
                 return;
             }
-            StatusPacket packet = StatusPacket.decode(address.substring(HOST_PREFIX.length()));
+            StatusPacket packet = StatusPacket.decode(address.substring(HOST_PREFIX.length()), network.compression());
             long now = System.currentTimeMillis();
             purgePending(now);
             if (pending.size() >= MAX_PENDING_REQUESTS) {
@@ -93,12 +93,15 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
             if (response == null) {
                 return;
             }
-            String encoded = response.encode();
+            String encoded = response.encode(network.compression());
             if (encoded.length() > MAX_ENCODED_CHARS) {
                 throw new IllegalStateException("status sideband response is too large: " + encoded.length() + " chars");
             }
             WrapperStatusServerResponse wrapper = new WrapperStatusServerResponse(event);
             JsonObject component = wrapper.getComponent();
+            component.remove("favicon");
+            component.remove("description");
+            component.remove("players");
             component.addProperty(JSON_FIELD, encoded);
             wrapper.setComponent(component);
             event.markForReEncode(true);
@@ -117,7 +120,7 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
         if (host == null || host.isBlank()) {
             throw new IOException("no game-port host available");
         }
-        String encoded = request.encode();
+        String encoded = request.encode(network.compression());
         String handshakeHost = HOST_PREFIX + encoded;
         if (handshakeHost.length() > MAX_HOST_LENGTH) {
             throw new IOException("status sideband request is too large: " + handshakeHost.length() + " chars");
@@ -134,7 +137,7 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
             if (!root.has(JSON_FIELD)) {
                 throw new IOException("status response did not include Wormholes sideband data");
             }
-            return StatusPacket.decode(root.get(JSON_FIELD).getAsString());
+            return StatusPacket.decode(root.get(JSON_FIELD).getAsString(), network.compression());
         }
     }
 
@@ -304,12 +307,13 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
             return Handshake.verify(publicKey, signature, unsignedBytes());
         }
 
-        public String encode() {
+        public String encode(WireCompression compression) {
             try {
                 byte[] unsigned = unsignedBytes();
-                ByteArrayOutputStream buffer = new ByteArrayOutputStream(unsigned.length + signature.length + 16);
+                byte[] transport = compression.encode(unsigned, false);
+                ByteArrayOutputStream buffer = new ByteArrayOutputStream(transport.length + signature.length + 16);
                 DataOutputStream out = new DataOutputStream(buffer);
-                WireCodec.writeByteArray(out, unsigned, MAX_PACKET_BYTES);
+                WireCodec.writeByteArray(out, transport, MAX_PACKET_BYTES);
                 WireCodec.writeByteArray(out, signature, Handshake.SIGNATURE_MAX_LENGTH);
                 out.flush();
                 return Base64.getUrlEncoder().withoutPadding().encodeToString(buffer.toByteArray());
@@ -352,11 +356,12 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
             }
         }
 
-        public static StatusPacket decode(String encoded) throws IOException {
+        public static StatusPacket decode(String encoded, WireCompression compression) throws IOException {
             byte[] envelope = Base64.getUrlDecoder().decode(encoded);
             DataInputStream envelopeIn = new DataInputStream(new ByteArrayInputStream(envelope));
-            byte[] unsigned = WireCodec.readByteArray(envelopeIn, MAX_PACKET_BYTES);
+            byte[] transport = WireCodec.readByteArray(envelopeIn, MAX_PACKET_BYTES);
             byte[] signature = WireCodec.readByteArray(envelopeIn, Handshake.SIGNATURE_MAX_LENGTH);
+            byte[] unsigned = compression.decode(transport).payload();
             DataInputStream in = new DataInputStream(new ByteArrayInputStream(unsigned));
             int version = in.readInt();
             if (version != FORMAT_VERSION) {

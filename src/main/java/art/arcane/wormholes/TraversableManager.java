@@ -33,6 +33,7 @@ public class TraversableManager implements Listener
 	public void on(PlayerQuitEvent e)
 	{
 		velocities.remove(e.getPlayer().getUniqueId());
+		art.arcane.wormholes.portal.LocalPortal.clearReentryLatch(e.getPlayer().getUniqueId());
 	}
 
 	public Vector getVelocity(Player p)

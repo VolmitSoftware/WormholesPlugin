@@ -26,6 +26,7 @@ import art.arcane.wormholes.network.view.ViewSubscriptionManager;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.IPortal;
 import art.arcane.wormholes.portal.PortalFrame;
+import art.arcane.wormholes.portal.PortalStructure;
 import art.arcane.wormholes.portal.ProjectionMode;
 import art.arcane.wormholes.portal.RemotePortal;
 import art.arcane.wormholes.portal.UniversalTunnel;
@@ -37,9 +38,10 @@ import art.arcane.wormholes.util.Direction;
 
 public final class PortalProjector {
     private static final long NO_REMOTE_KEY = Long.MIN_VALUE;
-    private static final double PLANE_WINDOW_EXTRA_PADDING = 1.0D;
     private static final int RECURSIVE_BUCKET_SHIFT = 3;
     private static final int MAX_RECURSIVE_INDEXES_PER_PASS = 256;
+    private static final int STABLE_RESAMPLE_BACKSTOP_TICKS = 40;
+    private static final double MOVEMENT_RESYNC_DISTANCE_SQ = 4.0D;
 
     private final ILocalPortal portal;
     private final Player observer;
@@ -87,6 +89,7 @@ public final class PortalProjector {
     private long lastRemoteRevision = -1L;
     private boolean pendingRemoteResample;
     private int remoteResendStage;
+    private long lastResampleVersion = -1L;
 
     public PortalProjector(ILocalPortal portal, Player observer, ProjectionClaimArbiter claimArbiter) {
         this.portal = portal;
@@ -267,7 +270,8 @@ public final class PortalProjector {
         if (remoteView instanceof RemoteWorldView remoteResendView) {
             maybeForceRemoteResend(remoteResendView);
         }
-        if (canReuseProjection(eye)) {
+        boolean stableResample = computeStableResample(destWorld, destAnchor, remoteView);
+        if (canReuseProjection(eye, stableResample)) {
             lastReuseSkips++;
             lastBlockChanges = 0;
             lastProjectNanos = System.nanoTime() - startNanos;
@@ -350,11 +354,31 @@ public final class PortalProjector {
         double maxProjectionDepth = depthBlocks + portalPlaneClearance;
         double signedMinDistance = eyeFrontSide ? -maxProjectionDepth : portalPlaneClearance;
         double signedMaxDistance = eyeFrontSide ? -portalPlaneClearance : maxProjectionDepth;
-        boolean forceStableCellResample = shouldResampleStableCells() || pendingRemoteResample;
+        boolean forceStableCellResample = stableResample || pendingRemoteResample;
         pendingRemoteResample = false;
+        if (forceStableCellResample && Wormholes.projectionChangeTracker != null) {
+            lastResampleVersion = Wormholes.projectionChangeTracker.currentVersion();
+        }
         boolean forceFullSend = initialFullSendPassesRemaining > 0;
-        PortalPlaneWindow planeWindow = PortalPlaneWindow.create(portal.getStructure().getArea(), projectionLocalFrame,
-            localOriginX, localOriginY, localOriginZ, Settings.PROJECTION_APERTURE_PADDING_BLOCKS + PLANE_WINDOW_EXTRA_PADDING,
+        if (!forceFullSend && hasCameraSnapshot) {
+            double moveX = eyeX - lastEyeX;
+            double moveY = eyeY - lastEyeY;
+            double moveZ = eyeZ - lastEyeZ;
+            if (moveX * moveX + moveY * moveY + moveZ * moveZ > MOVEMENT_RESYNC_DISTANCE_SQ) {
+                forceFullSend = true;
+            }
+        }
+        boolean stationaryResampleFastPath = forceStableCellResample
+            && !forceFullSend
+            && hasCameraSnapshot
+            && !projected.isEmpty()
+            && Settings.PROJECTION_STATIONARY_REUSE_DISTANCE_BLOCKS > 0.0D
+            && Settings.PROJECTION_STATIONARY_REUSE_ANGLE_DEGREES > 0.0D
+            && isStationaryCamera(eyeX, eyeY, eyeZ, eye.getYaw(), eye.getPitch(),
+                lastEyeX, lastEyeY, lastEyeZ, lastYaw, lastPitch,
+                Settings.PROJECTION_STATIONARY_REUSE_DISTANCE_BLOCKS, Settings.PROJECTION_STATIONARY_REUSE_ANGLE_DEGREES);
+        PortalPlaneWindow planeWindow = PortalPlaneWindow.create(portal.getStructure(), portal.getStructure().getArea(), projectionLocalFrame,
+            localOriginX, localOriginY, localOriginZ, Settings.PROJECTION_APERTURE_PADDING_BLOCKS,
             projectionEyeDot);
         lastPlaneRejected = 0;
         lastWindowRejected = 0;
@@ -390,6 +414,11 @@ public final class PortalProjector {
                 for (int z = za; z <= zb; z++) {
                     double cz = z + 0.5D;
 
+                    long key = packKey(x, y, z);
+                    if (stationaryResampleFastPath && !projected.containsKey(key)) {
+                        continue;
+                    }
+
                     double cellRelX = cx - localOriginX;
                     double cellRelY = cy - localOriginY;
                     double cellRelZ = cz - localOriginZ;
@@ -415,7 +444,6 @@ public final class PortalProjector {
                         continue;
                     }
 
-                    long key = packKey(x, y, z);
                     projectionLocalFrame.transformPointInto(cx, cy, cz,
                         localOriginX, localOriginY, localOriginZ,
                         remoteOriginX, remoteOriginY, remoteOriginZ,
@@ -447,13 +475,16 @@ public final class PortalProjector {
 
                     BlockData projectedHit;
                     boolean maskAir = sample.kind == ProjectedSampleKind.MASK_AIR;
-                    if (shouldProjectAirSample(sample.kind, isLocalAir(localWorld, x, y, z))) {
+                    boolean remoteAir = sample.kind == ProjectedSampleKind.REMOTE_AIR;
+                    if (maskAir || remoteAir) {
+                        boolean localAir = remoteAir && isLocalAir(localWorld, x, y, z);
+                        if (!shouldProjectAirSample(sample.kind, localAir)) {
+                            continue;
+                        }
                         if (maskAir) {
                             lastMaskedCells++;
                         }
                         projectedHit = airBlockData;
-                    } else if (sample.kind == ProjectedSampleKind.REMOTE_AIR) {
-                        continue;
                     } else {
                         projectedHit = transformProjectedBlockData(sample.data, projectionRemoteFrame, projectionLocalFrame);
                     }
@@ -848,14 +879,14 @@ public final class PortalProjector {
         return (projectCallCount % projectPassInterval) == 0L;
     }
 
-    private boolean canReuseProjection(Location eye) {
+    private boolean canReuseProjection(Location eye, boolean stableResample) {
         if (!firstProjectionDone || projected.isEmpty() || !hasCameraSnapshot) {
             return false;
         }
         if (Settings.PROJECTION_STATIONARY_REUSE_DISTANCE_BLOCKS <= 0.0D || Settings.PROJECTION_STATIONARY_REUSE_ANGLE_DEGREES <= 0.0D) {
             return false;
         }
-        if (shouldResampleStableCells()) {
+        if (stableResample) {
             return false;
         }
         if (claimArbiter.hasPendingLighting(observer) && isLightingUpdatePass()) {
@@ -908,15 +939,42 @@ public final class PortalProjector {
         return delta;
     }
 
-    private boolean shouldResampleStableCells() {
+    private boolean computeStableResample(World destWorld, IPortal destAnchor, ProjectionWorldView remoteView) {
         if (!firstProjectionDone) {
             return true;
         }
+        int cadence = stablePassInterval(Settings.PROJECTION_STABLE_CELL_RESAMPLE_INTERVAL_TICKS);
+        if (remoteView instanceof RemoteWorldView) {
+            return (projectCallCount % cadence) == 0L;
+        }
+        int backstop = stablePassInterval(STABLE_RESAMPLE_BACKSTOP_TICKS);
+        if ((projectCallCount % backstop) == 0L) {
+            return true;
+        }
+        if ((projectCallCount % cadence) != 0L) {
+            return false;
+        }
+        return destinationDirty(destWorld, destAnchor);
+    }
 
+    private boolean destinationDirty(World destWorld, IPortal destAnchor) {
+        if (destWorld == null || destAnchor == null || Wormholes.projectionChangeTracker == null) {
+            return true;
+        }
+        double depth = portal.getNetworkViewDepth() + 2.0D;
+        double originX = destAnchor.getOrigin().getX();
+        double originZ = destAnchor.getOrigin().getZ();
+        int minChunkX = ((int) Math.floor(originX - depth)) >> 4;
+        int maxChunkX = ((int) Math.floor(originX + depth)) >> 4;
+        int minChunkZ = ((int) Math.floor(originZ - depth)) >> 4;
+        int maxChunkZ = ((int) Math.floor(originZ + depth)) >> 4;
+        return Wormholes.projectionChangeTracker.dirtySince(destWorld, minChunkX, minChunkZ, maxChunkX, maxChunkZ, lastResampleVersion);
+    }
+
+    private static int stablePassInterval(int intervalTicks) {
         int projectionInterval = Math.max(1, Settings.PROJECTION_REFRESH_INTERVAL_TICKS);
-        int resampleInterval = Math.max(1, Settings.PROJECTION_STABLE_CELL_RESAMPLE_INTERVAL_TICKS);
-        int projectPassInterval = Math.max(1, (resampleInterval + projectionInterval - 1) / projectionInterval);
-        return (projectCallCount % projectPassInterval) == 0L;
+        int resampleInterval = Math.max(1, intervalTicks);
+        return Math.max(1, (resampleInterval + projectionInterval - 1) / projectionInterval);
     }
 
     private void prepareTransformCache(PortalFrame fromFrame, PortalFrame toFrame) {
@@ -1371,8 +1429,8 @@ public final class PortalProjector {
             this.remoteFrame = destinationFrame;
             this.nestedWorld = destinationWorld;
             this.nestedDestination = destination;
-            this.planeWindow = candidateView == null ? null : PortalPlaneWindow.create(candidate.getStructure().getArea(), candidateLocalFrame,
-                candidateOriginX, candidateOriginY, candidateOriginZ, Settings.PROJECTION_APERTURE_PADDING_BLOCKS + PLANE_WINDOW_EXTRA_PADDING,
+            this.planeWindow = candidateView == null ? null : PortalPlaneWindow.create(candidate.getStructure(), candidate.getStructure().getArea(), candidateLocalFrame,
+                candidateOriginX, candidateOriginY, candidateOriginZ, Settings.PROJECTION_APERTURE_PADDING_BLOCKS,
                 signedEyeDistance);
             this.originX = candidateOriginX;
             this.originY = candidateOriginY;
@@ -1498,6 +1556,10 @@ public final class PortalProjector {
     static final class PortalPlaneWindow {
         private static final double EPSILON = 1.0E-7D;
 
+        private final PortalStructure structure;
+        private final boolean perCell;
+        private final int normalAxis;
+        private final int planeCoord;
         private final double originX;
         private final double originY;
         private final double originZ;
@@ -1513,7 +1575,11 @@ public final class PortalProjector {
         private final double upMin;
         private final double upMax;
 
-        private PortalPlaneWindow(double originX,
+        private PortalPlaneWindow(PortalStructure structure,
+                                  boolean perCell,
+                                  int normalAxis,
+                                  int planeCoord,
+                                  double originX,
                                   double originY,
                                   double originZ,
                                   double rightX,
@@ -1527,6 +1593,10 @@ public final class PortalProjector {
                                   double rightMax,
                                   double upMin,
                                   double upMax) {
+            this.structure = structure;
+            this.perCell = perCell;
+            this.normalAxis = normalAxis;
+            this.planeCoord = planeCoord;
             this.originX = originX;
             this.originY = originY;
             this.originZ = originZ;
@@ -1543,7 +1613,8 @@ public final class PortalProjector {
             this.upMax = upMax;
         }
 
-        static PortalPlaneWindow create(AxisAlignedBB area,
+        static PortalPlaneWindow create(PortalStructure structure,
+                                        AxisAlignedBB area,
                                         PortalFrame frame,
                                         double originX,
                                         double originY,
@@ -1574,7 +1645,14 @@ public final class PortalProjector {
                 }
             }
 
-            return new PortalPlaneWindow(originX, originY, originZ,
+            Direction normal = frame.getNormal();
+            int normalAxis = normal.x() != 0 ? 0 : (normal.y() != 0 ? 1 : 2);
+            double normalOrigin = normalAxis == 0 ? originX : (normalAxis == 1 ? originY : originZ);
+            int planeCoord = (int) Math.floor(normalOrigin);
+            boolean perCell = structure != null && !structure.isFullCuboid();
+
+            return new PortalPlaneWindow(structure, perCell, normalAxis, planeCoord,
+                originX, originY, originZ,
                 frame.getRight().x(), frame.getRight().y(), frame.getRight().z(),
                 frame.getUp().x(), frame.getUp().y(), frame.getUp().z(),
                 eyeSignedDistance, rightMin - padding, rightMax + padding, upMin - padding, upMax + padding);
@@ -1603,8 +1681,24 @@ public final class PortalProjector {
             double relZ = hitZ - originZ;
             double right = (relX * rightX) + (relY * rightY) + (relZ * rightZ);
             double up = (relX * upX) + (relY * upY) + (relZ * upZ);
-            return right >= rightMin - EPSILON && right <= rightMax + EPSILON
-                && up >= upMin - EPSILON && up <= upMax + EPSILON;
+            if (right < rightMin - EPSILON || right > rightMax + EPSILON
+                || up < upMin - EPSILON || up > upMax + EPSILON) {
+                return false;
+            }
+            if (!perCell) {
+                return true;
+            }
+            int bx = (int) Math.floor(hitX);
+            int by = (int) Math.floor(hitY);
+            int bz = (int) Math.floor(hitZ);
+            if (normalAxis == 0) {
+                bx = planeCoord;
+            } else if (normalAxis == 1) {
+                by = planeCoord;
+            } else {
+                bz = planeCoord;
+            }
+            return structure.containsBlock(bx, by, bz);
         }
 
         private static double dot(double x, double y, double z, Direction direction) {

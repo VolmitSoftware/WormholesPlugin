@@ -2,7 +2,10 @@ package art.arcane.wormholes;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Color;
@@ -29,6 +32,11 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 
 import art.arcane.wormholes.portal.ILocalPortal;
+import art.arcane.wormholes.portal.IPortal;
+import art.arcane.wormholes.portal.ITunnel;
+import art.arcane.wormholes.portal.RemotePortal;
+import art.arcane.wormholes.portal.UniversalTunnel;
+import art.arcane.wormholes.network.view.RemoteViewCache;
 import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.volmlib.util.scheduling.AR;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
@@ -39,6 +47,10 @@ import art.arcane.wormholes.util.ParticleEffect;
 
 public class EffectManager implements Listener
 {
+	private static final int SYNC_SWEEP_INTERVAL_TICKS = 15;
+	private static final double SYNC_AUDIENCE_RANGE = 48.0;
+	private final Map<UUID, Boolean> portalSyncActive = new ConcurrentHashMap<>();
+
 	public EffectManager()
 	{
 		Wormholes.v("Starting Effect Manager");
@@ -54,6 +66,112 @@ public class EffectManager implements Listener
 				}
 			}
 		};
+
+		new AR(SYNC_SWEEP_INTERVAL_TICKS)
+		{
+			@Override
+			public void run()
+			{
+				sweepRemoteSync();
+			}
+		};
+	}
+
+	private void sweepRemoteSync()
+	{
+		RemoteViewCache cache = Wormholes.remoteViewCache;
+		if(cache == null || Wormholes.portalManager == null || Wormholes.instance == null)
+		{
+			return;
+		}
+
+		for(ILocalPortal portal : Wormholes.portalManager.getLocalPortals())
+		{
+			if(portal == null || portal.getId() == null || !portal.isOpen() || !portal.hasTunnel())
+			{
+				continue;
+			}
+			ITunnel tunnel = portal.getTunnel();
+			if(!(tunnel instanceof UniversalTunnel))
+			{
+				continue;
+			}
+			IPortal destination = tunnel.getDestination();
+			if(!(destination instanceof RemotePortal remote) || remote.getId() == null)
+			{
+				continue;
+			}
+			Location center = portal.getCenter();
+			if(center == null || center.getWorld() == null)
+			{
+				continue;
+			}
+
+			UUID portalKey = portal.getId();
+			if(!hasNearbyPlayer(center, SYNC_AUDIENCE_RANGE))
+			{
+				portalSyncActive.remove(portalKey);
+				continue;
+			}
+
+			boolean ready = cache.isViewReady(remote.getId());
+			boolean syncing = !ready && cache.hasSlicesFor(remote.getId());
+			if(syncing)
+			{
+				portalSyncActive.put(portalKey, Boolean.TRUE);
+				FoliaScheduler.runRegion(Wormholes.instance, center, () -> playPortalSyncing(center));
+			}
+			else if(ready && Boolean.TRUE.equals(portalSyncActive.remove(portalKey)))
+			{
+				FoliaScheduler.runRegion(Wormholes.instance, center, () -> playPortalSyncComplete(center));
+			}
+			else
+			{
+				portalSyncActive.remove(portalKey);
+			}
+		}
+	}
+
+	private boolean hasNearbyPlayer(Location center, double range)
+	{
+		World world = center.getWorld();
+		double rangeSquared = range * range;
+		for(Player player : Bukkit.getOnlinePlayers())
+		{
+			if(!world.equals(player.getWorld()))
+			{
+				continue;
+			}
+			if(player.getLocation().distanceSquared(center) <= rangeSquared)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public void playPortalSyncing(Location center)
+	{
+		World world = center.getWorld();
+		if(world == null)
+		{
+			return;
+		}
+		world.spawnParticle(Particle.PORTAL, center, 18, 0.6, 0.8, 0.6, 0.35);
+		world.spawnParticle(Particle.REVERSE_PORTAL, center, 6, 0.3, 0.5, 0.3, 0.02);
+		world.playSound(center, Sound.BLOCK_BEACON_AMBIENT, 0.45f, 1.7f + ((float) (Math.random() * 0.1)));
+	}
+
+	public void playPortalSyncComplete(Location center)
+	{
+		World world = center.getWorld();
+		if(world == null)
+		{
+			return;
+		}
+		world.spawnParticle(Particle.REVERSE_PORTAL, center, 44, 0.5, 0.7, 0.5, 0.5);
+		world.playSound(center, Sound.BLOCK_BEACON_ACTIVATE, 0.7f, 1.5f);
+		world.playSound(center, Sound.BLOCK_PORTAL_TRIGGER, 0.5f, 1.8f);
 	}
 
 	private void scanLookingPortalsFor(Player player)

@@ -60,7 +60,7 @@ public final class PortalProjectorPlaneTest {
 		double eyeY = 65.5D;
 		double eyeZ = 6.5D;
 		double eyeSignedDistance = 4.0D;
-		PortalProjector.PortalPlaneWindow window = PortalProjector.PortalPlaneWindow.create(area, frame,
+		PortalProjector.PortalPlaneWindow window = PortalProjector.PortalPlaneWindow.create(null, area, frame,
 			originX, originY, originZ, 0.0D, eyeSignedDistance);
 
 		assertTrue(window.containsRayIntersection(eyeX, eyeY, eyeZ, 1.5D, 65.5D, 15.5D, -5.0D));

@@ -5,8 +5,10 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
+import org.bukkit.entity.Player;
 
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.Settings;
@@ -16,6 +18,7 @@ public final class ArrivalWarmer
 {
 	private final ConcurrentHashMap<ChunkKey, WarmHold> holds = new ConcurrentHashMap<ChunkKey, WarmHold>();
 	private final ConcurrentHashMap<UUID, Long> destinationThrottle = new ConcurrentHashMap<UUID, Long>();
+	private final ConcurrentHashMap<UUID, Long> imminentThrottle = new ConcurrentHashMap<UUID, Long>();
 
 	public void warmAround(World world, int blockX, int blockZ)
 	{
@@ -70,6 +73,49 @@ public final class ArrivalWarmer
 			return;
 		}
 		warmAround(center.getWorld(), center.getBlockX(), center.getBlockZ());
+	}
+
+	public void warmImminent(ILocalPortal source, Player viewer)
+	{
+		if(source == null || viewer == null || !Settings.ARRIVAL_PREWARM_ON_INTEREST || !source.hasTunnel())
+		{
+			return;
+		}
+		ITunnel tunnel = source.getTunnel();
+		if(tunnel == null || tunnel.getTunnelType() == TunnelType.UNIVERSAL)
+		{
+			return;
+		}
+		IPortal destinationPortal = tunnel.getDestination();
+		if(!(destinationPortal instanceof ILocalPortal))
+		{
+			return;
+		}
+		ILocalPortal destination = (ILocalPortal) destinationPortal;
+		long now = System.currentTimeMillis();
+		Long nextAllowed = imminentThrottle.get(destination.getId());
+		if(nextAllowed != null && nextAllowed.longValue() > now)
+		{
+			return;
+		}
+		imminentThrottle.put(destination.getId(), Long.valueOf(now + Settings.ARRIVAL_WARM_THROTTLE_MILLIS));
+		Location center = destination.getCenter();
+		if(center == null || center.getWorld() == null)
+		{
+			return;
+		}
+		warmAround(center.getWorld(), center.getBlockX(), center.getBlockZ(), viewRadius(viewer), Settings.ARRIVAL_WARM_HOLD_MILLIS);
+	}
+
+	public int viewRadius(Player viewer)
+	{
+		int distance = viewer == null ? 0 : viewer.getSendViewDistance();
+		if(distance <= 0)
+		{
+			distance = Bukkit.getViewDistance();
+		}
+		int radius = Math.max(distance, Settings.ARRIVAL_WARM_RADIUS_CHUNKS);
+		return Math.min(radius, Settings.ARRIVAL_WARM_MAX_RADIUS_CHUNKS);
 	}
 
 	private void retain(World world, int chunkX, int chunkZ, long expiry)
@@ -148,6 +194,10 @@ public final class ArrivalWarmer
 		{
 			destinationThrottle.values().removeIf(until -> until.longValue() <= now);
 		}
+		if(imminentThrottle.size() > 256)
+		{
+			imminentThrottle.values().removeIf(until -> until.longValue() <= now);
+		}
 	}
 
 	private void releaseTicket(WarmHold hold)
@@ -170,6 +220,7 @@ public final class ArrivalWarmer
 		List<WarmHold> all = new ArrayList<WarmHold>(holds.values());
 		holds.clear();
 		destinationThrottle.clear();
+		imminentThrottle.clear();
 		for(WarmHold hold : all)
 		{
 			releaseTicket(hold);

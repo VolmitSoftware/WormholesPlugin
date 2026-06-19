@@ -35,7 +35,7 @@ public class CommandNetwork {
         NetworkManager network = Wormholes.networkManager;
         NetworkConfig config = Wormholes.settings.getNetwork();
         if (network == null || !config.enabled) {
-            sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "Networking is " + ChatColor.RED + "disabled" + ChatColor.GRAY + " (config/network.toml).");
+            sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "Networking is " + ChatColor.RED + "disabled" + ChatColor.GRAY + " (config/wormholes.toml).");
             return;
         }
         if (!network.isRunning()) {

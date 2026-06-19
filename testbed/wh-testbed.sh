@@ -32,6 +32,7 @@ DROPINS="${MANAGER_DIR}/consumers/plugin-consumers/dropins/plugins"
 
 A_NAME="WH-ALPHA"; A_GAME_PORT=25566; A_WH_PORT=8902
 B_NAME="WH-BETA";  B_GAME_PORT=25567; B_WH_PORT=8903
+WH_MC="${WH_MC:-26.1.2}"   # PacketEvents 2.12.1 maps 26.1.x NMS; 26.2 crashes (NMS_ITEM_STACK_CLASS null)
 
 MX() { "${MANAGER_DIR}/start.sh" "$@"; }
 
@@ -55,18 +56,20 @@ set_prop() { # file key value
 
 write_network_toml() { # configdir servername listenport
   local dir="$1" name="$2" port="$3"
+  # WH_SIDEBAND=true (default) forces the game-port status sideband by NOT opening the raw
+  # listener, so a loopback pair exercises the same path as two NAT'd prod servers.
+  local listen_enabled="false"; [ "${WH_SIDEBAND:-true}" = "false" ] && listen_enabled="true"
   mkdir -p "$dir"
-  cat > "${dir}/network.toml" <<EOF
+  cat > "${dir}/wormholes.toml" <<EOF
+[network]
 enabled = true
-server-name = "${name}"
-listen-enabled = true
+listen-enabled = ${listen_enabled}
 listen-port = ${port}
 advertise-host-override = "127.0.0.1"
 trust-on-first-use = true
-transfer-mode = "auto"
-optimistic-handoff = true
-auto-accept-transfers = true
+entity-transfer-deny-types = ""
 EOF
+  rm -f "${dir}/network.toml" "${dir}/main.toml" "${dir}/projection.toml" "${dir}/render.toml"
 }
 
 build_jar() {
@@ -112,8 +115,8 @@ ensure_instance() { # name
   if instance_exists "$1"; then
     say "instance ${1} exists - reusing"
   else
-    say "creating isolated purpur instance ${1}..."
-    MX server create "$1" --type purpur --isolated || say "create reported failure for ${1} (continuing — likely already exists)"
+    say "creating isolated purpur instance ${1} (mc ${WH_MC})..."
+    MX server create "$1" --type purpur --isolated --mc "${WH_MC}" || say "create reported failure for ${1} (continuing — likely already exists)"
   fi
 }
 

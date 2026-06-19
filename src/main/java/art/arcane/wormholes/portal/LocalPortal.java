@@ -290,24 +290,29 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		for(Entity i : getStructure().getCaptureZone().getEntities(getStructure().getWorld()))
 		{
 			UUID entityId = i.getUniqueId();
-			ReentryLatch latch = REENTRY_LATCHES.get(entityId);
-			if(latch != null)
+			if(i instanceof Player viewer)
 			{
-				if(getId().equals(latch.portalId()))
+				ArrivalWarmer warmer = Wormholes.arrivalWarmer;
+				if(warmer != null)
 				{
-					if(isOccupyingPortal(i))
+					warmer.warmImminent(this, viewer);
+				}
+			}
+			ReentryLatch latch = activeReentryLatch(entityId, now);
+			if(latch != null && getId().equals(latch.portalId()))
+			{
+				if(isOccupyingPortal(i))
+				{
+					if(!latch.armed)
 					{
-						if(!latch.armed)
-						{
-							latch.armed = true;
-							Wormholes.v("[latch] " + i.getName() + " inside portal " + getId() + " - reentry latch ARMED (no teleport until they fully leave)");
-						}
+						latch.armed = true;
+						Wormholes.v("[latch] " + i.getName() + " inside portal " + getId() + " - reentry latch ARMED (no teleport until they fully leave)");
 					}
-					else if(latch.armed)
-					{
-						clearReentryLatch(entityId);
-						Wormholes.v("[latch] " + i.getName() + " left portal " + getId() + " - reentry latch CLEARED (eligible again)");
-					}
+				}
+				else if(latch.armed)
+				{
+					clearReentryLatch(entityId);
+					Wormholes.v("[latch] " + i.getName() + " left portal " + getId() + " - reentry latch CLEARED (eligible again)");
 				}
 				continue;
 			}
@@ -368,18 +373,31 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				if(getStructure().contains(l))
 				{
 					playEffect(PortalEffect.PUSH, l);
-					double relX = start.getX() - getOrigin().getX();
-					double relY = start.getY() - getOrigin().getY();
-					double relZ = start.getZ() - getOrigin().getZ();
-					boolean frontSide = ((relX * getFrame().getNormal().x()) + (relY * getFrame().getNormal().y()) + (relZ * getFrame().getNormal().z())) >= 0.0D;
-					f[0] = new Traversive(i, getFrame().view(frontSide), getOrigin(), l.toVector(), velocity, i.getLocation().getDirection(), frontSide);
+					f[0] = buildCrossing(i, start, l.toVector(), velocity);
 					return false;
 				}
 
 				return true;
 			}
 		};
+
+		if(f[0] == null && getStructure().contains(start))
+		{
+			Vector crossVelocity = velocity.lengthSquared() > 1.0E-4D ? velocity : start.getDirection().clone().multiply(0.2D);
+			playEffect(PortalEffect.PUSH, start);
+			f[0] = buildCrossing(i, start, start.toVector(), crossVelocity);
+		}
+
 		return f[0];
+	}
+
+	private Traversive buildCrossing(Entity i, Location start, Vector inPoint, Vector velocity)
+	{
+		double relX = start.getX() - getOrigin().getX();
+		double relY = start.getY() - getOrigin().getY();
+		double relZ = start.getZ() - getOrigin().getZ();
+		boolean frontSide = ((relX * getFrame().getNormal().x()) + (relY * getFrame().getNormal().y()) + (relZ * getFrame().getNormal().z())) >= 0.0D;
+		return new Traversive(i, getFrame().view(frontSide), getOrigin(), inPoint, velocity, start.getDirection(), frontSide);
 	}
 
 	private boolean canUseTunnel(Entity entity)
@@ -848,6 +866,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			Location target = exit.clone().add(dx.toVector().normalize().multiply(1.25));
 			target.setDirection(outLook);
 
+			boolean reloadExpected = target.getWorld() != null && !target.getWorld().equals(p.getWorld());
+
 			UUID entityId = p.getUniqueId();
 			if(!TELEPORT_IN_FLIGHT.add(entityId))
 			{
@@ -857,7 +877,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			ArrivalWarmer warmer = Wormholes.arrivalWarmer;
 			if(warmer != null && target.getWorld() != null)
 			{
-				warmer.warmAround(target.getWorld(), target.getBlockX(), target.getBlockZ());
+				int warmRadius = p instanceof Player ? warmer.viewRadius((Player) p) : Settings.ARRIVAL_WARM_RADIUS_CHUNKS;
+				warmer.warmAround(target.getWorld(), target.getBlockX(), target.getBlockZ(), warmRadius, Settings.ARRIVAL_WARM_HOLD_MILLIS);
 			}
 
 			p.teleportAsync(target, PlayerTeleportEvent.TeleportCause.PLUGIN).whenComplete((success, error) ->
@@ -874,6 +895,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					markTeleportCooldown(entityId, System.currentTimeMillis());
 					latchReentry(entityId, getId());
 					playEffect(PortalEffect.PUSH, exit);
+					if(p instanceof Player)
+					{
+						ArrivalTransition.apply((Player) p, reloadExpected);
+						if(Wormholes.projectionManager != null)
+						{
+							Wormholes.projectionManager.reprimeArrival((Player) p);
+						}
+					}
 
 					if(Settings.DEBUG_TRAVERSABLES)
 					{
@@ -918,6 +947,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		art.arcane.wormholes.service.WormholesTelemetry.countTraversal();
 		Wormholes.v("[arrival] completeRemoteArrival " + entity.getName() + " settled near portal " + getId() + ", latched + cooldown set");
 		playEffect(PortalEffect.PUSH, entity.getLocation());
+		if(entity instanceof Player && Wormholes.projectionManager != null)
+		{
+			Wormholes.projectionManager.reprimeArrival((Player) entity);
+		}
 	}
 
 	@Override
@@ -1009,6 +1042,21 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	public static void clearReentryLatch(UUID entityId)
 	{
 		REENTRY_LATCHES.remove(entityId);
+	}
+
+	private static ReentryLatch activeReentryLatch(UUID entityId, long now)
+	{
+		ReentryLatch latch = REENTRY_LATCHES.get(entityId);
+		if(latch == null)
+		{
+			return null;
+		}
+		if(latch.stampMillis() + REENTRY_LATCH_TTL_MILLIS <= now)
+		{
+			REENTRY_LATCHES.remove(entityId, latch);
+			return null;
+		}
+		return latch;
 	}
 
 	public static void latchReentryIfInsidePortal(Entity entity)
@@ -1188,7 +1236,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		UIWindow window = new UIWindow(Wormholes.instance, p);
 		window.setTitle(getRouter(true));
 		window.setResolution(WindowResolution.W9_H6);
-		window.setViewportHeight(6);
+		window.setViewportHeight(isGateway() ? 6 : 5);
 		window.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
 		window.onClosed((w) -> openMenus.remove(p.getUniqueId()));
 		rebuildPortalMenuElements(window, p);
@@ -1229,49 +1277,17 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		window.setElement(1, 1, modeOpenerElement(window, p));
 		window.setElement(3, 1, projectionsElement(window, p));
 
-		window.setElement(-3, 2, permissionElement(window, p));
-		window.setElement(-1, 2, outgoingTransfersElement(window, p));
-		window.setElement(1, 2, incomingTransfersElement(window, p));
+		window.setElement(-3, 2, directionElement(window, p));
+		window.setElement(-1, 2, flipFaceElement(window, p));
+		window.setElement(1, 2, rotateCounterClockwiseElement(window, p));
+		window.setElement(3, 2, rotateClockwiseElement(window, p));
 
-		window.setElement(-3, 3, directionElement(window, p));
-		window.setElement(-1, 3, flipFaceElement(window, p));
-		window.setElement(1, 3, rotateCounterClockwiseElement(window, p));
-		window.setElement(3, 3, rotateClockwiseElement(window, p));
-
-		window.setElement(0, 5, new UIElement("destroy")
-				.setName(ChatColor.RED + "" + ChatColor.BOLD + "Delete Portal")
-				.addLore(ChatColor.GRAY + "Removes the portal without")
-				.addLore(ChatColor.GRAY + "dropping portal blocks.")
-				.addLore(" ")
-				.addLore(ChatColor.RED + "" + ChatColor.UNDERLINE + "Shift + Left Click to confirm")
-				.setMaterial(new MaterialBlock(Material.GUNPOWDER))
-				.onShiftLeftClick((e) ->
-				{
-					window.close();
-					destroy();
-				}));
+		int settingsRow = isGateway() ? 4 : 3;
+		int deleteRow = isGateway() ? 5 : 4;
 
 		if(isGateway())
 		{
-			window.setElement(3, 2, settingsSyncElement(window, p));
-
-			window.setElement(-3, 4, new UIElement("network-view-settings")
-					.setName(ChatColor.DARK_AQUA + "" + ChatColor.BOLD + "Network View")
-					.addLore(ChatColor.GRAY + "Tune this gateway's streamed")
-					.addLore(ChatColor.GRAY + "cross-server projection volume.")
-					.addLore(" ")
-					.addLore(ChatColor.GRAY + "Depth " + ChatColor.AQUA + networkViewDepth)
-					.addLore(ChatColor.GRAY + "Entity Update " + ChatColor.AQUA + networkViewEntityIntervalTicks + "t")
-					.addLore(" ")
-					.addLore(ChatColor.DARK_GRAY + "Click to open Network View.")
-					.setMaterial(new MaterialBlock(Material.SPYGLASS))
-					.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () ->
-					{
-						window.close();
-						uiOpenNetworkViewMenu(p);
-					})));
-
-			window.setElement(-1, 4, new UIElement("export-portal")
+			window.setElement(-1, 3, new UIElement("export-portal")
 					.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Export Code")
 					.addLore(ChatColor.GRAY + "Generates a portal code you can")
 					.addLore(ChatColor.GRAY + "paste into another server's")
@@ -1289,7 +1305,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 						}
 					})));
 
-			window.setElement(1, 4, new UIElement("import-portal")
+			window.setElement(1, 3, new UIElement("import-portal")
 					.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Import Code")
 					.addLore(ChatColor.GRAY + "Paste a portal code from another")
 					.addLore(ChatColor.GRAY + "server to link this gateway to it.")
@@ -1316,40 +1332,71 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 						});
 					})));
 		}
+
+		window.setElement(0, settingsRow, settingsOpenerElement(window, p));
+
+		window.setElement(0, deleteRow, new UIElement("destroy")
+				.setName(ChatColor.RED + "" + ChatColor.BOLD + "Delete Portal")
+				.addLore(ChatColor.GRAY + "Removes the portal without")
+				.addLore(ChatColor.GRAY + "dropping portal blocks.")
+				.addLore(" ")
+				.addLore(ChatColor.RED + "" + ChatColor.UNDERLINE + "Shift + Left Click to confirm")
+				.setMaterial(new MaterialBlock(Material.GUNPOWDER))
+				.onShiftLeftClick((e) ->
+				{
+					window.close();
+					destroy();
+				}));
 		});
 	}
 
-	private void uiOpenNetworkViewMenu(Player p)
+	private void uiOpenSettingsMenu(Player p)
 	{
-		Window w = uiCreateNetworkViewMenu(p);
+		Window w = uiCreateSettingsMenu(p);
 		w.setVisible(true);
 	}
 
-	private Window uiCreateNetworkViewMenu(Player p)
+	private Window uiCreateSettingsMenu(Player p)
 	{
 		UIWindow window = new UIWindow(Wormholes.instance, p);
 		window.setTitle(getRouter(true));
 		window.setResolution(WindowResolution.W9_H6);
-		window.setViewportHeight(3);
+		window.setViewportHeight(isGateway() ? 5 : 3);
 		window.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
 
-		window.setElement(0, 0, networkViewPlacardElement());
+		window.setElement(0, 0, settingsPlacardElement());
 
-		window.setElement(-3, 1, networkViewNumberElement(window, p, "network-view-depth", "Capture Radius",
-				ChatColor.GRAY + "Blocks captured in every direction around the destination portal (360°), and how far you can see through it.",
-				Material.SPYGLASS, this::getNetworkViewDepth, this::setNetworkViewDepth, 4, 16));
-		window.setElement(0, 1, networkViewNumberElement(window, p, "network-view-heartbeat", "Full Refresh",
-				ChatColor.GRAY + "Ticks between full block refresh broadcasts.",
-				Material.CLOCK, this::getNetworkViewHeartbeatTicks, this::setNetworkViewHeartbeatTicks, 10, 60));
-		window.setElement(2, 1, networkViewNumberElement(window, p, "network-view-entities", "Entity Update",
-				ChatColor.GRAY + "Ticks between entity update broadcasts.",
-				Material.ENDER_EYE, this::getNetworkViewEntityIntervalTicks, this::setNetworkViewEntityIntervalTicks, 2, 20));
-		window.setElement(4, 1, networkViewNumberElement(window, p, "network-view-grace", "Unsubscribe Grace",
-				ChatColor.GRAY + "Seconds to keep streaming after a viewer looks away.",
-				Material.REDSTONE, this::getNetworkViewUnsubscribeGraceSeconds, this::setNetworkViewUnsubscribeGraceSeconds, 5, 30));
+		if(isGateway())
+		{
+			window.setElement(-3, 1, permissionElement(window, p));
+			window.setElement(-1, 1, outgoingTransfersElement(window, p));
+			window.setElement(1, 1, incomingTransfersElement(window, p));
+			window.setElement(3, 1, settingsSyncElement(window, p));
 
-		window.setElement(-2, 2, networkViewFallbackElement(p, window));
-		window.setElement(0, 2, backToPortalMenuElement(window, p));
+			window.setElement(-3, 2, networkViewNumberElement(window, p, "network-view-depth", "Capture Radius",
+					ChatColor.GRAY + "Blocks captured in every direction around the destination portal (360°), and how far you can see through it.",
+					Material.SPYGLASS, this::getNetworkViewDepth, this::setNetworkViewDepth, 4, 16));
+			window.setElement(-1, 2, networkViewNumberElement(window, p, "network-view-heartbeat", "Full Refresh",
+					ChatColor.GRAY + "Ticks between full block refresh broadcasts.",
+					Material.CLOCK, this::getNetworkViewHeartbeatTicks, this::setNetworkViewHeartbeatTicks, 10, 60));
+			window.setElement(1, 2, networkViewNumberElement(window, p, "network-view-entities", "Entity Update",
+					ChatColor.GRAY + "Ticks between entity update broadcasts.",
+					Material.ENDER_EYE, this::getNetworkViewEntityIntervalTicks, this::setNetworkViewEntityIntervalTicks, 2, 20));
+			window.setElement(3, 2, networkViewNumberElement(window, p, "network-view-grace", "Unsubscribe Grace",
+					ChatColor.GRAY + "Seconds to keep streaming after a viewer looks away.",
+					Material.REDSTONE, this::getNetworkViewUnsubscribeGraceSeconds, this::setNetworkViewUnsubscribeGraceSeconds, 5, 30));
+
+			window.setElement(0, 3, networkViewFallbackElement(p, window));
+			window.setElement(0, 4, backToPortalMenuElement(window, p));
+		}
+		else
+		{
+			window.setElement(-2, 1, permissionElement(window, p));
+			window.setElement(0, 1, outgoingTransfersElement(window, p));
+			window.setElement(2, 1, incomingTransfersElement(window, p));
+
+			window.setElement(0, 2, backToPortalMenuElement(window, p));
+		}
 
 		return window;
 	}
@@ -1406,7 +1453,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			{
 				if(text == null || text.equalsIgnoreCase("cancel"))
 				{
-					uiOpenNetworkViewMenu(p);
+					uiOpenSettingsMenu(p);
 					return;
 				}
 				String previous = getNetworkViewFallbackBlock();
@@ -1416,7 +1463,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				{
 					notifySetting(p, "Fallback set to " + ChatColor.AQUA + getNetworkViewFallbackBlock());
 				}
-				uiOpenNetworkViewMenu(p);
+				uiOpenSettingsMenu(p);
 			});
 		});
 		element.onRightClick((e) ->
@@ -1487,16 +1534,19 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		return element;
 	}
 
-	private Element networkViewPlacardElement()
+	private Element settingsPlacardElement()
 	{
-		UIElement element = new UIElement("network-view-placard");
-		element.setName(ChatColor.DARK_AQUA + "" + ChatColor.BOLD + "Network View");
-		element.setMaterial(new MaterialBlock(Material.SPYGLASS));
-		element.addLore(ChatColor.GRAY + "Tune this gateway's streamed");
-		element.addLore(ChatColor.GRAY + "cross-server projection.");
-		element.addLore(" ");
-		element.addLore(ChatColor.GRAY + "Larger values = richer view,");
-		element.addLore(ChatColor.GRAY + "more bandwidth.");
+		UIElement element = new UIElement("settings-placard");
+		element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Portal Settings");
+		element.setMaterial(new MaterialBlock(Material.LEVER));
+		element.addLore(ChatColor.GRAY + "Access and transfer controls.");
+		if(isGateway())
+		{
+			element.addLore(ChatColor.GRAY + "Plus cross-server view tuning.");
+			element.addLore(" ");
+			element.addLore(ChatColor.GRAY + "Larger depth / shorter ticks =");
+			element.addLore(ChatColor.GRAY + "richer view, more bandwidth.");
+		}
 		return element;
 	}
 
@@ -1596,7 +1646,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	{
 		UIElement element = new UIElement("rotate-clockwise");
 		element.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Clockwise");
-		element.setMaterial(new MaterialBlock(Material.COMPARATOR));
+		element.setMaterial(new MaterialBlock(Material.LEVER));
 		element.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees");
 		element.addLore(ChatColor.GRAY + "without changing the face.");
 		element.addLore(" ");
@@ -1666,6 +1716,35 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		{
 			lore.add(ChatColor.DARK_GRAY + "Click to toggle: Off / On");
 		}
+	}
+
+	private Element settingsOpenerElement(Window window, Player viewer)
+	{
+		UIElement element = new UIElement("portal-settings");
+		element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Settings");
+		element.setMaterial(new MaterialBlock(Material.LEVER));
+		element.addLore(ChatColor.GRAY + "Permissions, transfers" + (isGateway() ? "," : "."));
+		if(isGateway())
+		{
+			element.addLore(ChatColor.GRAY + "and cross-server view tuning.");
+		}
+		element.addLore(" ");
+		element.addLore(ChatColor.GRAY + "Access: " + ChatColor.LIGHT_PURPLE + getPermissionMode().getDisplayName());
+		element.addLore(ChatColor.GRAY + "Send " + (isOutgoingTraversalsEnabled() ? ChatColor.GREEN + "On" : ChatColor.RED + "Off")
+				+ ChatColor.GRAY + "  Receive " + (isIncomingTraversalsEnabled() ? ChatColor.GREEN + "On" : ChatColor.RED + "Off"));
+		if(isGateway())
+		{
+			element.addLore(ChatColor.GRAY + "Depth " + ChatColor.AQUA + networkViewDepth
+					+ ChatColor.GRAY + "  Entity " + ChatColor.AQUA + networkViewEntityIntervalTicks + "t");
+		}
+		element.addLore(" ");
+		element.addLore(ChatColor.DARK_GRAY + "Click to open settings.");
+		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
+		{
+			window.close();
+			uiOpenSettingsMenu(viewer);
+		}));
+		return element;
 	}
 
 	private Element settingsSyncElement(Window window, Player viewer)

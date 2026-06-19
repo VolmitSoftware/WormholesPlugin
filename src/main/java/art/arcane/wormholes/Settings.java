@@ -15,7 +15,7 @@ public final class Settings {
     public static volatile double CAPTURE_ZONE_RADIUS = 8.0D;
     public static volatile double PROJECTION_RANGE = 32.0D;
     public static volatile double NEAR_PLANE_PADDING = 2.0D;
-    public static volatile double PROJECTION_APERTURE_PADDING_BLOCKS = 1.0D;
+    public static volatile double PROJECTION_APERTURE_PADDING_BLOCKS = 0.5D;
     public static volatile boolean LIGHTING_FIDELITY = true;
     public static volatile int LIGHTING_REFRESH_INTERVAL_TICKS = 4;
     public static volatile int LIGHTING_MAX_SECTIONS_PER_PASS = 2;
@@ -42,8 +42,12 @@ public final class Settings {
     public static volatile long TELEPORT_COOLDOWN_MILLIS = 1000L;
     public static volatile boolean ARRIVAL_PREWARM_ON_INTEREST = true;
     public static volatile int ARRIVAL_WARM_RADIUS_CHUNKS = 4;
+    public static volatile int ARRIVAL_WARM_MAX_RADIUS_CHUNKS = 10;
     public static volatile long ARRIVAL_WARM_HOLD_MILLIS = 5000L;
     public static volatile long ARRIVAL_WARM_THROTTLE_MILLIS = 1000L;
+    public static volatile boolean ARRIVAL_TRANSITION_MASK = true;
+    public static volatile int ARRIVAL_TRANSITION_MASK_TICKS = 25;
+    public static volatile boolean REPLACE_NETHER_AND_END_PORTALS = true;
     public static volatile boolean DEBUG = false;
 
     private Settings() {
@@ -65,8 +69,12 @@ public final class Settings {
         TELEPORT_COOLDOWN_MILLIS = clampInt(main.teleportCooldownMillis, 0, 60_000);
         ARRIVAL_PREWARM_ON_INTEREST = main.arrivalPrewarmOnInterest;
         ARRIVAL_WARM_RADIUS_CHUNKS = clampInt(main.arrivalWarmRadiusChunks, 0, 12);
+        ARRIVAL_WARM_MAX_RADIUS_CHUNKS = clampInt(main.arrivalWarmMaxRadiusChunks, ARRIVAL_WARM_RADIUS_CHUNKS, 32);
         ARRIVAL_WARM_HOLD_MILLIS = clampInt(main.arrivalWarmHoldMillis, 0, 60_000);
         ARRIVAL_WARM_THROTTLE_MILLIS = clampInt(main.arrivalWarmThrottleMillis, 0, 60_000);
+        ARRIVAL_TRANSITION_MASK = main.arrivalTransitionMask;
+        ARRIVAL_TRANSITION_MASK_TICKS = clampInt(main.arrivalTransitionMaskTicks, 0, 200);
+        REPLACE_NETHER_AND_END_PORTALS = main.replaceNetherAndEndPortals;
         DEBUG = main.verboseLogging;
 
         FRUSTUM_CULLING_RATIO = clampDouble(projection.frustumCullingRatio, 0.0D, 1.0D);

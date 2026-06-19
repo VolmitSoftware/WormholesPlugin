@@ -1,0 +1,42 @@
+package art.arcane.wormholes.portal.vanilla;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import org.junit.jupiter.api.Test;
+
+public final class WorldPairingTest
+{
+	@Test
+	public void overworldToNetherDividesByEight()
+	{
+		assertEquals(0, WorldPairing.overworldToNether(0));
+		assertEquals(1, WorldPairing.overworldToNether(8));
+		assertEquals(125, WorldPairing.overworldToNether(1000));
+		assertEquals(12, WorldPairing.overworldToNether(100));
+	}
+
+	@Test
+	public void overworldToNetherFloorsNegativeCoordinates()
+	{
+		assertEquals(-1, WorldPairing.overworldToNether(-1));
+		assertEquals(-1, WorldPairing.overworldToNether(-8));
+		assertEquals(-2, WorldPairing.overworldToNether(-9));
+		assertEquals(-13, WorldPairing.overworldToNether(-100));
+	}
+
+	@Test
+	public void netherToOverworldMultipliesByEight()
+	{
+		assertEquals(0, WorldPairing.netherToOverworld(0));
+		assertEquals(64, WorldPairing.netherToOverworld(8));
+		assertEquals(-800, WorldPairing.netherToOverworld(-100));
+	}
+
+	@Test
+	public void roundTripFromNetherStaysWithinChunkScale()
+	{
+		int nether = WorldPairing.overworldToNether(1000);
+		int back = WorldPairing.netherToOverworld(nether);
+		assertEquals(1000, back);
+	}
+}

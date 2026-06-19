@@ -176,6 +176,10 @@ public final class RemoteViewCache {
     private final Map<String, RemoteView> views = new ConcurrentHashMap<>();
     private final Map<String, BlockData> parsedBlockData = new ConcurrentHashMap<>();
     private final Map<String, RemoteChunkStore> chunkStores = new ConcurrentHashMap<>();
+    private final Set<String> bulkDecodeErrorPeers = ConcurrentHashMap.newKeySet();
+    private final Set<String> noViewPeers = ConcurrentHashMap.newKeySet();
+    private final Set<String> publishedPeers = ConcurrentHashMap.newKeySet();
+    private final Set<String> unparseableBlockStates = ConcurrentHashMap.newKeySet();
 
     public RemoteChunkStore chunkStore(String peerName) {
         return chunkStores.computeIfAbsent(peerName, ignored -> new RemoteChunkStore());
@@ -198,7 +202,10 @@ public final class RemoteViewCache {
             try {
                 RemoteChunkStore.ReplicatedChunk chunk = store.applyBulk(bulk);
                 publishSliceToViews(peerName, chunk);
-            } catch (IOException ignored) {
+            } catch (IOException e) {
+                if (bulkDecodeErrorPeers.add(peerName)) {
+                    art.arcane.wormholes.Wormholes.w("[view] CHUNK_BULK decode failed for peer " + peerName + ": " + e.getMessage() + " (further decode-error logs for this peer suppressed)");
+                }
             }
         }
     }
@@ -232,10 +239,12 @@ public final class RemoteViewCache {
         }
         long columnKey = chunk.chunkKey();
         DecodedSlice decoded = decode(slice);
+        boolean matched = false;
         for (RemoteView view : views.values()) {
             if (!view.peerName.equals(peerName)) {
                 continue;
             }
+            matched = true;
             ViewBox existing = view.box;
             ViewBox sliceBox = new ViewBox(slice.minX(), slice.minY(), slice.minZ(),
                 slice.minX() + slice.sizeX() - 1, slice.minY() + slice.sizeY() - 1, slice.minZ() + slice.sizeZ() - 1);
@@ -247,6 +256,13 @@ public final class RemoteViewCache {
             view.slices.put(columnKey, decoded);
             view.revision++;
             view.lastUpdateMillis = System.currentTimeMillis();
+        }
+        if (matched) {
+            if (publishedPeers.add(peerName)) {
+                art.arcane.wormholes.Wormholes.instance.getLogger().info("[view] first remote chunk slice published to projector for peer " + peerName + " (block data is flowing)");
+            }
+        } else if (noViewPeers.add(peerName)) {
+            art.arcane.wormholes.Wormholes.w("[view] received remote chunk slices for peer " + peerName + " but no projector view is subscribed to it (peer-name mismatch or no active subscription)");
         }
     }
 
@@ -393,8 +409,11 @@ public final class RemoteViewCache {
         BlockData parsed;
         try {
             parsed = Bukkit.createBlockData(stateString);
-        } catch (IllegalArgumentException e) {
+        } catch (RuntimeException e) {
             parsed = Material.AIR.createBlockData();
+            if (unparseableBlockStates.size() < 8 && unparseableBlockStates.add(stateString)) {
+                art.arcane.wormholes.Wormholes.w("[view] remote block state did not parse, rendering AIR: '" + stateString + "' (" + e.getMessage() + ")");
+            }
         }
         if (parsedBlockData.size() < 65536) {
             parsedBlockData.put(stateString, parsed);

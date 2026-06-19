@@ -19,32 +19,32 @@ class TomlCodecNetworkTest {
     Path tempDir;
 
     @Test
-    void networkConfigRuntimeSettingsRoundTripsThroughFile() throws Exception {
+    void operatorSettingsRoundTripAndDeterminedSettingsAreNotWritten() throws Exception {
         NetworkConfig original = new NetworkConfig();
         original.enabled = true;
-        original.serverName = "anchor";
         original.listenEnabled = true;
-        original.advertiseHostOverride = "10.0.0.1";
         original.listenPort = 9100;
         original.trustOnFirstUse = false;
-        original.transferMode = "packet";
-        original.handoffTimeoutMs = 3000L;
+        original.entityTransferDenyTypes = "ARMOR_STAND";
+        original.advertiseHostOverride = "10.0.0.1";
 
         File file = tempDir.resolve("network.toml").toFile();
         TomlCodec.writeCanonical(file, original);
 
         String written = Files.readString(file.toPath(), StandardCharsets.UTF_8);
-        assertFalse(written.contains("[[peers]]"), "network.toml should not expose static peers:\n" + written);
+        assertFalse(written.contains("[[peers]]"), "network config should not expose static peers:\n" + written);
+        assertTrue(written.contains("advertise-host-override"), "advertise-host-override is the kept escape hatch and must be written");
+        assertFalse(written.contains("transfer-mode"), "auto transfer mode must not be written");
+        assertFalse(written.contains("server-name"), "auto-derived server name must not be written");
+        assertFalse(written.contains("compression-enabled"), "fixed transport tuning must not be written");
 
         NetworkConfig loaded = TomlCodec.loadOrCreate(file, NetworkConfig.class);
         assertEquals(true, loaded.enabled);
-        assertEquals("anchor", loaded.serverName);
         assertEquals(true, loaded.listenEnabled);
-        assertEquals("10.0.0.1", loaded.advertiseHostOverride);
         assertEquals(9100, loaded.listenPort);
         assertEquals(false, loaded.trustOnFirstUse);
-        assertEquals("packet", loaded.transferMode);
-        assertEquals(3000L, loaded.handoffTimeoutMs);
+        assertEquals("ARMOR_STAND", loaded.entityTransferDenyTypes);
+        assertEquals("10.0.0.1", loaded.advertiseHostOverride);
     }
 
     @Test
@@ -63,7 +63,6 @@ class TomlCodecNetworkTest {
     void rewriteOfLoadedConfigIsStable() throws Exception {
         NetworkConfig original = new NetworkConfig();
         original.enabled = true;
-        original.serverName = "hub";
         original.listenPort = 9100;
 
         File file = tempDir.resolve("network.toml").toFile();
@@ -71,7 +70,8 @@ class TomlCodecNetworkTest {
         String first = Files.readString(file.toPath(), StandardCharsets.UTF_8);
 
         NetworkConfig loaded = TomlCodec.loadOrCreate(file, NetworkConfig.class);
-        assertEquals("hub", loaded.serverName);
+        assertEquals(9100, loaded.listenPort);
+        assertEquals(true, loaded.enabled);
         String second = Files.readString(file.toPath(), StandardCharsets.UTF_8);
         assertEquals(first, second);
     }

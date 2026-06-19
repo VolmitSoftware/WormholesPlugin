@@ -89,7 +89,7 @@ public final class TraversalService implements Listener {
         long now = System.currentTimeMillis();
         pruneTransferLocks(now);
         if (isTransferLocked(player.getUniqueId(), now)) {
-            Wormholes.v("[handoff] BLOCKED " + player.getName() + " -> " + peerName + ": transfer-locked (recent transfer not yet cleared)");
+            Wormholes.i("[handoff] BLOCKED " + player.getName() + " -> " + peerName + ": transfer-locked (recent transfer not yet cleared)");
             return;
         }
 
@@ -97,13 +97,17 @@ public final class TraversalService implements Listener {
         long deadline = now + config.handoffTimeoutMs;
         lockTransfer(player.getUniqueId(), deadline);
         pendingHandoffs.put(transferId, new PendingHandoff(player.getUniqueId(), peerName, sourcePortalId(sourcePortal), traversive, deadline));
-        Wormholes.v("[handoff] begin " + player.getName() + " -> peer=" + peerName + " destPortal=" + tunnel.getDestinationPortalId() + " transferId=" + transferId + " optimistic=" + config.optimisticHandoff);
+        Wormholes.i("[handoff] begin " + player.getName() + " -> peer=" + peerName + " destPortal=" + tunnel.getDestinationPortalId() + " transferId=" + transferId + " optimistic=" + config.optimisticHandoff);
         network.send(peerName, new WireMessage.HandoffRequest(transferId, player.getUniqueId(), player.getName(), tunnel.getDestinationPortalId(), WireTraversive.fromTraversive(traversive)));
         if (Wormholes.viewServer != null) {
             Wormholes.viewServer.onPortalTraversed(peerName, tunnel.getDestinationPortalId());
         }
 
-        if (config.optimisticHandoff) {
+        // Over the slow game-port sideband the optimistic redirect can beat the HANDOFF_REQUEST to the
+        // destination, landing the player at their raw login spot. For sideband-only peers wait for the
+        // ack (the queued request triggers an immediate poll, so the ack is a single fast round-trip)
+        // so the destination has registered the pending arrival before the client is moved.
+        if (config.optimisticHandoff && !network.isSidebandOnlyPeer(peerName)) {
             FoliaScheduler.runEntity(Wormholes.instance, player, () -> performOptimisticTransfer(player, peerName, peer, config, transferId));
             return;
         }
@@ -235,10 +239,17 @@ public final class TraversalService implements Listener {
         }
         pruneArrivals();
         Traversive traversive = request.traversive().toTraversive(null);
-        pendingArrivals.put(request.playerId(), new PendingArrival(exit.getId(), request.traversive(), System.currentTimeMillis() + ARRIVAL_TTL_MILLIS));
-        Wormholes.v("[handoff] request RX from peer=" + peerName + " player=" + request.playerName() + " exitPortal=" + exit.getId() + " — registered pendingArrival, acking");
+        PendingArrival arrival = new PendingArrival(exit.getId(), request.traversive(), System.currentTimeMillis() + ARRIVAL_TTL_MILLIS);
+        pendingArrivals.put(request.playerId(), arrival);
         warmArrivalChunk(exit, traversive);
         network.send(peerName, new WireMessage.HandoffAck(request.transferId()));
+        Player already = Wormholes.instance.getServer().getPlayer(request.playerId());
+        if (already != null && already.isOnline() && pendingArrivals.remove(request.playerId()) != null) {
+            Wormholes.i("[handoff] request RX from peer=" + peerName + " player=" + request.playerName() + " — player already arrived; placing now at exitPortal=" + exit.getId());
+            placeArrivingPlayer(already, arrival, "late-request");
+        } else {
+            Wormholes.i("[handoff] request RX from peer=" + peerName + " player=" + request.playerName() + " exitPortal=" + exit.getId() + " — registered pendingArrival, acking");
+        }
     }
 
     public void onHandoffAck(String peerName, WireMessage.HandoffAck ack) {
@@ -275,7 +286,7 @@ public final class TraversalService implements Listener {
                 return;
             }
             completedTransfers.incrementAndGet();
-            Wormholes.v("[handoff] ack RX from peer=" + peerName + " — transfer of " + player.getName() + " dispatched");
+            Wormholes.i("[handoff] ack RX from peer=" + peerName + " — transfer of " + player.getName() + " dispatched");
             lockTransfer(handoff.playerId(), System.currentTimeMillis() + ARRIVAL_TTL_MILLIS);
         });
     }
@@ -384,23 +395,27 @@ public final class TraversalService implements Listener {
         unlockTransfer(player.getUniqueId());
         PendingArrival arrival = pendingArrivals.remove(player.getUniqueId());
         if (arrival == null || arrival.expiresAtMillis() < System.currentTimeMillis()) {
-            Wormholes.v("[arrival] join " + player.getName() + " at " + locStr(player.getLocation()) + " — NO pending cross-server arrival (arrival=" + (arrival == null ? "null" : "expired") + "); not managed, relying on join-latch");
+            Wormholes.i("[arrival] join " + player.getName() + " at " + locStr(player.getLocation()) + " — NO pending cross-server arrival (arrival=" + (arrival == null ? "null" : "expired") + "); not managed, relying on join-latch");
             return;
         }
+        placeArrivingPlayer(player, arrival, "join");
+    }
+
+    private void placeArrivingPlayer(Player player, PendingArrival arrival, String via) {
         ILocalPortal exit = Wormholes.portalManager == null ? null : Wormholes.portalManager.getLocalPortal(arrival.exitPortalId());
         if (exit == null || exit.getStructure() == null || exit.getStructure().getWorld() == null) {
-            Wormholes.v("[arrival] join " + player.getName() + " — pending arrival exitPortal=" + arrival.exitPortalId() + " UNRESOLVED (portal/world missing); cannot place at gateway");
+            Wormholes.i("[arrival] " + via + " " + player.getName() + " — pending arrival exitPortal=" + arrival.exitPortalId() + " UNRESOLVED (portal/world missing); cannot place at gateway");
             return;
         }
         LocalPortal.latchReentry(player.getUniqueId(), exit.getId());
         Traversive traversive = arrival.traversive().toTraversive(player);
         if (!exit.canArrive(player)) {
-            Wormholes.v("[arrival] join " + player.getName() + " DENIED at exitPortal=" + exit.getId() + " (incoming disabled/permission)");
+            Wormholes.i("[arrival] " + via + " " + player.getName() + " DENIED at exitPortal=" + exit.getId() + " (incoming disabled/permission)");
             exit.rejectRemoteArrival(player, traversive);
             return;
         }
         Location target = exit.computeExitTarget(traversive);
-        Wormholes.v("[arrival] join " + player.getName() + " spawnLoc=" + locStr(player.getLocation()) + " exitPortal=" + exit.getId() + " -> teleport target=" + locStr(target) + " (latched to exit)");
+        Wormholes.i("[arrival] " + via + " " + player.getName() + " spawnLoc=" + locStr(player.getLocation()) + " exitPortal=" + exit.getId() + " -> teleport target=" + locStr(target) + " (latched to exit)");
         FoliaScheduler.runEntity(Wormholes.instance, player, () ->
             player.teleportAsync(target, PlayerTeleportEvent.TeleportCause.PLUGIN).thenAccept(success -> {
                 if (success) {

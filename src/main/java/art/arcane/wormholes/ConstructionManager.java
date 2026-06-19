@@ -29,17 +29,12 @@ public class ConstructionManager implements Listener
 		Wormholes.v("Starting Construction Manager");
 	}
 
-	public void constructPortal(Player player, Set<Block> blocks, PortalType type, Direction d)
+	public void constructPortal(Player player, Set<Block> blocks, PortalType type, Vector look)
 	{
-		constructPortal(player, blocks, type, d, player == null ? null : player.getLocation().getDirection());
+		constructPortal(player, blocks, type, look, null);
 	}
 
-	public void constructPortal(Player player, Set<Block> blocks, PortalType type, Direction d, Vector look)
-	{
-		constructPortal(player, blocks, type, d, look, null);
-	}
-
-	public void constructPortal(Player player, Set<Block> blocks, PortalType type, Direction d, Vector look, Consumer<ILocalPortal> onCreated)
+	public void constructPortal(Player player, Set<Block> blocks, PortalType type, Vector look, Consumer<ILocalPortal> onCreated)
 	{
 		if(blocks == null || blocks.isEmpty())
 		{
@@ -49,10 +44,10 @@ public class ConstructionManager implements Listener
 		Block firstBlock = blocks.iterator().next();
 		Location anchor = firstBlock.getLocation();
 
-		FoliaScheduler.runRegion(Wormholes.instance, anchor, () -> performConstruct(blocks, type, d, look, onCreated), 25L);
+		FoliaScheduler.runRegion(Wormholes.instance, anchor, () -> performConstruct(blocks, type, look, onCreated), 25L);
 	}
 
-	private void performConstruct(Set<Block> blocks, PortalType type, Direction d, Vector look, Consumer<ILocalPortal> onCreated)
+	private void performConstruct(Set<Block> blocks, PortalType type, Vector look, Consumer<ILocalPortal> onCreated)
 	{
 		Cuboid c = null;
 
@@ -73,15 +68,21 @@ public class ConstructionManager implements Listener
 			return;
 		}
 
-		boolean success = isFlatPortalArea(c.depth(Axis.X), c.depth(Axis.Y), c.depth(Axis.Z));
+		int xDepth = c.depth(Axis.X);
+		int yDepth = c.depth(Axis.Y);
+		int zDepth = c.depth(Axis.Z);
 
-		if(success)
+		if(isCoplanarPortalArea(xDepth, yDepth, zDepth))
 		{
 			Location center = c.getCenter();
+			double lookX = look == null ? 0.0D : look.getX();
+			double lookY = look == null ? 0.0D : look.getY();
+			double lookZ = look == null ? -1.0D : look.getZ();
+			Direction normal = derivePortalNormal(xDepth, yDepth, zDepth, lookX, lookY, lookZ);
 			PortalStructure s = new PortalStructure();
 			s.setBlocks(blocks);
 			ILocalPortal portal = createPortal(s, type);
-			portal.setFrame(PortalFrame.fromDirectionAndLook(d, look));
+			portal.setFrame(PortalFrame.fromDirectionAndLook(normal, look));
 			portal.open();
 			portal.save();
 			Wormholes.portalManager.addLocalPortal(portal);
@@ -90,16 +91,16 @@ public class ConstructionManager implements Listener
 				onCreated.accept(portal);
 			}
 			Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + "Portal opened. Hold the wand and CLICK the portal to configure.", center);
-			Wormholes.effectManager.playPortalOpenClimax(center.getWorld(), center, c.depth(Axis.X), c.depth(Axis.Y), c.depth(Axis.Z));
+			Wormholes.effectManager.playPortalOpenClimax(center.getWorld(), center, xDepth, yDepth, zDepth);
 			return;
 		}
 
-		Wormholes.effectManager.playNotificationFail(ChatColor.RED + "Portal shape must be one connected flat plane.", new KList<Block>(blocks).getRandom().getLocation());
+		Wormholes.effectManager.playNotificationFail(ChatColor.RED + "Portal must lie flat on one wall, floor, or ceiling.", new KList<Block>(blocks).getRandom().getLocation());
 		Wormholes.effectManager.playPortalFailOpen(blocks);
 		Wormholes.blockManager.refund(blocks, type);
 	}
 
-	static boolean isFlatPortalArea(int xDepth, int yDepth, int zDepth)
+	static boolean isCoplanarPortalArea(int xDepth, int yDepth, int zDepth)
 	{
 		int flatAxes = 0;
 		if(xDepth == 0)
@@ -115,7 +116,26 @@ public class ConstructionManager implements Listener
 			flatAxes++;
 		}
 
-		return flatAxes == 1;
+		return flatAxes >= 1;
+	}
+
+	static Direction derivePortalNormal(int xDepth, int yDepth, int zDepth, double lookX, double lookY, double lookZ)
+	{
+		double ax = xDepth == 0 ? Math.abs(lookX) : -1.0D;
+		double ay = yDepth == 0 ? Math.abs(lookY) : -1.0D;
+		double az = zDepth == 0 ? Math.abs(lookZ) : -1.0D;
+
+		if(ax >= ay && ax >= az)
+		{
+			return lookX >= 0.0D ? Direction.E : Direction.W;
+		}
+
+		if(ay >= az)
+		{
+			return lookY >= 0.0D ? Direction.U : Direction.D;
+		}
+
+		return lookZ >= 0.0D ? Direction.S : Direction.N;
 	}
 
 	private ILocalPortal createPortal(PortalStructure s, PortalType type)

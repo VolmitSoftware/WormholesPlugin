@@ -175,6 +175,8 @@ public final class ProjectionClaimArbiter {
                     WormholesTelemetry.countBlockChange();
                 }
             }
+        } else {
+            observerClaims.sentBlocks.clear();
         }
 
         observerClaims.pendingLightingKeys.addAll(setResult.getDirtyLightingKeys());

@@ -564,6 +564,13 @@ public class ProjectionManager implements Listener {
         interestGraceUntil.entrySet().removeIf(entry -> entry.getKey().endsWith("/" + id.toString()));
     }
 
+    public void reprimeArrival(Player player) {
+        if (player == null) {
+            return;
+        }
+        FoliaScheduler.runEntity(Wormholes.instance, player, () -> removeProjector(player), 20L);
+    }
+
     public void removeProjector(ILocalPortal portal, Player player) {
         Map<UUID, PortalProjector> portalProjectors = projectors.get(portal.getId());
         if (portalProjectors == null) {

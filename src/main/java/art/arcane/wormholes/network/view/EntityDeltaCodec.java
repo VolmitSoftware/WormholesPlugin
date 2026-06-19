@@ -5,6 +5,8 @@ import java.util.Objects;
 import java.util.UUID;
 
 public final class EntityDeltaCodec {
+    private static final double VELOCITY_EPSILON = 1.0e-3D;
+
     private EntityDeltaCodec() {
     }
 
@@ -170,9 +172,9 @@ public final class EntityDeltaCodec {
     }
 
     private static boolean velocityChanged(EntityVisual current, EntityVisual previous) {
-        return current.velocityX() != previous.velocityX()
-            || current.velocityY() != previous.velocityY()
-            || current.velocityZ() != previous.velocityZ();
+        return Math.abs(current.velocityX() - previous.velocityX()) > VELOCITY_EPSILON
+            || Math.abs(current.velocityY() - previous.velocityY()) > VELOCITY_EPSILON
+            || Math.abs(current.velocityZ() - previous.velocityZ()) > VELOCITY_EPSILON;
     }
 
     private static boolean lookVecChanged(EntityVisual current, EntityVisual previous) {

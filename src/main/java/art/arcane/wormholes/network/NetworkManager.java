@@ -17,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -48,14 +49,18 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     private static final int CONNECT_TIMEOUT_MS = 5_000;
     private static final int ROUTE_TTL = 8;
     private static final int LISTEN_PORT_FALLBACK_RANGE = 50;
-    private static final long STATUS_BRIDGE_INTERVAL_MS = 2_000L;
+    private static final long STATUS_BRIDGE_INTERVAL_MS = 600L;
+    private static final long STATUS_BRIDGE_FAST_INTERVAL_MS = 150L;
+    private static final long STATUS_BRIDGE_FAIL_BACKOFF_MS = 5_000L;
     private static final long STATUS_BRIDGE_READY_TTL_MS = 12_000L;
     private static final long STATUS_FRAGMENT_TTL_MS = 15L * 60_000L;
     private static final int STATUS_FRAGMENT_ASSEMBLY_CAPACITY = 128;
     private static final int STATUS_BRIDGE_QUEUE_CAPACITY = 1024;
+    private static final int STATUS_BRIDGE_BESTEFFORT_SHED_THRESHOLD = STATUS_BRIDGE_QUEUE_CAPACITY / 2;
     private static final int STATUS_BRIDGE_FRAME_BUDGET_BYTES = 20_000;
+    private static final int STATUS_BRIDGE_REQUEST_BUDGET_BYTES = 4_000;
     private static final int STATUS_FRAGMENT_MAX_FRAME_BYTES = WireCodec.MAX_FRAME_BYTES + Integer.BYTES;
-    private static final int STATUS_FRAGMENT_CHUNK_BYTES = 8 * 1024;
+    private static final int STATUS_FRAGMENT_CHUNK_BYTES = 4 * 1024;
     private static final int STATUS_FRAGMENT_MAX_COUNT = (STATUS_FRAGMENT_MAX_FRAME_BYTES / STATUS_FRAGMENT_CHUNK_BYTES) + 2;
 
     private final Logger logger;
@@ -81,6 +86,8 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     private final Map<String, Long> nextStatusAttempt = new ConcurrentHashMap<>();
     private final AtomicLong statusFragmentIds = new AtomicLong();
     private final Set<String> statusOversizeWarnings = ConcurrentHashMap.newKeySet();
+    private final Set<String> statusPollFailing = ConcurrentHashMap.newKeySet();
+    private final Set<String> statusPollInFlight = ConcurrentHashMap.newKeySet();
     private final Map<String, StatusFragmentAssembly> statusFragments = new ConcurrentHashMap<>();
     private final Map<String, String> routes = new ConcurrentHashMap<>();
     private final Map<String, List<PortalInfo>> relayedPortalDirectories = new ConcurrentHashMap<>();
@@ -329,12 +336,13 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
             }
         }
 
-        ScheduledExecutorService executor = Executors.newScheduledThreadPool(2, runnable -> {
+        ScheduledExecutorService executor = Executors.newScheduledThreadPool(3, runnable -> {
             Thread thread = new Thread(runnable, "Wormholes-Net-Timer");
             thread.setDaemon(true);
             return thread;
         });
         executor.scheduleWithFixedDelay(this::scanDials, 250L, DIAL_SCAN_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        executor.scheduleWithFixedDelay(this::pollStatusBridges, 300L, STATUS_BRIDGE_FAST_INTERVAL_MS, TimeUnit.MILLISECONDS);
         executor.scheduleWithFixedDelay(this::keepalive, KEEPALIVE_INTERVAL_MS, KEEPALIVE_INTERVAL_MS, TimeUnit.MILLISECONDS);
         long retrainSec = Math.max(30L, active.transport.compressionRetrainIntervalSec);
         executor.scheduleWithFixedDelay(this::maybeRetrainDictionary, retrainSec, retrainSec, TimeUnit.SECONDS);
@@ -470,6 +478,10 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         return isRawPeerReady(name) || isStatusPeerReady(name);
     }
 
+    public boolean isSidebandOnlyPeer(String name) {
+        return !isRawPeerReady(name) && isStatusPeerReady(name);
+    }
+
     private boolean isRawPeerReady(String name) {
         PeerConnection connection = readyPeers.get(name);
         return connection != null && connection.getState() == PeerConnection.State.READY;
@@ -483,6 +495,9 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         recordWireSample(message);
         NetworkConfig.PeerEntry peer = findKnownPeer(peerName);
         if (canQueueStatusBridge(peer) && enqueueStatusMessage(peerName, message)) {
+            if (isLatencyCriticalStatusMessage(message)) {
+                nudgeStatusPoll(peerName);
+            }
             return true;
         }
         String nextHop = routes.get(peerName);
@@ -668,7 +683,7 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         if (acceptStatusBridgePacket(request, null)) {
             markStatusBridgeReady(sourceServer, -1L);
             receiveStatusBridgeMessages(sourceServer, request.messages());
-            return createStatusBridgePacket(sourceServer, drainStatusOutbox(sourceServer));
+            return createStatusBridgePacket(sourceServer, drainStatusOutbox(sourceServer, STATUS_BRIDGE_FRAME_BUDGET_BYTES));
         }
         return null;
     }
@@ -766,11 +781,24 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
 
     private void learnStatusPeer(MinecraftStatusBridge.StatusPacket packet) {
         String sourceServer = packet.sourceServer();
-        if (findKnownPeer(sourceServer) != null) {
-            return;
-        }
         String replyHost = packet.replyHost();
         if (replyHost == null || replyHost.isBlank()) {
+            return;
+        }
+        int replyPort = packet.replyPort() > 0 ? packet.replyPort() : 25565;
+        NetworkConfig.PeerEntry known = findKnownPeer(sourceServer);
+        if (known != null) {
+            boolean changed = !replyHost.equals(known.publicHost) || replyPort != known.publicPort;
+            if (changed && shouldAdoptAdvertisedHost(known.publicHost, replyHost)) {
+                String previous = known.publicHost + ":" + known.publicPort;
+                known.publicHost = replyHost;
+                known.publicPort = replyPort;
+                if (known.host == null || known.host.isBlank() || !isRoutableHost(known.host)) {
+                    known.host = replyHost;
+                }
+                savePeer(known);
+                logger.info("net: peer " + sourceServer + " advertised game-port address " + replyHost + ":" + replyPort + " (was " + previous + "); updated from signed status handshake");
+            }
             return;
         }
         NetworkConfig.PeerEntry learned = new NetworkConfig.PeerEntry();
@@ -778,8 +806,36 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         learned.host = replyHost;
         learned.port = config.listenPort;
         learned.publicHost = replyHost;
-        learned.publicPort = packet.replyPort() > 0 ? packet.replyPort() : 25565;
+        learned.publicPort = replyPort;
         savePeer(learned);
+    }
+
+    private static boolean shouldAdoptAdvertisedHost(String current, String advertised) {
+        if (current == null || current.isBlank()) {
+            return true;
+        }
+        boolean advertisedRoutable = isRoutableHost(advertised);
+        boolean currentRoutable = isRoutableHost(current);
+        if (advertisedRoutable && !currentRoutable) {
+            return true;
+        }
+        if (!advertisedRoutable && currentRoutable) {
+            return false;
+        }
+        return true;
+    }
+
+    private static boolean isRoutableHost(String host) {
+        if (host == null || host.isBlank()) {
+            return false;
+        }
+        try {
+            InetAddress address = InetAddress.getByName(host);
+            return !address.isLoopbackAddress() && !address.isAnyLocalAddress()
+                && !address.isLinkLocalAddress() && !address.isSiteLocalAddress();
+        } catch (UnknownHostException e) {
+            return true;
+        }
     }
 
     @Override
@@ -1158,7 +1214,8 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
             return null;
         }
         try {
-            return WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(completedFrame[0])));
+            byte[] plainFrame = wireCompression.decode(completedFrame[0]).payload();
+            return WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(plainFrame)));
         } catch (IOException e) {
             logger.warning("net: dropped corrupt status sideband jumbo frame from " + peerName + ": " + e.getMessage());
             return null;
@@ -1291,7 +1348,6 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
             if (peer.name.equals(getLocalName())) {
                 continue;
             }
-            pollStatusBridge(peer, now);
             if (isRawPeerReady(peer.name) || hasPendingDial(peer.name)) {
                 continue;
             }
@@ -1301,6 +1357,40 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
             }
             dial(active, peer);
         }
+    }
+
+    private void pollStatusBridges() {
+        long now = System.currentTimeMillis();
+        for (NetworkConfig.PeerEntry peer : dialPeers()) {
+            if (peer.name.equals(getLocalName())) {
+                continue;
+            }
+            pollStatusBridge(peer, now, false);
+        }
+    }
+
+    private void nudgeStatusPoll(String peerName) {
+        ScheduledExecutorService exec = scheduler;
+        if (exec == null) {
+            return;
+        }
+        NetworkConfig.PeerEntry peer = findKnownPeer(peerName);
+        if (peer == null || peer.name.equals(getLocalName()) || !canUseStatusBridge(peer)) {
+            return;
+        }
+        try {
+            exec.execute(() -> pollStatusBridge(peer, System.currentTimeMillis(), true));
+        } catch (java.util.concurrent.RejectedExecutionException ignored) {
+        }
+    }
+
+    private static boolean isLatencyCriticalStatusMessage(WireMessage message) {
+        WireMessageType type = message instanceof WireMessage.Routed routed ? routed.innerType() : message.type();
+        return switch (type) {
+            case HANDOFF_REQUEST, HANDOFF_ACK, HANDOFF_DENY, HANDOFF_CANCEL,
+                 ENTITY_TRANSFER, ENTITY_TRANSFER_ACK, VIEW_SUBSCRIBE, VIEW_UNSUBSCRIBE -> true;
+            default -> false;
+        };
     }
 
     private void dial(NetworkConfig active, NetworkConfig.PeerEntry peer) {
@@ -1386,28 +1476,48 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         }
     }
 
-    private void pollStatusBridge(NetworkConfig.PeerEntry peer, long now) {
+    private void pollStatusBridge(NetworkConfig.PeerEntry peer, long now, boolean force) {
         if (!canUseStatusBridge(peer)) {
             return;
         }
-        long notBefore = nextStatusAttempt.getOrDefault(peer.name, 0L);
-        if (now < notBefore) {
+        if (!force && now < nextStatusAttempt.getOrDefault(peer.name, 0L)) {
             return;
         }
-        nextStatusAttempt.put(peer.name, now + STATUS_BRIDGE_INTERVAL_MS);
-        List<MinecraftStatusBridge.EncodedMessage> messages = drainStatusOutbox(peer.name);
+        if (!force && !statusPollInFlight.add(peer.name)) {
+            return;
+        }
+        nextStatusAttempt.put(peer.name, now + STATUS_BRIDGE_FAST_INTERVAL_MS);
+        List<MinecraftStatusBridge.EncodedMessage> messages = drainStatusOutbox(peer.name, STATUS_BRIDGE_REQUEST_BUDGET_BYTES);
         MinecraftStatusBridge.StatusPacket request = createStatusBridgePacket(peer.name, messages);
         long started = System.currentTimeMillis();
         try {
             MinecraftStatusBridge.StatusPacket response = statusBridge.poll(peer, request);
             if (handleStatusBridgeResponse(peer.name, response, System.currentTimeMillis() - started)) {
                 lastDialError.remove(peer.name);
+                if (statusPollFailing.remove(peer.name)) {
+                    logger.info("net: status sideband to " + peer.name + " recovered");
+                }
+            }
+            boolean dataFlowing = !messages.isEmpty()
+                || (response != null && !response.messages().isEmpty())
+                || statusOutboxPending(peer.name);
+            if (!dataFlowing) {
+                nextStatusAttempt.put(peer.name, System.currentTimeMillis() + STATUS_BRIDGE_INTERVAL_MS);
             }
         } catch (IOException | RuntimeException e) {
             requeueStatusMessages(peer.name, messages);
+            nextStatusAttempt.put(peer.name, System.currentTimeMillis() + STATUS_BRIDGE_FAIL_BACKOFF_MS);
+            String failure = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             if (!isRawPeerReady(peer.name)) {
-                String failure = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
                 lastDialError.put(peer.name, statusBridgeAddress(peer) + " - " + failure);
+            }
+            if (!messages.isEmpty() && statusPollFailing.add(peer.name)) {
+                logger.warning("net: status sideband data poll to " + peer.name + " failed (" + failure + "); request carried "
+                    + messages.size() + " message(s) ~" + request.encode(wireCompression).length() + " chars. Large projection/entity payloads can exceed the game-port status limit -- open the raw Wormholes port " + getBoundListenPort() + " on both servers for reliable high-throughput streaming.");
+            }
+        } finally {
+            if (!force) {
+                statusPollInFlight.remove(peer.name);
             }
         }
     }
@@ -1454,14 +1564,53 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
             return false;
         }
         BlockingQueue<WireMessage> queue = statusOutbox.computeIfAbsent(peerName, ignored -> new LinkedBlockingQueue<>(STATUS_BRIDGE_QUEUE_CAPACITY));
-        if (queue.remainingCapacity() < queuedMessages.size()) {
-            lastDialError.put(peerName, "game-port status sideband queue is full");
+        boolean bestEffort = isBestEffortStatusMessage(message);
+        if (bestEffort && queue.size() >= STATUS_BRIDGE_BESTEFFORT_SHED_THRESHOLD) {
             return false;
+        }
+        if (queue.remainingCapacity() < queuedMessages.size()) {
+            if (bestEffort || !purgeBestEffortStatusMessages(queue, queuedMessages.size())) {
+                if (!bestEffort) {
+                    lastDialError.put(peerName, "game-port status sideband queue is full");
+                }
+                return false;
+            }
         }
         for (WireMessage queuedMessage : queuedMessages) {
             queue.offer(queuedMessage);
         }
         return true;
+    }
+
+    private static boolean purgeBestEffortStatusMessages(BlockingQueue<WireMessage> queue, int needed) {
+        queue.removeIf(NetworkManager::isQueuedBestEffortStatusMessage);
+        return queue.remainingCapacity() >= needed;
+    }
+
+    private static boolean isQueuedBestEffortStatusMessage(WireMessage message) {
+        if (message instanceof WireMessage.SidebandFragment) {
+            return false;
+        }
+        return isBestEffortStatusMessage(message);
+    }
+
+    private static boolean isBestEffortStatusMessage(WireMessage message) {
+        WireMessageType type = message instanceof WireMessage.Routed routed ? routed.innerType() : message.type();
+        return type == WireMessageType.VIEW_ENTITIES
+            || type == WireMessageType.VIEW_ENTITY_ANIMATION
+            || type == WireMessageType.CHUNK_HASH_PROBE;
+    }
+
+    private static int statusTier(WireMessage message) {
+        if (message instanceof WireMessage.SidebandFragment) {
+            return 1;
+        }
+        WireMessageType type = message instanceof WireMessage.Routed routed ? routed.innerType() : message.type();
+        return switch (type) {
+            case VIEW_ENTITIES, VIEW_ENTITY_ANIMATION, CHUNK_HASH_PROBE -> 2;
+            case CHUNK_BULK, CHUNK_DIFF -> 1;
+            default -> 0;
+        };
     }
 
     private List<WireMessage> statusMessagesFor(String peerName, WireMessage message) {
@@ -1477,7 +1626,14 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         }
     }
 
-    private List<WireMessage> fragmentStatusMessage(String peerName, WireMessage message, byte[] frame) {
+    private List<WireMessage> fragmentStatusMessage(String peerName, WireMessage message, byte[] plainFrame) {
+        byte[] frame;
+        try {
+            frame = wireCompression.encode(plainFrame, false);
+        } catch (IOException e) {
+            logger.warning("net: could not compress " + message.type() + " for status sideband to " + peerName + ": " + e.getMessage());
+            return List.of();
+        }
         if (frame.length > STATUS_FRAGMENT_MAX_FRAME_BYTES) {
             warnOversizedStatusMessage(peerName, message, frame.length);
             return List.of();
@@ -1514,31 +1670,43 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         }
     }
 
-    private List<MinecraftStatusBridge.EncodedMessage> drainStatusOutbox(String peerName) {
+    private boolean statusOutboxPending(String peerName) {
+        BlockingQueue<WireMessage> queue = statusOutbox.get(peerName);
+        return queue != null && !queue.isEmpty();
+    }
+
+    private List<MinecraftStatusBridge.EncodedMessage> drainStatusOutbox(String peerName, int budgetBytes) {
         BlockingQueue<WireMessage> queue = statusOutbox.get(peerName);
         if (queue == null) {
             return List.of();
         }
         List<MinecraftStatusBridge.EncodedMessage> messages = new ArrayList<>(Math.min(MinecraftStatusBridge.MAX_MESSAGES, queue.size()));
-        int remainingBytes = STATUS_BRIDGE_FRAME_BUDGET_BYTES;
-        while (messages.size() < MinecraftStatusBridge.MAX_MESSAGES) {
-            WireMessage message = queue.peek();
-            if (message == null) {
-                break;
+        int[] remainingBytes = {budgetBytes};
+        drainStatusPass(queue, peerName, messages, remainingBytes, 0);
+        drainStatusPass(queue, peerName, messages, remainingBytes, 1);
+        drainStatusPass(queue, peerName, messages, remainingBytes, 2);
+        return messages.isEmpty() ? List.of() : messages;
+    }
+
+    private void drainStatusPass(BlockingQueue<WireMessage> queue, String peerName, List<MinecraftStatusBridge.EncodedMessage> messages, int[] remainingBytes, int tier) {
+        Iterator<WireMessage> iterator = queue.iterator();
+        while (messages.size() < MinecraftStatusBridge.MAX_MESSAGES && iterator.hasNext()) {
+            WireMessage message = iterator.next();
+            if (statusTier(message) != tier) {
+                continue;
             }
             byte[] frame = encodeStatusFrame(peerName, message);
             if (frame == null) {
-                queue.poll();
+                iterator.remove();
                 continue;
             }
-            if (frame.length > remainingBytes) {
-                break;
+            if (frame.length > remainingBytes[0]) {
+                continue;
             }
-            queue.poll();
+            iterator.remove();
             messages.add(new MinecraftStatusBridge.EncodedMessage(message, frame));
-            remainingBytes -= frame.length;
+            remainingBytes[0] -= frame.length;
         }
-        return messages.isEmpty() ? List.of() : messages;
     }
 
     private byte[] encodeStatusFrame(String peerName, WireMessage message) {

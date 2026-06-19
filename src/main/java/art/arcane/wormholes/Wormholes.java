@@ -18,6 +18,7 @@ import art.arcane.wormholes.network.view.RemoteViewCache;
 import art.arcane.wormholes.network.view.ViewServer;
 import art.arcane.wormholes.network.view.ViewSubscriptionManager;
 import art.arcane.wormholes.portal.ArrivalWarmer;
+import art.arcane.wormholes.portal.vanilla.VanillaPortalReplacer;
 import art.arcane.wormholes.service.MetricsRuntime;
 import art.arcane.wormholes.service.PacketEventsRuntime;
 import art.arcane.wormholes.service.StatsSnapshotWriter;
@@ -66,6 +67,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     public static volatile PortalManager portalManager;
     public static volatile TraversableManager traversableManager;
     public static volatile ProjectionManager projectionManager;
+    public static volatile art.arcane.wormholes.render.ProjectionWorldChangeTracker projectionChangeTracker;
     public static volatile ArrivalWarmer arrivalWarmer;
     public static volatile NetworkManager networkManager;
     public static volatile RemotePortalRegistry remotePortalRegistry;
@@ -126,6 +128,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             portalManager = new PortalManager();
             traversableManager = new TraversableManager();
             projectionManager = new ProjectionManager();
+            projectionChangeTracker = new art.arcane.wormholes.render.ProjectionWorldChangeTracker();
             arrivalWarmer = new ArrivalWarmer();
 
             getServer().getPluginManager().registerEvents(blockManager, this);
@@ -134,6 +137,8 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             getServer().getPluginManager().registerEvents(portalManager, this);
             getServer().getPluginManager().registerEvents(traversableManager, this);
             getServer().getPluginManager().registerEvents(projectionManager, this);
+            getServer().getPluginManager().registerEvents(new art.arcane.wormholes.render.ProjectionChangeListener(projectionChangeTracker), this);
+            getServer().getPluginManager().registerEvents(new VanillaPortalReplacer(), this);
             getServer().getPluginManager().registerEvents(new ChatInputListener(), this);
 
             remotePortalRegistry = new RemotePortalRegistry();
@@ -489,6 +494,13 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             return;
         }
         if (!Settings.DEBUG) {
+            return;
+        }
+        instance.getLogger().info(message);
+    }
+
+    public static void i(String message) {
+        if (instance == null) {
             return;
         }
         instance.getLogger().info(message);

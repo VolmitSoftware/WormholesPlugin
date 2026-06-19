@@ -5,7 +5,6 @@ import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.config.toml.NetworkConfig;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.service.WormholesAudience;
-import art.arcane.wormholes.util.project.config.TomlCodec;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
@@ -16,7 +15,6 @@ import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -134,7 +132,7 @@ public final class ImportExportService {
             return config.advertiseHostOverride;
         }
         String resolved = network.getAdvertiseHost();
-        WormholesAudience.sendMessage(sender, Component.text("Using " + resolved + " in this portal code. Set advertise-host-override in network.toml only if that address is wrong.", NamedTextColor.GRAY));
+        WormholesAudience.sendMessage(sender, Component.text("Using " + resolved + " in this portal code; the public address auto-detects and self-corrects over the signed handshake if it changes.", NamedTextColor.GRAY));
         return resolved;
     }
 
@@ -162,12 +160,11 @@ public final class ImportExportService {
     }
 
     private void persistConfig(NetworkConfig config) {
-        File file = new File(new File(Wormholes.instance.getDataFolder(), "config"), "network.toml");
         FoliaScheduler.runAsync(Wormholes.instance, () -> {
             try {
-                TomlCodec.writeCanonical(file, config);
+                Wormholes.settings.save(Wormholes.instance.getDataFolder().toPath());
             } catch (Throwable e) {
-                Wormholes.w("net: failed to persist network.toml: " + e.getMessage());
+                Wormholes.w("net: failed to persist wormholes.toml: " + e.getMessage());
             }
         });
     }

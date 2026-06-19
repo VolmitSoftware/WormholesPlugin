@@ -57,7 +57,7 @@ public class CommandWormholes {
         ItemStack wormholeRune = Wormholes.blockManager.getWormholeRune(1);
         player.getInventory().addItem(wand, wormholeRune);
         player.sendMessage(Wormholes.tag + ChatColor.GREEN + "Portal Wand and 1 Wormhole Rune granted.");
-        player.sendMessage(Wormholes.tag + ChatColor.GRAY + "Build TWO solid wormhole-rune rectangles, link them, and stand within 16 blocks to see the projection.");
+        player.sendMessage(Wormholes.tag + ChatColor.GRAY + "Build TWO wormhole-rune shapes (any connected shape on one flat surface), link them, and stand within 16 blocks to see the projection.");
         player.sendMessage(Wormholes.tag + ChatColor.GRAY + "Run " + ChatColor.WHITE + "/wormholes info" + ChatColor.GRAY + " for the full step-by-step.");
     }
 
@@ -96,7 +96,7 @@ public class CommandWormholes {
         }
         StatsSnapshotWriter writer = plugin.getStatsSnapshotWriter();
         if (writer == null) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Stats snapshot writer is disabled (network.toml stats.enabled).");
+            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Stats snapshot writer is unavailable.");
             return;
         }
         if (now) {
@@ -112,11 +112,11 @@ public class CommandWormholes {
     public void info(@Param(name = "sender", contextual = true) CommandSender sender) {
         sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "" + ChatColor.BOLD + "How to build a Wormhole");
         sender.sendMessage(ChatColor.DARK_GRAY + "1. " + ChatColor.GRAY + "Run " + ChatColor.WHITE + "/wormholes wand" + ChatColor.GRAY + " to receive the wand and 1 wormhole rune.");
-        sender.sendMessage(ChatColor.DARK_GRAY + "2. " + ChatColor.GRAY + "Place the runes as one connected flat plane.");
-        sender.sendMessage(ChatColor.GRAY + "   Rectangles, L-shapes, crosses, and other connected non-rectangular planes work.");
-        sender.sendMessage(ChatColor.GRAY + "   The frame must be flat on one axis-aligned wall, floor, or ceiling.");
+        sender.sendMessage(ChatColor.DARK_GRAY + "2. " + ChatColor.GRAY + "Place the runes in any connected shape on one flat surface.");
+        sender.sendMessage(ChatColor.GRAY + "   Any connected shape works: rectangles, lines (3x1), single blocks, L-shapes, crosses.");
+        sender.sendMessage(ChatColor.GRAY + "   The runes must sit flat on one axis-aligned wall, floor, or ceiling.");
         sender.sendMessage(ChatColor.DARK_GRAY + "3. " + ChatColor.GRAY + "Hold the Portal Wand and " + ChatColor.WHITE + "left-click any rune block" + ChatColor.GRAY + " to form the portal.");
-        sender.sendMessage(ChatColor.GRAY + "   Shapes spanning more than one plane are refunded automatically.");
+        sender.sendMessage(ChatColor.GRAY + "   Shapes that do not sit flat on one surface are refunded automatically.");
         sender.sendMessage(ChatColor.DARK_GRAY + "4. " + ChatColor.GRAY + "Build a SECOND portal somewhere else (any distance, any world).");
         sender.sendMessage(ChatColor.DARK_GRAY + "5. " + ChatColor.GRAY + "Click the open portal with the wand to open the main menu.");
         sender.sendMessage(ChatColor.GRAY + "   Choose " + ChatColor.WHITE + "Link" + ChatColor.GRAY + " then click the other portal in the list. Repeat from the other side.");

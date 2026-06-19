@@ -343,6 +343,53 @@ class NetworkManagerTest {
     }
 
     @Test
+    void statusSidebandPrioritizesEssentialOverEntitySpam() throws IOException, InterruptedException {
+        int rawAlpha = freePort();
+        int rawBeta = freePort();
+        NetworkConfig alphaConfig = config(rawAlpha, ALPHA_NAME);
+        alphaConfig.listenEnabled = false;
+        NetworkConfig.PeerEntry betaRoute = route(BETA_NAME, rawBeta);
+        betaRoute.publicHost = "127.0.0.1";
+        betaRoute.publicPort = BETA_GAME_PORT;
+
+        NetworkConfig betaConfig = config(rawBeta, BETA_NAME);
+        betaConfig.listenEnabled = false;
+        NetworkConfig.PeerEntry alphaRoute = route(ALPHA_NAME, rawAlpha);
+        alphaRoute.publicHost = "127.0.0.1";
+        alphaRoute.publicPort = ALPHA_GAME_PORT;
+
+        NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "shed-alpha");
+        NetworkManager beta = manager(betaConfig, BETA_GAME_PORT, "shed-beta");
+        alpha.savePeer(betaRoute);
+        beta.savePeer(alphaRoute);
+        LinkedBlockingQueue<String> betaEssential = new LinkedBlockingQueue<>();
+        beta.setMessageSink((peerName, message) -> {
+            if (message instanceof WireMessage.PortalDirectory) {
+                betaEssential.offer(peerName + ":" + message.type());
+            }
+        });
+        alpha.start();
+        beta.start();
+
+        for (int i = 0; i < 4000; i++) {
+            alpha.send(BETA_NAME, new WireMessage.ViewEntities(UUID.randomUUID(), List.of(), List.of()));
+        }
+        assertTrue(alpha.send(BETA_NAME, new WireMessage.PortalDirectory(List.of())),
+            "essential terrain/control traffic must enqueue even when entity spam has flooded the sideband outbox");
+
+        String received = null;
+        for (int i = 0; i < 96 && received == null; i++) {
+            MinecraftStatusBridge.StatusPacket request = beta.createStatusBridgePacket(ALPHA_NAME, List.of());
+            MinecraftStatusBridge.StatusPacket response = alpha.handleStatusBridgeRequest(request);
+            assertTrue(response != null);
+            assertTrue(beta.handleStatusBridgeResponse(ALPHA_NAME, response, 12L));
+            received = betaEssential.poll();
+        }
+        assertEquals(ALPHA_NAME + ":PORTAL_DIRECTORY", received,
+            "essential message must survive and be delivered despite best-effort entity spam");
+    }
+
+    @Test
     void statusSidebandFragmentsJumboFrames() throws IOException, InterruptedException {
         int rawAlpha = freePort();
         int rawBeta = freePort();
@@ -384,6 +431,54 @@ class NetworkManagerTest {
             assertTrue(beta.handleStatusBridgeResponse(ALPHA_NAME, response, 12L));
         }
         assertEquals(snapshot.length, betaTransfers.poll(10L, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void statusSidebandCompressesCompressibleJumboFrames() throws IOException, InterruptedException {
+        int rawAlpha = freePort();
+        int rawBeta = freePort();
+        NetworkConfig alphaConfig = config(rawAlpha, ALPHA_NAME);
+        alphaConfig.listenEnabled = false;
+        NetworkConfig.PeerEntry betaRoute = route(BETA_NAME, rawBeta);
+        betaRoute.publicHost = "127.0.0.1";
+        betaRoute.publicPort = BETA_GAME_PORT;
+
+        NetworkConfig betaConfig = config(rawBeta, BETA_NAME);
+        betaConfig.listenEnabled = false;
+        NetworkConfig.PeerEntry alphaRoute = route(ALPHA_NAME, rawAlpha);
+        alphaRoute.publicHost = "127.0.0.1";
+        alphaRoute.publicPort = ALPHA_GAME_PORT;
+
+        NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "zip-alpha");
+        NetworkManager beta = manager(betaConfig, BETA_GAME_PORT, "zip-beta");
+        alpha.savePeer(betaRoute);
+        beta.savePeer(alphaRoute);
+        LinkedBlockingQueue<Integer> betaTransfers = new LinkedBlockingQueue<>();
+        beta.setMessageSink((peerName, message) -> {
+            if (message instanceof WireMessage.EntityTransfer transfer) {
+                betaTransfers.offer(transfer.entitySnapshot().length);
+            }
+        });
+        alpha.start();
+        beta.start();
+
+        byte[] snapshot = new byte[240_000];
+        for (int i = 0; i < snapshot.length; i++) {
+            snapshot[i] = (byte) (i % 7);
+        }
+        WireMessage.EntityTransfer transfer = new WireMessage.EntityTransfer(UUID.randomUUID(), UUID.randomUUID(), snapshot, traversive());
+        assertTrue(alpha.send(BETA_NAME, transfer));
+
+        Integer received = null;
+        for (int i = 0; i < 3 && received == null; i++) {
+            MinecraftStatusBridge.StatusPacket request = beta.createStatusBridgePacket(ALPHA_NAME, List.of());
+            MinecraftStatusBridge.StatusPacket response = alpha.handleStatusBridgeRequest(request);
+            assertTrue(response != null);
+            assertTrue(beta.handleStatusBridgeResponse(ALPHA_NAME, response, 12L));
+            received = betaTransfers.poll();
+        }
+        assertEquals(snapshot.length, received,
+            "a 240KB highly-compressible frame should compress small enough to cross the sideband in a few drain rounds");
     }
 
     @Test

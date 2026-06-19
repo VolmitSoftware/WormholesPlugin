@@ -35,12 +35,22 @@ class NetworkManagerListenPortFallbackTest {
         }
     }
 
+    private static int freeBasePort() throws IOException {
+        for (int attempt = 0; attempt < 64; attempt++) {
+            int port;
+            try (ServerSocket probe = new ServerSocket(0)) {
+                port = probe.getLocalPort();
+            }
+            if (port <= 65000) {
+                return port;
+            }
+        }
+        throw new IOException("could not find a free base port with fallback-range headroom under 65535");
+    }
+
     @Test
     void listenPortAutoFallsBackOverRange() throws IOException {
-        int basePort;
-        try (ServerSocket probe = new ServerSocket(0)) {
-            basePort = probe.getLocalPort();
-        }
+        int basePort = freeBasePort();
 
         blocker = new ServerSocket();
         blocker.setReuseAddress(false);
@@ -63,10 +73,7 @@ class NetworkManagerListenPortFallbackTest {
 
     @Test
     void sidebandOnlyWhenEntireFallbackRangeIsBusy() throws IOException {
-        int basePort;
-        try (ServerSocket probe = new ServerSocket(0)) {
-            basePort = probe.getLocalPort();
-        }
+        int basePort = freeBasePort();
         ServerSocket[] hold = new ServerSocket[51];
         try {
             for (int i = 0; i <= 50; i++) {

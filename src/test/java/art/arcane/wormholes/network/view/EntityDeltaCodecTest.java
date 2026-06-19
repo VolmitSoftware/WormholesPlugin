@@ -211,6 +211,115 @@ class EntityDeltaCodecTest {
     }
 
     @Test
+    void fullSnapshotRoundTripsLookVelocityHeightWithinQuantizationTolerance() throws IOException {
+        EntityVisual original = EntityVisual.full(
+            new UUID(3L, 4L),
+            "minecraft:cow",
+            128.5D, 70.0D, -64.25D,
+            1.43D,
+            0.4082D, -0.8164D, 0.4082D,
+            12.0F, -7.5F,
+            0.213D, -0.045D, 1.872D,
+            false,
+            "",
+            "",
+            "",
+            null,
+            null,
+            new byte[]{1},
+            new byte[]{2},
+            42
+        );
+        EntityVisual decoded = encodeAndDecode(original);
+        double unitTolerance = 1.0D / EntityVisual.UNIT_SCALE;
+        double velocityTolerance = 1.0D / EntityVisual.VELOCITY_SCALE;
+        double heightTolerance = 1.0D / EntityVisual.HEIGHT_SCALE;
+        assertEquals(original.lookX(), decoded.lookX(), unitTolerance);
+        assertEquals(original.lookY(), decoded.lookY(), unitTolerance);
+        assertEquals(original.lookZ(), decoded.lookZ(), unitTolerance);
+        assertEquals(original.velocityX(), decoded.velocityX(), velocityTolerance);
+        assertEquals(original.velocityY(), decoded.velocityY(), velocityTolerance);
+        assertEquals(original.velocityZ(), decoded.velocityZ(), velocityTolerance);
+        assertEquals(original.height(), decoded.height(), heightTolerance);
+    }
+
+    @Test
+    void velocityClampsToScaleRangeWithoutWrapping() throws IOException {
+        EntityVisual original = EntityVisual.full(
+            new UUID(5L, 6L),
+            "minecraft:arrow",
+            0.0D, 0.0D, 0.0D,
+            0.5D,
+            0.0D, 0.0D, 1.0D,
+            0.0F, 0.0F,
+            900.0D, -900.0D, 0.0D,
+            false,
+            "",
+            "",
+            "",
+            null,
+            null,
+            new byte[]{0},
+            new byte[]{0},
+            1
+        );
+        EntityVisual decoded = encodeAndDecode(original);
+        double maxVelocity = (double) Short.MAX_VALUE / EntityVisual.VELOCITY_SCALE;
+        double minVelocity = (double) Short.MIN_VALUE / EntityVisual.VELOCITY_SCALE;
+        assertEquals(maxVelocity, decoded.velocityX(), 1.0e-9D);
+        assertEquals(minVelocity, decoded.velocityY(), 1.0e-9D);
+        assertEquals(0.0D, decoded.velocityZ(), 1.0e-9D);
+    }
+
+    @Test
+    void stationaryEntityWithSubEpsilonJitterDoesNotSetVelocityField() {
+        EntityVisual previous = baseSnapshot(0);
+        EntityVisual current = new EntityVisual(
+            EntityVisual.MODE_FULL,
+            1,
+            EntityVisual.FIELD_ALL_FULL,
+            previous.id(),
+            previous.typeKey(),
+            previous.x(), previous.y(), previous.z(),
+            previous.height(),
+            previous.lookX(), previous.lookY(), previous.lookZ(),
+            previous.yaw(), previous.pitch(),
+            0.0001D, -0.0002D, 0.00005D,
+            previous.onGround(),
+            previous.playerName(), previous.textureValue(), previous.textureSignature(),
+            previous.passengerOf(),
+            previous.leashHolder(),
+            previous.metadata(), previous.equipment()
+        );
+        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 1, 0.05D);
+        assertEquals(0, delta.presentMask() & EntityVisual.FIELD_VELOCITY);
+    }
+
+    @Test
+    void movingEntityWithSignificantVelocityChangeSetsVelocityField() {
+        EntityVisual previous = baseSnapshot(0);
+        EntityVisual current = new EntityVisual(
+            EntityVisual.MODE_FULL,
+            1,
+            EntityVisual.FIELD_ALL_FULL,
+            previous.id(),
+            previous.typeKey(),
+            previous.x(), previous.y(), previous.z(),
+            previous.height(),
+            previous.lookX(), previous.lookY(), previous.lookZ(),
+            previous.yaw(), previous.pitch(),
+            0.5D, 0.0D, 0.0D,
+            previous.onGround(),
+            previous.playerName(), previous.textureValue(), previous.textureSignature(),
+            previous.passengerOf(),
+            previous.leashHolder(),
+            previous.metadata(), previous.equipment()
+        );
+        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 1, 0.05D);
+        assertTrue((delta.presentMask() & EntityVisual.FIELD_VELOCITY) != 0);
+    }
+
+    @Test
     void deltaEncodingPayloadIsSmallerThanFullSnapshot() throws IOException {
         EntityVisual previous = baseSnapshot(0);
         EntityVisual current = movedSnapshot(previous, 0.5D, 0.0D, 0.0D, 1);

@@ -46,6 +46,8 @@ public final class ViewServer implements Listener {
 
     private static final long DIRTY_DRAIN_INTERVAL_TICKS = 2L;
     private static final int MAX_BULK_SNAPSHOTS_PER_TICK = 8;
+    private static final int SIDEBAND_MAX_ENTITIES = 24;
+    private static final long SIDEBAND_ENTITY_INTERVAL_TICKS = 2L;
 
     private final NetworkManager network;
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
@@ -75,6 +77,7 @@ public final class ViewServer implements Listener {
         private final Set<UUID> sentProfiles = ConcurrentHashMap.newKeySet();
         private final Map<String, Map<UUID, EntitySendState>> sendStates = new ConcurrentHashMap<>();
         private final Map<String, Set<UUID>> lastSentPresentIds = new ConcurrentHashMap<>();
+        private final Map<String, Long> sidebandEntityNextTick = new ConcurrentHashMap<>();
         private final Map<UUID, EntityVisual> lastCapturedSnapshots = new ConcurrentHashMap<>();
         private final AtomicBoolean entityCaptureRunning = new AtomicBoolean(false);
         private volatile TicketLease ticketLease;
@@ -469,11 +472,28 @@ public final class ViewServer implements Listener {
             session.sentProfiles.retainAll(presentIds);
             session.lastCapturedSnapshots.keySet().retainAll(presentIds);
 
+            Set<UUID> sidebandAllowed = null;
             for (String peerName : session.peers) {
+                boolean sideband = network.isSidebandOnlyPeer(peerName);
+                if (sideband) {
+                    Long nextTick = session.sidebandEntityNextTick.get(peerName);
+                    if (nextTick != null && entityTick < nextTick.longValue()) {
+                        continue;
+                    }
+                    session.sidebandEntityNextTick.put(peerName, entityTick + SIDEBAND_ENTITY_INTERVAL_TICKS);
+                    if (sidebandAllowed == null) {
+                        sidebandAllowed = nearestEntityIds(session, visuals, SIDEBAND_MAX_ENTITIES);
+                    }
+                } else {
+                    session.sidebandEntityNextTick.remove(peerName);
+                }
                 Map<UUID, EntitySendState> peerStates = session.sendStatesFor(peerName);
                 peerStates.keySet().retainAll(presentIds);
                 List<EntityVisual> outbound = new ArrayList<>(visuals.size());
                 for (EntityVisual currentFull : visuals) {
+                    if (sideband && !sidebandAllowed.contains(currentFull.id())) {
+                        continue;
+                    }
                     boolean rateAllowsSend = scheduler.shouldSend(
                         peerName, currentFull.id(),
                         session.portalCenterX, session.portalCenterY, session.portalCenterZ,
@@ -593,6 +613,27 @@ public final class ViewServer implements Listener {
             source.metadata(),
             source.equipment()
         );
+    }
+
+    private static Set<UUID> nearestEntityIds(Session session, List<EntityVisual> visuals, int max) {
+        Set<UUID> nearest = new HashSet<>(Math.min(visuals.size(), max));
+        if (visuals.size() <= max) {
+            for (EntityVisual visual : visuals) {
+                nearest.add(visual.id());
+            }
+            return nearest;
+        }
+        List<EntityVisual> sorted = new ArrayList<>(visuals);
+        sorted.sort(java.util.Comparator.comparingDouble(visual -> {
+            double dx = visual.x() - session.portalCenterX;
+            double dy = visual.y() - session.portalCenterY;
+            double dz = visual.z() - session.portalCenterZ;
+            return (dx * dx) + (dy * dy) + (dz * dz);
+        }));
+        for (int i = 0; i < max; i++) {
+            nearest.add(sorted.get(i).id());
+        }
+        return nearest;
     }
 
     private NetworkConfig.ViewConfig activeViewConfig() {

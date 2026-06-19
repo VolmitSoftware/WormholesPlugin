@@ -56,6 +56,10 @@ public record EntityVisual(
         | FIELD_METADATA | FIELD_TYPE | FIELD_PASSENGER | FIELD_ON_GROUND | FIELD_HEIGHT | FIELD_PROFILE | FIELD_LOOK_VEC | FIELD_LEASH;
 
     public static final double POSITION_QUANTUM = 1.0D / 4096.0D;
+    public static final double UNIT_SCALE = 32767.0D;
+    public static final double VELOCITY_SCALE = 1024.0D;
+    public static final double HEIGHT_SCALE = 100.0D;
+    public static final double MAX_HEIGHT = 255.0D / HEIGHT_SCALE;
 
     private static final int MAX_BLOB_BYTES = 64 * 1024;
 
@@ -133,21 +137,21 @@ public record EntityVisual(
             out.writeInt(quantize(z));
         }
         if ((presentMask & FIELD_HEIGHT) != 0) {
-            out.writeDouble(height);
+            out.writeByte(quantizeHeight(height));
         }
         if ((presentMask & FIELD_LOOK_VEC) != 0) {
-            out.writeDouble(lookX);
-            out.writeDouble(lookY);
-            out.writeDouble(lookZ);
+            out.writeShort(quantizeUnit(lookX));
+            out.writeShort(quantizeUnit(lookY));
+            out.writeShort(quantizeUnit(lookZ));
         }
         if ((presentMask & FIELD_YAW_PITCH) != 0) {
             out.writeByte(quantizeAngle(yaw));
             out.writeByte(quantizeAngle(pitch));
         }
         if ((presentMask & FIELD_VELOCITY) != 0) {
-            out.writeDouble(velocityX);
-            out.writeDouble(velocityY);
-            out.writeDouble(velocityZ);
+            out.writeShort(quantizeVelocity(velocityX));
+            out.writeShort(quantizeVelocity(velocityY));
+            out.writeShort(quantizeVelocity(velocityZ));
         }
         if ((presentMask & FIELD_ON_GROUND) != 0) {
             out.writeBoolean(onGround);
@@ -197,15 +201,15 @@ public record EntityVisual(
         }
         double height = 0.0D;
         if ((presentMask & FIELD_HEIGHT) != 0) {
-            height = in.readDouble();
+            height = dequantizeHeight(in.readByte());
         }
         double lookX = 0.0D;
         double lookY = 0.0D;
         double lookZ = 0.0D;
         if ((presentMask & FIELD_LOOK_VEC) != 0) {
-            lookX = in.readDouble();
-            lookY = in.readDouble();
-            lookZ = in.readDouble();
+            lookX = dequantizeUnit(in.readShort());
+            lookY = dequantizeUnit(in.readShort());
+            lookZ = dequantizeUnit(in.readShort());
         }
         float yaw = 0.0F;
         float pitch = 0.0F;
@@ -217,9 +221,9 @@ public record EntityVisual(
         double velocityY = 0.0D;
         double velocityZ = 0.0D;
         if ((presentMask & FIELD_VELOCITY) != 0) {
-            velocityX = in.readDouble();
-            velocityY = in.readDouble();
-            velocityZ = in.readDouble();
+            velocityX = dequantizeVelocity(in.readShort());
+            velocityY = dequantizeVelocity(in.readShort());
+            velocityZ = dequantizeVelocity(in.readShort());
         }
         boolean onGround = false;
         if ((presentMask & FIELD_ON_GROUND) != 0) {
@@ -290,6 +294,51 @@ public record EntityVisual(
 
     public static double dequantize(int quantized) {
         return ((double) quantized) * POSITION_QUANTUM;
+    }
+
+    public static short quantizeUnit(double value) {
+        double scaled = value * UNIT_SCALE;
+        if (scaled > (double) Short.MAX_VALUE) {
+            return Short.MAX_VALUE;
+        }
+        if (scaled < (double) Short.MIN_VALUE) {
+            return Short.MIN_VALUE;
+        }
+        return (short) Math.round(scaled);
+    }
+
+    public static double dequantizeUnit(short quantized) {
+        return ((double) quantized) / UNIT_SCALE;
+    }
+
+    public static short quantizeVelocity(double value) {
+        double scaled = value * VELOCITY_SCALE;
+        if (scaled > (double) Short.MAX_VALUE) {
+            return Short.MAX_VALUE;
+        }
+        if (scaled < (double) Short.MIN_VALUE) {
+            return Short.MIN_VALUE;
+        }
+        return (short) Math.round(scaled);
+    }
+
+    public static double dequantizeVelocity(short quantized) {
+        return ((double) quantized) / VELOCITY_SCALE;
+    }
+
+    public static byte quantizeHeight(double value) {
+        double scaled = value * HEIGHT_SCALE;
+        if (scaled > 255.0D) {
+            return (byte) 255;
+        }
+        if (scaled < 0.0D) {
+            return (byte) 0;
+        }
+        return (byte) Math.round(scaled);
+    }
+
+    public static double dequantizeHeight(byte quantized) {
+        return ((double) (quantized & 0xFF)) / HEIGHT_SCALE;
     }
 
     public static int quantizeAngle(float degrees) {
