@@ -71,17 +71,46 @@ class NetworkManagerListenPortFallbackTest {
         assertTrue(bound > basePort && bound <= basePort + 50, "bound port " + bound + " should be inside the fallback window");
     }
 
-    @Test
-    void sidebandOnlyWhenEntireFallbackRangeIsBusy() throws IOException {
-        int basePort = freeBasePort();
-        ServerSocket[] hold = new ServerSocket[51];
-        try {
-            for (int i = 0; i <= 50; i++) {
+    private static ServerSocket[] reserveContiguousPorts(int count) throws IOException {
+        for (int attempt = 0; attempt < 256; attempt++) {
+            int basePort;
+            try (ServerSocket probe = new ServerSocket(0)) {
+                basePort = probe.getLocalPort();
+            }
+            if (basePort > 65000 || basePort + count - 1 > 65000) {
+                continue;
+            }
+            ServerSocket[] hold = new ServerSocket[count];
+            boolean reserved = true;
+            for (int i = 0; i < count; i++) {
                 ServerSocket s = new ServerSocket();
                 s.setReuseAddress(false);
-                s.bind(new java.net.InetSocketAddress("0.0.0.0", basePort + i));
+                try {
+                    s.bind(new java.net.InetSocketAddress("0.0.0.0", basePort + i));
+                } catch (IOException ex) {
+                    s.close();
+                    reserved = false;
+                    break;
+                }
                 hold[i] = s;
             }
+            if (reserved) {
+                return hold;
+            }
+            for (ServerSocket s : hold) {
+                if (s != null && !s.isClosed()) {
+                    s.close();
+                }
+            }
+        }
+        throw new IOException("could not reserve " + count + " contiguous free ports under 65535");
+    }
+
+    @Test
+    void sidebandOnlyWhenEntireFallbackRangeIsBusy() throws IOException {
+        ServerSocket[] hold = reserveContiguousPorts(51);
+        int basePort = hold[0].getLocalPort();
+        try {
             NetworkConfig config = new NetworkConfig();
             config.enabled = true;
             config.serverName = "no-bind";

@@ -16,10 +16,28 @@ import java.util.UUID;
 public final class RemoteWorldView implements ProjectionWorldView {
     private final RemoteViewCache.RemoteView view;
     private final BlockData fallback;
+    private int cachedChunkX = Integer.MIN_VALUE;
+    private int cachedChunkZ = Integer.MIN_VALUE;
+    private RemoteViewCache.DecodedSlice cachedSlice;
+    private boolean cachedSliceValid;
 
     public RemoteWorldView(RemoteViewCache.RemoteView view, BlockData fallback) {
         this.view = view;
         this.fallback = fallback;
+    }
+
+    private RemoteViewCache.DecodedSlice decodedSliceAt(int x, int z) {
+        int chunkX = x >> 4;
+        int chunkZ = z >> 4;
+        if (cachedSliceValid && chunkX == cachedChunkX && chunkZ == cachedChunkZ) {
+            return cachedSlice;
+        }
+        RemoteViewCache.DecodedSlice slice = view.sliceAt(x, z);
+        cachedChunkX = chunkX;
+        cachedChunkZ = chunkZ;
+        cachedSlice = slice;
+        cachedSliceValid = true;
+        return slice;
     }
 
     @Override
@@ -48,7 +66,7 @@ public final class RemoteWorldView implements ProjectionWorldView {
         if (!box.contains(x, y, z)) {
             return fallback;
         }
-        RemoteViewCache.DecodedSlice slice = view.sliceAt(x, z);
+        RemoteViewCache.DecodedSlice slice = decodedSliceAt(x, z);
         if (slice == null) {
             return null;
         }
@@ -61,7 +79,7 @@ public final class RemoteWorldView implements ProjectionWorldView {
         if (box == null || !box.contains(x, y, z)) {
             return null;
         }
-        RemoteViewCache.DecodedSlice slice = view.sliceAt(x, z);
+        RemoteViewCache.DecodedSlice slice = decodedSliceAt(x, z);
         if (slice == null) {
             return null;
         }
@@ -74,7 +92,7 @@ public final class RemoteWorldView implements ProjectionWorldView {
         if (box == null || !box.contains(x, y, z)) {
             return LIGHT_UNAVAILABLE;
         }
-        RemoteViewCache.DecodedSlice slice = view.sliceAt(x, z);
+        RemoteViewCache.DecodedSlice slice = decodedSliceAt(x, z);
         if (slice == null) {
             return LIGHT_UNAVAILABLE;
         }

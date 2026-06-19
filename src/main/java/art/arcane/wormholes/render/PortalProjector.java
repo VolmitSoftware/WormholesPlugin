@@ -57,6 +57,7 @@ public final class PortalProjector {
     private final double[] scratchRot = new double[3];
     private final double[] scratchRemotePoint = new double[3];
     private final double[] scratchRemoteEye = new double[3];
+    private final HoistedFrameTransform cellTransform = new HoistedFrameTransform();
 
     private final ProjectedEntityRenderer entityRenderer = new ProjectedEntityRenderer();
 
@@ -303,7 +304,9 @@ public final class PortalProjector {
 
         nextProjected.clear();
         recursivePortalCandidates.clear();
-        remoteSampleCache.clear();
+        for (Long2ObjectOpenHashMap<ProjectedSample> viewSamples : remoteSampleCache.values()) {
+            viewSamples.clear();
+        }
         recursivePortalIndexes.clear();
 
         int enterCount = 0;
@@ -346,6 +349,9 @@ public final class PortalProjector {
             remoteOriginX, remoteOriginY, remoteOriginZ,
             projectionRemoteFrame, scratchRemoteEye);
         prepareTransformCache(projectionRemoteFrame, projectionLocalFrame);
+        cellTransform.configure(projectionLocalFrame, projectionRemoteFrame,
+            localOriginX, localOriginY, localOriginZ,
+            remoteOriginX, remoteOriginY, remoteOriginZ);
         double projectionFacingX = projectionLocalFrame.getNormal().x();
         double projectionFacingY = projectionLocalFrame.getNormal().y();
         double projectionFacingZ = projectionLocalFrame.getNormal().z();
@@ -368,15 +374,6 @@ public final class PortalProjector {
                 forceFullSend = true;
             }
         }
-        boolean stationaryResampleFastPath = forceStableCellResample
-            && !forceFullSend
-            && hasCameraSnapshot
-            && !projected.isEmpty()
-            && Settings.PROJECTION_STATIONARY_REUSE_DISTANCE_BLOCKS > 0.0D
-            && Settings.PROJECTION_STATIONARY_REUSE_ANGLE_DEGREES > 0.0D
-            && isStationaryCamera(eyeX, eyeY, eyeZ, eye.getYaw(), eye.getPitch(),
-                lastEyeX, lastEyeY, lastEyeZ, lastYaw, lastPitch,
-                Settings.PROJECTION_STATIONARY_REUSE_DISTANCE_BLOCKS, Settings.PROJECTION_STATIONARY_REUSE_ANGLE_DEGREES);
         PortalPlaneWindow planeWindow = PortalPlaneWindow.create(portal.getStructure(), portal.getStructure().getArea(), projectionLocalFrame,
             localOriginX, localOriginY, localOriginZ, Settings.PROJECTION_APERTURE_PADDING_BLOCKS,
             projectionEyeDot);
@@ -414,11 +411,6 @@ public final class PortalProjector {
                 for (int z = za; z <= zb; z++) {
                     double cz = z + 0.5D;
 
-                    long key = packKey(x, y, z);
-                    if (stationaryResampleFastPath && !projected.containsKey(key)) {
-                        continue;
-                    }
-
                     double cellRelX = cx - localOriginX;
                     double cellRelY = cy - localOriginY;
                     double cellRelZ = cz - localOriginZ;
@@ -444,10 +436,8 @@ public final class PortalProjector {
                         continue;
                     }
 
-                    projectionLocalFrame.transformPointInto(cx, cy, cz,
-                        localOriginX, localOriginY, localOriginZ,
-                        remoteOriginX, remoteOriginY, remoteOriginZ,
-                        projectionRemoteFrame, scratchRemotePoint);
+                    long key = packKey(x, y, z);
+                    cellTransform.apply(cx, cy, cz, scratchRemotePoint);
 
                     int rx = (int) Math.floor(scratchRemotePoint[0]);
                     int ry = (int) Math.floor(scratchRemotePoint[1]);
@@ -1499,6 +1489,74 @@ public final class PortalProjector {
                 nextPointX, nextPointY, nextPointZ,
                 transformedEyeX, transformedEyeY, transformedEyeZ,
                 rayT, true, false);
+        }
+    }
+
+    private static final class HoistedFrameTransform {
+        private double fromRightX;
+        private double fromRightY;
+        private double fromRightZ;
+        private double fromUpX;
+        private double fromUpY;
+        private double fromUpZ;
+        private double fromNormalX;
+        private double fromNormalY;
+        private double fromNormalZ;
+        private double toRightX;
+        private double toRightY;
+        private double toRightZ;
+        private double toUpX;
+        private double toUpY;
+        private double toUpZ;
+        private double toNormalX;
+        private double toNormalY;
+        private double toNormalZ;
+        private double fromOriginX;
+        private double fromOriginY;
+        private double fromOriginZ;
+        private double toOriginX;
+        private double toOriginY;
+        private double toOriginZ;
+
+        private void configure(PortalFrame from, PortalFrame to,
+                               double fromOriginX, double fromOriginY, double fromOriginZ,
+                               double toOriginX, double toOriginY, double toOriginZ) {
+            this.fromRightX = from.getRight().x();
+            this.fromRightY = from.getRight().y();
+            this.fromRightZ = from.getRight().z();
+            this.fromUpX = from.getUp().x();
+            this.fromUpY = from.getUp().y();
+            this.fromUpZ = from.getUp().z();
+            this.fromNormalX = from.getNormal().x();
+            this.fromNormalY = from.getNormal().y();
+            this.fromNormalZ = from.getNormal().z();
+            this.toRightX = to.getRight().x();
+            this.toRightY = to.getRight().y();
+            this.toRightZ = to.getRight().z();
+            this.toUpX = to.getUp().x();
+            this.toUpY = to.getUp().y();
+            this.toUpZ = to.getUp().z();
+            this.toNormalX = to.getNormal().x();
+            this.toNormalY = to.getNormal().y();
+            this.toNormalZ = to.getNormal().z();
+            this.fromOriginX = fromOriginX;
+            this.fromOriginY = fromOriginY;
+            this.fromOriginZ = fromOriginZ;
+            this.toOriginX = toOriginX;
+            this.toOriginY = toOriginY;
+            this.toOriginZ = toOriginZ;
+        }
+
+        private void apply(double x, double y, double z, double[] out3) {
+            double offsetX = x - fromOriginX;
+            double offsetY = y - fromOriginY;
+            double offsetZ = z - fromOriginZ;
+            double frameRight = offsetX * fromRightX + offsetY * fromRightY + offsetZ * fromRightZ;
+            double frameUp = offsetX * fromUpX + offsetY * fromUpY + offsetZ * fromUpZ;
+            double frameNormal = offsetX * fromNormalX + offsetY * fromNormalY + offsetZ * fromNormalZ;
+            out3[0] = toOriginX + frameRight * toRightX + frameUp * toUpX + frameNormal * toNormalX;
+            out3[1] = toOriginY + frameRight * toRightY + frameUp * toUpY + frameNormal * toNormalY;
+            out3[2] = toOriginZ + frameRight * toRightZ + frameUp * toUpZ + frameNormal * toNormalZ;
         }
     }
 

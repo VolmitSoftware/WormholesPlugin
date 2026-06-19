@@ -50,7 +50,7 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     private static final int ROUTE_TTL = 8;
     private static final int LISTEN_PORT_FALLBACK_RANGE = 50;
     private static final long STATUS_BRIDGE_INTERVAL_MS = 600L;
-    private static final long STATUS_BRIDGE_FAST_INTERVAL_MS = 150L;
+    private static final long STATUS_BRIDGE_FAST_INTERVAL_MS = 75L;
     private static final long STATUS_BRIDGE_FAIL_BACKOFF_MS = 5_000L;
     private static final long STATUS_BRIDGE_READY_TTL_MS = 12_000L;
     private static final long STATUS_FRAGMENT_TTL_MS = 15L * 60_000L;
