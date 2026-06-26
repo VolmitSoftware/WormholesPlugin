@@ -104,8 +104,8 @@ class DirectorySyncIntegrationTest {
         int portA = freePort();
         int portB = freePort();
 
-        NetworkManager alpha = new NetworkManager(LOGGER, config(portA, ALPHA_NAME), "1.26.1", "test", 25565, tempDir.resolve("alpha"));
-        NetworkManager beta = new NetworkManager(LOGGER, config(portB, BETA_NAME), "1.26.1", "test", 25566, tempDir.resolve("beta"));
+        NetworkManager alpha = new NetworkManager(LOGGER, config(portA, ALPHA_NAME), "26.2", "test", 25565, tempDir.resolve("alpha"));
+        NetworkManager beta = new NetworkManager(LOGGER, config(portB, BETA_NAME), "26.2", "test", 25566, tempDir.resolve("beta"));
         alpha.savePeer(route(BETA_NAME, portB));
         beta.savePeer(route(ALPHA_NAME, portA));
         managers.add(alpha);

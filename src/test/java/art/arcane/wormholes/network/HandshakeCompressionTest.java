@@ -55,7 +55,7 @@ class HandshakeCompressionTest {
         CompressionDictionary dictionary = trainDictionary(91);
         WireMessage.Hello hello = new WireMessage.Hello(
             WireCodec.PROTOCOL_VERSION,
-            "1.26.1",
+            "26.2",
             "1.0.0",
             "alpha",
             "10.0.0.5",
@@ -100,10 +100,10 @@ class HandshakeCompressionTest {
     void matchingDictHashAndVersionEnablesDictMode() throws Exception {
         CompressionDictionary dictionary = trainDictionary(50);
         WireMessage.Hello local = new WireMessage.Hello(
-            WireCodec.PROTOCOL_VERSION, "1.26.1", "1.0.0", "alpha", "10.0.0.1", 8901, 25565,
+            WireCodec.PROTOCOL_VERSION, "26.2", "1.0.0", "alpha", "10.0.0.1", 8901, 25565,
             Handshake.newNonce(), generatePublicKey(), true, dictionary.hash(), 50);
         WireMessage.Hello remote = new WireMessage.Hello(
-            WireCodec.PROTOCOL_VERSION, "1.26.1", "1.0.0", "beta", "10.0.0.2", 8901, 25565,
+            WireCodec.PROTOCOL_VERSION, "26.2", "1.0.0", "beta", "10.0.0.2", 8901, 25565,
             Handshake.newNonce(), generatePublicKey(), true, dictionary.hash(), 50);
         assertTrue(negotiateUseDict(local, remote));
     }
@@ -117,10 +117,10 @@ class HandshakeCompressionTest {
             betaHash[i] = (byte) 0xBB;
         }
         WireMessage.Hello local = new WireMessage.Hello(
-            WireCodec.PROTOCOL_VERSION, "1.26.1", "1.0.0", "alpha", "10.0.0.1", 8901, 25565,
+            WireCodec.PROTOCOL_VERSION, "26.2", "1.0.0", "alpha", "10.0.0.1", 8901, 25565,
             Handshake.newNonce(), generatePublicKey(), true, alphaHash, 50);
         WireMessage.Hello remote = new WireMessage.Hello(
-            WireCodec.PROTOCOL_VERSION, "1.26.1", "1.0.0", "beta", "10.0.0.2", 8901, 25565,
+            WireCodec.PROTOCOL_VERSION, "26.2", "1.0.0", "beta", "10.0.0.2", 8901, 25565,
             Handshake.newNonce(), generatePublicKey(), true, betaHash, 50);
         assertFalse(negotiateUseDict(local, remote));
     }
@@ -129,10 +129,10 @@ class HandshakeCompressionTest {
     void unsupportedRemoteForcesPlainMode() throws Exception {
         CompressionDictionary dictionary = trainDictionary(60);
         WireMessage.Hello local = new WireMessage.Hello(
-            WireCodec.PROTOCOL_VERSION, "1.26.1", "1.0.0", "alpha", "10.0.0.1", 8901, 25565,
+            WireCodec.PROTOCOL_VERSION, "26.2", "1.0.0", "alpha", "10.0.0.1", 8901, 25565,
             Handshake.newNonce(), generatePublicKey(), true, dictionary.hash(), 60);
         WireMessage.Hello remote = new WireMessage.Hello(
-            WireCodec.PROTOCOL_VERSION, "1.26.1", "1.0.0", "beta", "10.0.0.2", 8901, 25565,
+            WireCodec.PROTOCOL_VERSION, "26.2", "1.0.0", "beta", "10.0.0.2", 8901, 25565,
             Handshake.newNonce(), generatePublicKey(), false, CompressionDictionary.ZERO_HASH, 0);
         assertFalse(negotiateUseDict(local, remote));
     }
@@ -140,10 +140,10 @@ class HandshakeCompressionTest {
     @Test
     void zeroVersionDoesNotNegotiateDict() throws Exception {
         WireMessage.Hello local = new WireMessage.Hello(
-            WireCodec.PROTOCOL_VERSION, "1.26.1", "1.0.0", "alpha", "10.0.0.1", 8901, 25565,
+            WireCodec.PROTOCOL_VERSION, "26.2", "1.0.0", "alpha", "10.0.0.1", 8901, 25565,
             Handshake.newNonce(), generatePublicKey(), true, CompressionDictionary.ZERO_HASH, 0);
         WireMessage.Hello remote = new WireMessage.Hello(
-            WireCodec.PROTOCOL_VERSION, "1.26.1", "1.0.0", "beta", "10.0.0.2", 8901, 25565,
+            WireCodec.PROTOCOL_VERSION, "26.2", "1.0.0", "beta", "10.0.0.2", 8901, 25565,
             Handshake.newNonce(), generatePublicKey(), true, CompressionDictionary.ZERO_HASH, 0);
         assertFalse(negotiateUseDict(local, remote));
     }
@@ -151,7 +151,7 @@ class HandshakeCompressionTest {
     @Test
     void invalidHashLengthIsRejectedAtEncodeTime() throws Exception {
         WireMessage.Hello hello = new WireMessage.Hello(
-            WireCodec.PROTOCOL_VERSION, "1.26.1", "1.0.0", "alpha", "10.0.0.1", 8901, 25565,
+            WireCodec.PROTOCOL_VERSION, "26.2", "1.0.0", "alpha", "10.0.0.1", 8901, 25565,
             Handshake.newNonce(), generatePublicKey(), true, new byte[]{1, 2, 3}, 1);
         try {
             WireCodec.encodeFrame(hello);

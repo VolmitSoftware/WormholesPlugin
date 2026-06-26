@@ -157,7 +157,7 @@ class StatsSnapshotWriterTest {
         return new SnapshotData(
             Instant.parse("2026-06-15T14:33:21Z"),
             Duration.ofSeconds((2L * 3600L) + (13L * 60L)),
-            "1.0.0-26.1.2",
+            "1.0.0-26.2",
             10,
             "hub-1",
             transport,

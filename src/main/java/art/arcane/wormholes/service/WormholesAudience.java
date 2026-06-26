@@ -3,6 +3,7 @@ package art.arcane.wormholes.service;
 import art.arcane.wormholes.Wormholes;
 import net.kyori.adventure.platform.bukkit.BukkitAudiences;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.title.Title;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -39,9 +40,31 @@ public final class WormholesAudience {
     }
 
     public static void sendMessage(CommandSender sender, Component component) {
+        if (sender == null || component == null) {
+            return;
+        }
+        if (sendDirectMessage(sender, component)) {
+            return;
+        }
+
         BukkitAudiences activeAudiences = audiences;
-        if (activeAudiences != null && sender != null && component != null) {
-            activeAudiences.sender(sender).sendMessage(component);
+        if (activeAudiences != null) {
+            try {
+                activeAudiences.sender(sender).sendMessage(component);
+                return;
+            } catch (Throwable ignored) {
+            }
+        }
+
+        sender.sendMessage(LegacyComponentSerializer.legacySection().serialize(component));
+    }
+
+    private static boolean sendDirectMessage(CommandSender sender, Component component) {
+        try {
+            sender.getClass().getMethod("sendMessage", Component.class).invoke(sender, component);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 

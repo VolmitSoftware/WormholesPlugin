@@ -37,7 +37,7 @@ class StatusBridgeCompressionTest {
         }
 
         MinecraftStatusBridge.StatusPacket packet = MinecraftStatusBridge.create(
-            "alpha", "beta", "1.26.1", "1.0.0", "10.0.0.5", 25565,
+            "alpha", "beta", "26.2", "1.0.0", "10.0.0.5", 25565,
             keyPair.getPublic().getEncoded(), keyPair.getPrivate(), messages);
 
         byte[] plainUnsigned = unsignedBytes(packet);
@@ -53,7 +53,7 @@ class StatusBridgeCompressionTest {
 
         assertEquals("alpha", decoded.sourceServer());
         assertEquals("beta", decoded.targetServer());
-        assertEquals("1.26.1", decoded.mcVersion());
+        assertEquals("26.2", decoded.mcVersion());
         assertEquals("1.0.0", decoded.pluginVersion());
         assertEquals("10.0.0.5", decoded.replyHost());
         assertEquals(25565, decoded.replyPort());
@@ -87,7 +87,7 @@ class StatusBridgeCompressionTest {
         assertTrue(fragments.size() > 1, "oversized frame should fragment into multiple sideband messages");
 
         MinecraftStatusBridge.StatusPacket packet = MinecraftStatusBridge.create(
-            "alpha", "beta", "1.26.1", "1.0.0", "10.0.0.5", 25565,
+            "alpha", "beta", "26.2", "1.0.0", "10.0.0.5", 25565,
             keyPair.getPublic().getEncoded(), keyPair.getPrivate(), fragments);
 
         String encoded = packet.encode(encodeSide);

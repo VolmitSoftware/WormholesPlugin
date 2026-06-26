@@ -9,8 +9,8 @@ plugins {
 }
 
 group = 'art.arcane'
-version = '1.0.0-26.1.2'
-def apiVersion = '26.1'
+version = '1.0.0-26.2'
+def apiVersion = '26.2'
 def main = 'art.arcane.wormholes.Wormholes'
 def lib = 'art.arcane.wormholes.libs'
 String volmLibCoordinate = providers.gradleProperty('volmLibCoordinate')
@@ -136,6 +136,9 @@ repositories {
     }
     maven {
         url = uri('https://repo.codemc.io/repository/maven-releases/')
+    }
+    maven {
+        url = uri('https://repo.codemc.io/repository/maven-snapshots/')
     }
     maven {
         url = uri('https://jitpack.io')

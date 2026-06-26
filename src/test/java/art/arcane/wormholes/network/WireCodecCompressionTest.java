@@ -38,7 +38,7 @@ class WireCodecCompressionTest {
         String fillField = new String(chars);
         return new WireMessage.Hello(
             WireCodec.PROTOCOL_VERSION,
-            "1.26.1",
+            "26.2",
             fillField,
             "alpha",
             "10.0.0.1",

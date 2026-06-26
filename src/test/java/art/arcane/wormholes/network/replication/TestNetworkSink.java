@@ -15,7 +15,7 @@ public final class TestNetworkSink extends NetworkManager {
     private final Map<String, List<WireMessage>> outbound = new ConcurrentHashMap<>();
 
     public TestNetworkSink(Path dataDirectory) {
-        super(Logger.getLogger("Wormholes-test"), new NetworkConfig(), "1.26.1", "test", 25565, dataDirectory);
+        super(Logger.getLogger("Wormholes-test"), new NetworkConfig(), "26.2", "test", 25565, dataDirectory);
     }
 
     private final List<NetworkManager.PeerSnapshot> fakePeers = new ArrayList<>();

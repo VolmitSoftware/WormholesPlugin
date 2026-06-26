@@ -24,10 +24,10 @@ class WireCodecTest {
     void helloRoundTripPreservesAllFields() throws Exception {
         byte[] nonce = Handshake.newNonce();
         byte[] publicKey = publicKey();
-        WireMessage.Hello hello = new WireMessage.Hello(WireCodec.PROTOCOL_VERSION, "1.26.1", "1.0.0", "alpha", "10.0.0.5", 8901, 25565, nonce, publicKey, false, CompressionDictionary.ZERO_HASH, 0);
+        WireMessage.Hello hello = new WireMessage.Hello(WireCodec.PROTOCOL_VERSION, "26.2", "1.0.0", "alpha", "10.0.0.5", 8901, 25565, nonce, publicKey, false, CompressionDictionary.ZERO_HASH, 0);
         WireMessage.Hello decoded = assertInstanceOf(WireMessage.Hello.class, roundTrip(hello));
         assertEquals(WireCodec.PROTOCOL_VERSION, decoded.protocolVersion());
-        assertEquals("1.26.1", decoded.mcVersion());
+        assertEquals("26.2", decoded.mcVersion());
         assertEquals("1.0.0", decoded.pluginVersion());
         assertEquals("alpha", decoded.serverName());
         assertArrayEquals(nonce, decoded.nonce());
@@ -74,7 +74,7 @@ class WireCodecTest {
     @Test
     void largePayloadIsCompressedAndRoundTrips() throws Exception {
         String bigVersion = "x".repeat(50_000);
-        WireMessage.Hello hello = new WireMessage.Hello(WireCodec.PROTOCOL_VERSION, "1.26.1", bigVersion, "alpha", "10.0.0.5", 8901, 25565, Handshake.newNonce(), publicKey(), true, CompressionDictionary.ZERO_HASH, 0);
+        WireMessage.Hello hello = new WireMessage.Hello(WireCodec.PROTOCOL_VERSION, "26.2", bigVersion, "alpha", "10.0.0.5", 8901, 25565, Handshake.newNonce(), publicKey(), true, CompressionDictionary.ZERO_HASH, 0);
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
             byte[] frame = WireCodec.encodeFrame(hello, compression, false);

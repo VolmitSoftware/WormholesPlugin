@@ -92,7 +92,7 @@ class NetworkManagerTest {
     }
 
     private NetworkManager manager(NetworkConfig config, int gamePort, String identityName) {
-        NetworkManager manager = new NetworkManager(LOGGER, config, "1.26.1", "test", gamePort, tempDir.resolve(identityName));
+        NetworkManager manager = new NetworkManager(LOGGER, config, "26.2", "test", gamePort, tempDir.resolve(identityName));
         managers.add(manager);
         return manager;
     }

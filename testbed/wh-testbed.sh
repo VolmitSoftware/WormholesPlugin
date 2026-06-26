@@ -32,7 +32,7 @@ DROPINS="${MANAGER_DIR}/consumers/plugin-consumers/dropins/plugins"
 
 A_NAME="WH-ALPHA"; A_GAME_PORT=25566; A_WH_PORT=8902
 B_NAME="WH-BETA";  B_GAME_PORT=25567; B_WH_PORT=8903
-WH_MC="${WH_MC:-26.1.2}"   # PacketEvents 2.12.1 maps 26.1.x NMS; 26.2 crashes (NMS_ITEM_STACK_CLASS null)
+WH_MC="${WH_MC:-26.2}"
 
 MX() { "${MANAGER_DIR}/start.sh" "$@"; }
 
