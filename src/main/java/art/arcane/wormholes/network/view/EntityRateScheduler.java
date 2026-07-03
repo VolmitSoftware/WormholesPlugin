@@ -1,8 +1,5 @@
 package art.arcane.wormholes.network.view;
 
-import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class EntityRateScheduler {
@@ -17,7 +14,9 @@ public final class EntityRateScheduler {
     }
 
     private final Bands bands;
-    private final Map<Key, Long> nextEligibleTick = new ConcurrentHashMap<>();
+    private final double nearSquared;
+    private final double midSquared;
+    private final double farSquared;
     private final AtomicLong sendNear = new AtomicLong();
     private final AtomicLong sendMid = new AtomicLong();
     private final AtomicLong sendFar = new AtomicLong();
@@ -25,55 +24,19 @@ public final class EntityRateScheduler {
 
     public EntityRateScheduler(Bands bands) {
         this.bands = bands;
+        this.nearSquared = bands.nearRange() * bands.nearRange();
+        this.midSquared = bands.midRange() * bands.midRange();
+        this.farSquared = bands.farRange() * bands.farRange();
     }
 
     public Bands getBands() {
         return bands;
     }
 
-    public boolean shouldSend(String subscriberId, UUID entityId,
-                              double subscriberX, double subscriberY, double subscriberZ,
-                              double entityX, double entityY, double entityZ,
-                              long currentTick) {
-        Key key = new Key(subscriberId, entityId);
-        Long nextTick = nextEligibleTick.get(key);
-        if (nextTick != null && currentTick < nextTick.longValue()) {
-            return false;
-        }
-        double dx = entityX - subscriberX;
-        double dy = entityY - subscriberY;
-        double dz = entityZ - subscriberZ;
-        double distSquared = (dx * dx) + (dy * dy) + (dz * dz);
-        double hz = pickHz(distSquared);
-        long interval = intervalTicks(hz);
-        nextEligibleTick.put(key, currentTick + interval);
-        recordBandHit(distSquared);
-        return true;
-    }
-
-    public long intervalTicksFor(double subscriberX, double subscriberY, double subscriberZ,
-                                 double entityX, double entityY, double entityZ) {
-        double dx = entityX - subscriberX;
-        double dy = entityY - subscriberY;
-        double dz = entityZ - subscriberZ;
-        double distSquared = (dx * dx) + (dy * dy) + (dz * dz);
-        return intervalTicks(pickHz(distSquared));
-    }
-
-    public void clearEntity(String subscriberId, UUID entityId) {
-        nextEligibleTick.remove(new Key(subscriberId, entityId));
-    }
-
-    public void clearSubscriber(String subscriberId) {
-        nextEligibleTick.keySet().removeIf(key -> key.subscriberId().equals(subscriberId));
-    }
-
-    public void clearAll() {
-        nextEligibleTick.clear();
-    }
-
-    public int trackedEntityCount() {
-        return nextEligibleTick.size();
+    public long claimSendInterval(double distanceSquared) {
+        double hz = pickHz(distanceSquared);
+        recordBandHit(distanceSquared);
+        return intervalTicks(hz);
     }
 
     public Stats snapshot() {
@@ -88,9 +51,6 @@ public final class EntityRateScheduler {
     }
 
     private void recordBandHit(double distanceSquared) {
-        double nearSquared = bands.nearRange() * bands.nearRange();
-        double midSquared = bands.midRange() * bands.midRange();
-        double farSquared = bands.farRange() * bands.farRange();
         if (distanceSquared <= nearSquared) {
             sendNear.incrementAndGet();
             return;
@@ -107,9 +67,6 @@ public final class EntityRateScheduler {
     }
 
     private double pickHz(double distanceSquared) {
-        double nearSquared = bands.nearRange() * bands.nearRange();
-        double midSquared = bands.midRange() * bands.midRange();
-        double farSquared = bands.farRange() * bands.farRange();
         if (distanceSquared <= nearSquared) {
             return bands.nearHz();
         }
@@ -129,8 +86,5 @@ public final class EntityRateScheduler {
         double ticks = 20.0D / hz;
         long rounded = Math.round(ticks);
         return Math.max(1L, rounded);
-    }
-
-    private record Key(String subscriberId, UUID entityId) {
     }
 }

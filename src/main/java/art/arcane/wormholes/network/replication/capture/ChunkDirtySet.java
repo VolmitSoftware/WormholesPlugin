@@ -35,12 +35,58 @@ public final class ChunkDirtySet {
         entities.put(packedXyz, diff);
     }
 
-    public synchronized void putBlockLight(int sectionY, byte[] data) {
-        blockLights.put(sectionY, new LightDiff(sectionY, LightDiff.TYPE_BLOCKLIGHT, data));
+    public synchronized void putBlockLight(LightDiff diff) {
+        blockLights.put(diff.sectionY(), mergedPending(blockLights.get(diff.sectionY()), diff));
     }
 
-    public synchronized void putSkyLight(int sectionY, byte[] data) {
-        skyLights.put(sectionY, new LightDiff(sectionY, LightDiff.TYPE_SKYLIGHT, data));
+    public synchronized void putSkyLight(LightDiff diff) {
+        skyLights.put(diff.sectionY(), mergedPending(skyLights.get(diff.sectionY()), diff));
+    }
+
+    private static LightDiff mergedPending(LightDiff existing, LightDiff incoming) {
+        if (existing == null || incoming.sparseCells() == null) {
+            return incoming;
+        }
+        if (existing.sparseCells() == null) {
+            return LightDiff.pending(incoming.sectionY(), incoming.lightType(), incoming.data(), null);
+        }
+        int[] union = sortedUnion(existing.sparseCells(), incoming.sparseCells());
+        if (union.length > LightDiff.SPARSE_MAX_CELLS) {
+            return LightDiff.pending(incoming.sectionY(), incoming.lightType(), incoming.data(), null);
+        }
+        return LightDiff.pending(incoming.sectionY(), incoming.lightType(), incoming.data(), union);
+    }
+
+    private static int[] sortedUnion(int[] a, int[] b) {
+        int[] merged = new int[a.length + b.length];
+        int i = 0;
+        int j = 0;
+        int k = 0;
+        while (i < a.length && j < b.length) {
+            if (a[i] == b[j]) {
+                merged[k] = a[i];
+                i++;
+                j++;
+            } else if (a[i] < b[j]) {
+                merged[k] = a[i];
+                i++;
+            } else {
+                merged[k] = b[j];
+                j++;
+            }
+            k++;
+        }
+        while (i < a.length) {
+            merged[k] = a[i];
+            i++;
+            k++;
+        }
+        while (j < b.length) {
+            merged[k] = b[j];
+            j++;
+            k++;
+        }
+        return k == merged.length ? merged : java.util.Arrays.copyOf(merged, k);
     }
 
     public synchronized int blockCount() {
@@ -48,6 +94,9 @@ public final class ChunkDirtySet {
     }
 
     public synchronized java.util.Set<Integer> snapshotBlockPacked() {
+        if (blocks.isEmpty()) {
+            return java.util.Set.of();
+        }
         return new java.util.HashSet<>(blocks.keySet());
     }
 

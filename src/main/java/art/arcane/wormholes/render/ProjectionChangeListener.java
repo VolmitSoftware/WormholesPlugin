@@ -34,7 +34,7 @@ public final class ProjectionChangeListener implements Listener {
 
     private void mark(Block block) {
         if (block != null) {
-            tracker.markChanged(block.getWorld(), block.getX(), block.getZ());
+            tracker.markChanged(block.getWorld().getUID(), block.getX(), block.getZ());
         }
     }
 
@@ -152,6 +152,6 @@ public final class ProjectionChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void on(WorldUnloadEvent e) {
-        tracker.clearWorld(e.getWorld());
+        tracker.clearWorld(e.getWorld().getUID());
     }
 }

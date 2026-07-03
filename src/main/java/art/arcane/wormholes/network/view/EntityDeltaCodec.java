@@ -5,41 +5,19 @@ import java.util.Objects;
 import java.util.UUID;
 
 public final class EntityDeltaCodec {
-    private static final double VELOCITY_EPSILON = 1.0e-3D;
-
     private EntityDeltaCodec() {
     }
 
-    public static EntityVisual buildDelta(EntityVisual current, EntityVisual previous, int sequence, double velocityThreshold) {
-        Objects.requireNonNull(current, "current");
-        if (previous == null) {
-            return EntityVisual.full(
-                current.id(),
-                current.typeKey(),
-                current.x(), current.y(), current.z(),
-                current.height(),
-                current.lookX(), current.lookY(), current.lookZ(),
-                current.yaw(), current.pitch(),
-                current.velocityX(), current.velocityY(), current.velocityZ(),
-                current.onGround(),
-                current.playerName(),
-                current.textureValue(),
-                current.textureSignature(),
-                current.passengerOf(),
-                current.leashHolder(),
-                current.metadata(),
-                current.equipment(),
-                sequence
-            );
-        }
+    public static int computeMask(EntityVisual current, EntityVisual previous) {
         int mask = 0;
         if (positionChanged(current, previous)) {
             mask |= EntityVisual.FIELD_POSITION;
         }
-        if (current.yaw() != previous.yaw() || current.pitch() != previous.pitch()) {
+        if (EntityVisual.quantizeAngle(current.yaw()) != EntityVisual.quantizeAngle(previous.yaw())
+            || EntityVisual.quantizeAngle(current.pitch()) != EntityVisual.quantizeAngle(previous.pitch())) {
             mask |= EntityVisual.FIELD_YAW_PITCH;
         }
-        if (velocitySignificant(current, velocityThreshold) || velocityChanged(current, previous)) {
+        if (velocityChanged(current, previous)) {
             mask |= EntityVisual.FIELD_VELOCITY;
         }
         if (lookVecChanged(current, previous)) {
@@ -65,6 +43,31 @@ public final class EntityDeltaCodec {
         }
         if (profileChanged(current, previous)) {
             mask |= EntityVisual.FIELD_PROFILE;
+        }
+        return mask;
+    }
+
+    public static EntityVisual buildDelta(EntityVisual current, EntityVisual previous, int sequence, int mask) {
+        Objects.requireNonNull(current, "current");
+        if (previous == null) {
+            return EntityVisual.full(
+                current.id(),
+                current.typeKey(),
+                current.x(), current.y(), current.z(),
+                current.height(),
+                current.lookX(), current.lookY(), current.lookZ(),
+                current.yaw(), current.pitch(),
+                current.velocityX(), current.velocityY(), current.velocityZ(),
+                current.onGround(),
+                current.playerName(),
+                current.textureValue(),
+                current.textureSignature(),
+                current.passengerOf(),
+                current.leashHolder(),
+                current.metadata(),
+                current.equipment(),
+                sequence
+            );
         }
         return new EntityVisual(
             EntityVisual.MODE_DELTA,
@@ -164,23 +167,16 @@ public final class EntityDeltaCodec {
             || EntityVisual.quantize(a.z()) != EntityVisual.quantize(b.z());
     }
 
-    private static boolean velocitySignificant(EntityVisual current, double threshold) {
-        double magnitudeSquared = (current.velocityX() * current.velocityX())
-            + (current.velocityY() * current.velocityY())
-            + (current.velocityZ() * current.velocityZ());
-        return magnitudeSquared >= threshold * threshold;
-    }
-
     private static boolean velocityChanged(EntityVisual current, EntityVisual previous) {
-        return Math.abs(current.velocityX() - previous.velocityX()) > VELOCITY_EPSILON
-            || Math.abs(current.velocityY() - previous.velocityY()) > VELOCITY_EPSILON
-            || Math.abs(current.velocityZ() - previous.velocityZ()) > VELOCITY_EPSILON;
+        return EntityVisual.quantizeVelocity(current.velocityX()) != EntityVisual.quantizeVelocity(previous.velocityX())
+            || EntityVisual.quantizeVelocity(current.velocityY()) != EntityVisual.quantizeVelocity(previous.velocityY())
+            || EntityVisual.quantizeVelocity(current.velocityZ()) != EntityVisual.quantizeVelocity(previous.velocityZ());
     }
 
     private static boolean lookVecChanged(EntityVisual current, EntityVisual previous) {
-        return current.lookX() != previous.lookX()
-            || current.lookY() != previous.lookY()
-            || current.lookZ() != previous.lookZ();
+        return EntityVisual.quantizeUnit(current.lookX()) != EntityVisual.quantizeUnit(previous.lookX())
+            || EntityVisual.quantizeUnit(current.lookY()) != EntityVisual.quantizeUnit(previous.lookY())
+            || EntityVisual.quantizeUnit(current.lookZ()) != EntityVisual.quantizeUnit(previous.lookZ());
     }
 
     private static boolean profileChanged(EntityVisual current, EntityVisual previous) {

@@ -5,60 +5,67 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.util.Arrays;
 
 public final class WireCodec {
     public interface PayloadSampler {
-        void sample(byte[] payload);
+        void sample(WireMessageType type, byte[] payload);
     }
 
-    public static final int PROTOCOL_VERSION = 11;
+    public static final int PROTOCOL_VERSION = 12;
     public static final int MAX_FRAME_BYTES = 4 * 1024 * 1024;
-    private static final int FRAME_PREFIX_OVERHEAD = 4 + 1;
     private static final int MIN_FRAME_BODY_BYTES = 2;
+    private static final int PAYLOAD_SCRATCH_RETAIN_LIMIT_BYTES = 1024 * 1024;
+    private static final ThreadLocal<ExposedByteArrayOutputStream> PAYLOAD_SCRATCH = ThreadLocal.withInitial(ExposedByteArrayOutputStream::new);
 
     private WireCodec() {
     }
 
     public static byte[] encodeFrame(WireMessage message) throws IOException {
-        return encodeFrame(message, null, false, null);
+        return encodeFrame(message, null, 0, null);
     }
 
-    public static byte[] encodeFrame(WireMessage message, WireCompression compression, boolean dictNegotiated) throws IOException {
-        return encodeFrame(message, compression, dictNegotiated, null);
+    public static byte[] encodeFrame(WireMessage message, WireCompression compression, int negotiatedDictVersion) throws IOException {
+        return encodeFrame(message, compression, negotiatedDictVersion, null);
     }
 
-    public static byte[] encodeFrame(WireMessage message, WireCompression compression, boolean dictNegotiated, PayloadSampler sampler) throws IOException {
+    public static byte[] encodeFrame(WireMessage message, WireCompression compression, int negotiatedDictVersion, PayloadSampler sampler) throws IOException {
         byte[] payload = encodePayload(message);
         if (sampler != null) {
-            sampler.sample(payload);
+            sampler.sample(message.type(), payload);
         }
-        byte[] body = compression == null ? prependPlainMode(payload) : compression.encode(payload, dictNegotiated);
-        int frameLength = 1 + body.length;
-        if (frameLength + 4 > MAX_FRAME_BYTES) {
-            throw new IOException("Frame too large: " + (frameLength + 4) + " bytes (" + message.type() + ")");
+        if (compression == null) {
+            return buildPlainFrame(message.type(), payload);
         }
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream(frameLength + 4);
-        DataOutputStream out = new DataOutputStream(buffer);
-        out.writeInt(frameLength);
-        out.writeByte(message.type().id());
-        out.write(body);
-        out.flush();
-        return buffer.toByteArray();
+        byte[] frame = compression.encodeFramedFrame(message.type().id(), payload, negotiatedDictVersion);
+        if (frame.length > MAX_FRAME_BYTES) {
+            throw new IOException("Frame too large: " + frame.length + " bytes (" + message.type() + ")");
+        }
+        return frame;
     }
 
     public static byte[] encodePayload(WireMessage message) throws IOException {
-        ByteArrayOutputStream payloadBuffer = new ByteArrayOutputStream(256);
-        DataOutputStream payloadOut = new DataOutputStream(payloadBuffer);
+        ExposedByteArrayOutputStream scratch = PAYLOAD_SCRATCH.get();
+        scratch.reset();
+        DataOutputStream payloadOut = new DataOutputStream(scratch);
         message.write(payloadOut);
         payloadOut.flush();
-        return payloadBuffer.toByteArray();
+        byte[] payload = Arrays.copyOf(scratch.buffer(), scratch.length());
+        if (scratch.buffer().length > PAYLOAD_SCRATCH_RETAIN_LIMIT_BYTES) {
+            PAYLOAD_SCRATCH.remove();
+        }
+        return payload;
     }
 
     public static WireMessage readFrame(DataInputStream in) throws IOException {
-        return readFrame(in, null);
+        return readFrame(in, null, null);
     }
 
     public static WireMessage readFrame(DataInputStream in, WireCompression compression) throws IOException {
+        return readFrame(in, compression, null);
+    }
+
+    public static WireMessage readFrame(DataInputStream in, WireCompression compression, PayloadSampler sampler) throws IOException {
         int frameLength = in.readInt();
         if (frameLength < MIN_FRAME_BODY_BYTES || frameLength > MAX_FRAME_BYTES) {
             throw new IOException("Invalid frame length: " + frameLength);
@@ -76,6 +83,9 @@ public final class WireCodec {
             throw new IOException("Unknown message type id: " + typeId);
         }
         byte[] payload = compression == null ? extractPlainMode(body) : compression.decode(body).payload();
+        if (sampler != null) {
+            sampler.sample(type, payload);
+        }
         return decodePayload(type, payload);
     }
 
@@ -116,6 +126,32 @@ public final class WireCodec {
         };
     }
 
+    public static void writeDirection(DataOutputStream out, String directionName) throws IOException {
+        int id = switch (directionName) {
+            case "U" -> 0;
+            case "D" -> 1;
+            case "N" -> 2;
+            case "S" -> 3;
+            case "E" -> 4;
+            case "W" -> 5;
+            default -> throw new IOException("Unknown direction: " + directionName);
+        };
+        out.writeByte(id);
+    }
+
+    public static String readDirection(DataInputStream in) throws IOException {
+        int id = in.readUnsignedByte();
+        return switch (id) {
+            case 0 -> "U";
+            case 1 -> "D";
+            case 2 -> "N";
+            case 3 -> "S";
+            case 4 -> "E";
+            case 5 -> "W";
+            default -> throw new IOException("Unknown direction id: " + id);
+        };
+    }
+
     public static void writeFixedBytes(DataOutputStream out, byte[] bytes, int expectedLength) throws IOException {
         if (bytes == null || bytes.length != expectedLength) {
             throw new IOException("Expected " + expectedLength + " bytes, got " + (bytes == null ? "null" : bytes.length));
@@ -147,11 +183,20 @@ public final class WireCodec {
         return bytes;
     }
 
-    private static byte[] prependPlainMode(byte[] payload) {
-        byte[] body = new byte[payload.length + 1];
-        body[0] = WireCompression.MODE_NONE;
-        System.arraycopy(payload, 0, body, 1, payload.length);
-        return body;
+    static byte[] buildPlainFrame(WireMessageType type, byte[] payload) throws IOException {
+        int frameLength = 1 + 1 + payload.length;
+        if (frameLength + 4 > MAX_FRAME_BYTES) {
+            throw new IOException("Frame too large: " + (frameLength + 4) + " bytes (" + type + ")");
+        }
+        byte[] frame = new byte[4 + frameLength];
+        frame[0] = (byte) ((frameLength >>> 24) & 0xFF);
+        frame[1] = (byte) ((frameLength >>> 16) & 0xFF);
+        frame[2] = (byte) ((frameLength >>> 8) & 0xFF);
+        frame[3] = (byte) (frameLength & 0xFF);
+        frame[4] = type.id();
+        frame[5] = WireCompression.MODE_NONE;
+        System.arraycopy(payload, 0, frame, 6, payload.length);
+        return frame;
     }
 
     private static byte[] extractPlainMode(byte[] body) throws IOException {
@@ -161,5 +206,15 @@ public final class WireCodec {
         byte[] payload = new byte[body.length - 1];
         System.arraycopy(body, 1, payload, 0, payload.length);
         return payload;
+    }
+
+    static final class ExposedByteArrayOutputStream extends ByteArrayOutputStream {
+        byte[] buffer() {
+            return buf;
+        }
+
+        int length() {
+            return count;
+        }
     }
 }

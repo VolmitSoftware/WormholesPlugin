@@ -18,11 +18,13 @@ import art.arcane.wormholes.util.AxisAlignedBB;
 
 import org.bukkit.ChunkSnapshot;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Pose;
 import org.bukkit.event.Listener;
 import org.bukkit.util.BoundingBox;
 import org.bukkit.util.Vector;
@@ -48,6 +50,9 @@ public final class ViewServer implements Listener {
     private static final int MAX_BULK_SNAPSHOTS_PER_TICK = 8;
     private static final int SIDEBAND_MAX_ENTITIES = 24;
     private static final long SIDEBAND_ENTITY_INTERVAL_TICKS = 2L;
+    private static final long SIDEBAND_FULL_RESYNC_TICKS = 200L;
+    private static final long SIDEBAND_FULL_RESYNC_JITTER_TICKS = 80L;
+    private static final long BLOB_RECAPTURE_INTERVAL_TICKS = 40L;
 
     private final NetworkManager network;
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
@@ -61,6 +66,8 @@ public final class ViewServer implements Listener {
     private final PreShipPredictor preShipPredictor = new PreShipPredictor();
     private volatile EntityRateScheduler entityRateScheduler;
     private volatile EntityRateScheduler.Bands lastBands;
+    private volatile NetworkConfig.ViewConfig cachedPreShipView;
+    private volatile PreShipPredictor.Settings cachedPreShipSettings;
     private long tickCounter;
 
     private static final class Session {
@@ -73,12 +80,15 @@ public final class ViewServer implements Listener {
         private final double portalCenterY;
         private final double portalCenterZ;
         private final List<long[]> columns;
+        private final BoundingBox bounds;
         private final Set<String> peers = ConcurrentHashMap.newKeySet();
         private final Set<UUID> sentProfiles = ConcurrentHashMap.newKeySet();
         private final Map<String, Map<UUID, EntitySendState>> sendStates = new ConcurrentHashMap<>();
         private final Map<String, Set<UUID>> lastSentPresentIds = new ConcurrentHashMap<>();
         private final Map<String, Long> sidebandEntityNextTick = new ConcurrentHashMap<>();
+        private final Map<String, Boolean> lastPeerSideband = new ConcurrentHashMap<>();
         private final Map<UUID, EntityVisual> lastCapturedSnapshots = new ConcurrentHashMap<>();
+        private final Map<UUID, BlobCaptureState> blobCaptureStates = new ConcurrentHashMap<>();
         private final AtomicBoolean entityCaptureRunning = new AtomicBoolean(false);
         private volatile TicketLease ticketLease;
         private volatile int lastSkyDarken = -1;
@@ -94,11 +104,16 @@ public final class ViewServer implements Listener {
             this.portalCenterY = portalCenterY;
             this.portalCenterZ = portalCenterZ;
             this.columns = columnsFor(box);
+            this.bounds = new BoundingBox(box.minX(), box.minY(), box.minZ(),
+                box.maxX() + 1, box.maxY() + 1, box.maxZ() + 1);
         }
 
         private Map<UUID, EntitySendState> sendStatesFor(String peerName) {
             return sendStates.computeIfAbsent(peerName, name -> new ConcurrentHashMap<>());
         }
+    }
+
+    record BlobCaptureState(long lastCaptureTick, Pose pose, boolean onFire, Material mainHand, Material offHand) {
     }
 
     private record ChunkTicketKey(UUID worldId, int chunkX, int chunkZ) {
@@ -219,10 +234,7 @@ public final class ViewServer implements Listener {
         session.peers.remove(peerName);
         session.sendStates.remove(peerName);
         session.lastSentPresentIds.remove(peerName);
-        EntityRateScheduler scheduler = entityRateScheduler;
-        if (scheduler != null) {
-            scheduler.clearSubscriber(peerName);
-        }
+        session.lastPeerSideband.remove(peerName);
         ChunkReplicationManager replication = network.getReplicationManager();
         for (long[] column : session.columns) {
             int chunkX = (int) column[0];
@@ -381,6 +393,26 @@ public final class ViewServer implements Listener {
         long nowMillis = System.currentTimeMillis();
         ChunkReplicationManager replication = network.getReplicationManager();
         for (Session session : sessions.values()) {
+            if (session.peers.isEmpty()) {
+                continue;
+            }
+            List<PreShipPredictor.PlayerPose> poses = null;
+            for (String peerName : session.peers) {
+                ViewSubscriptionManager.SubscriberPose subscriberPose = subscriptions.getSubscriberPose(peerName);
+                if (subscriberPose == null) {
+                    continue;
+                }
+                if (poses == null) {
+                    poses = new ArrayList<>(session.peers.size());
+                }
+                poses.add(new PreShipPredictor.PlayerPose(
+                    session.portalId, peerName,
+                    subscriberPose.x(), subscriberPose.y(), subscriberPose.z(),
+                    subscriberPose.forwardX(), subscriberPose.forwardY(), subscriberPose.forwardZ()));
+            }
+            if (poses == null) {
+                continue;
+            }
             org.bukkit.Location origin = new org.bukkit.Location(session.world, session.portalCenterX, session.portalCenterY, session.portalCenterZ);
             List<art.arcane.wormholes.PortalManager.GatewayPortalInfo> nearby = Wormholes.portalManager.listGatewayPortalsNear(origin, settings.distance());
             if (nearby.isEmpty()) {
@@ -391,15 +423,7 @@ public final class ViewServer implements Listener {
                 gateways.add(new PreShipPredictor.GatewayInfo(info.portalId(), info.centerX(), info.centerY(), info.centerZ(), info.normalX(), info.normalY(), info.normalZ()));
             }
             PreShipPredictor.GatewayAccessor accessor = (x, z, radius) -> gateways;
-            for (String peerName : session.peers) {
-                ViewSubscriptionManager.SubscriberPose subscriberPose = subscriptions.getSubscriberPose(peerName);
-                if (subscriberPose == null) {
-                    continue;
-                }
-                PreShipPredictor.PlayerPose pose = new PreShipPredictor.PlayerPose(
-                    session.portalId, peerName,
-                    subscriberPose.x(), subscriberPose.y(), subscriberPose.z(),
-                    subscriberPose.forwardX(), subscriberPose.forwardY(), subscriberPose.forwardZ());
+            for (PreShipPredictor.PlayerPose pose : poses) {
                 List<PreShipPredictor.PreShipTicket> opened = preShipPredictor.tick(pose, accessor, settings, nowMillis);
                 for (PreShipPredictor.PreShipTicket ticket : opened) {
                     if (ticket.isPromoted()) {
@@ -413,13 +437,13 @@ public final class ViewServer implements Listener {
                     for (long[] column : ticketColumns) {
                         chunkKeys.add(ViewSlice.columnKey((int) column[0], (int) column[1]));
                     }
-                    replication.subscribePreShip(peerName, ticket.getPortalId(), session.world, chunkKeys);
+                    replication.subscribePreShip(pose.subscriberId(), ticket.getPortalId(), session.world, chunkKeys);
                 }
             }
-            List<PreShipPredictor.PreShipTicket> cancelled = preShipPredictor.sweepCanceled(settings, nowMillis);
-            for (PreShipPredictor.PreShipTicket ticket : cancelled) {
-                replication.cancelPreShip(ticket.getSubscriberId(), ticket.getPortalId());
-            }
+        }
+        List<PreShipPredictor.PreShipTicket> cancelled = preShipPredictor.sweepCanceled(settings, nowMillis);
+        for (PreShipPredictor.PreShipTicket ticket : cancelled) {
+            replication.cancelPreShip(ticket.getSubscriberId(), ticket.getPortalId());
         }
     }
 
@@ -431,8 +455,15 @@ public final class ViewServer implements Listener {
         return session.columns;
     }
 
-    private static PreShipPredictor.Settings preShipSettings(NetworkConfig.ViewConfig view) {
-        return new PreShipPredictor.Settings(view.preshipEnabled, view.preshipDistance, view.preshipMinSpeed, view.preshipRateFraction, view.preshipCancelGraceSeconds);
+    private PreShipPredictor.Settings preShipSettings(NetworkConfig.ViewConfig view) {
+        PreShipPredictor.Settings cached = cachedPreShipSettings;
+        if (cached != null && view == cachedPreShipView) {
+            return cached;
+        }
+        PreShipPredictor.Settings fresh = new PreShipPredictor.Settings(view.preshipEnabled, view.preshipDistance, view.preshipMinSpeed, view.preshipRateFraction, view.preshipCancelGraceSeconds);
+        cachedPreShipView = view;
+        cachedPreShipSettings = fresh;
+        return fresh;
     }
 
     private void captureEntities(Session session) {
@@ -440,37 +471,34 @@ public final class ViewServer implements Listener {
             int skyDarken = art.arcane.wormholes.render.view.ProjectionWorldView.computeSkyDarken(session.world.getTime());
             if (skyDarken != session.lastSkyDarken) {
                 session.lastSkyDarken = skyDarken;
-                WireMessage.ViewTime time = new WireMessage.ViewTime(session.portalId, skyDarken);
-                for (String peerName : session.peers) {
-                    network.send(peerName, time);
-                    timeSendCount.incrementAndGet();
+                if (!session.peers.isEmpty()) {
+                    WireMessage.ViewTime time = new WireMessage.ViewTime(session.portalId, skyDarken);
+                    network.sendToPeers(session.peers, time);
+                    timeSendCount.addAndGet(session.peers.size());
                 }
             }
             long entityTick = tickCounter;
             NetworkConfig.ViewConfig viewConfig = activeViewConfig();
             EntityRateScheduler scheduler = ensureScheduler(viewConfig);
-            int missesBeforeResync = Math.max(1, viewConfig.entityDeltaMissesBeforeResync);
-            double velocityThreshold = Math.max(0.0D, viewConfig.entityDeltaVelocityThreshold);
             boolean deltaEnabled = viewConfig.entityDeltaEnabled;
 
-            BoundingBox bounds = new BoundingBox(session.box.minX(), session.box.minY(), session.box.minZ(),
-                session.box.maxX() + 1, session.box.maxY() + 1, session.box.maxZ() + 1);
             List<EntityVisual> visuals = new ArrayList<>(16);
-            Set<UUID> presentIds = ConcurrentHashMap.newKeySet();
-            for (Entity entity : session.world.getNearbyEntities(bounds)) {
+            Set<UUID> presentIds = new HashSet<>(32);
+            for (Entity entity : session.world.getNearbyEntities(session.bounds)) {
                 if (visuals.size() >= 64) {
                     break;
                 }
                 if (entity.isDead() || !entity.isValid()) {
                     continue;
                 }
-                EntityVisual currentFull = captureEntityVisualFull(session, entity);
+                EntityVisual currentFull = captureEntityVisualFull(session, entity, entityTick);
                 visuals.add(currentFull);
                 presentIds.add(currentFull.id());
                 session.lastCapturedSnapshots.put(currentFull.id(), currentFull);
             }
             session.sentProfiles.retainAll(presentIds);
             session.lastCapturedSnapshots.keySet().retainAll(presentIds);
+            session.blobCaptureStates.keySet().retainAll(presentIds);
 
             Set<UUID> sidebandAllowed = null;
             for (String peerName : session.peers) {
@@ -489,34 +517,45 @@ public final class ViewServer implements Listener {
                 }
                 Map<UUID, EntitySendState> peerStates = session.sendStatesFor(peerName);
                 peerStates.keySet().retainAll(presentIds);
+                Boolean previousSideband = session.lastPeerSideband.put(peerName, Boolean.valueOf(sideband));
+                if (previousSideband != null && previousSideband.booleanValue() != sideband) {
+                    for (EntitySendState transitioned : peerStates.values()) {
+                        transitioned.requestFull();
+                    }
+                }
                 List<EntityVisual> outbound = new ArrayList<>(visuals.size());
                 for (EntityVisual currentFull : visuals) {
                     if (sideband && !sidebandAllowed.contains(currentFull.id())) {
                         continue;
                     }
-                    boolean rateAllowsSend = scheduler.shouldSend(
-                        peerName, currentFull.id(),
-                        session.portalCenterX, session.portalCenterY, session.portalCenterZ,
-                        currentFull.x(), currentFull.y(), currentFull.z(),
-                        entityTick
-                    );
                     EntitySendState state = peerStates.computeIfAbsent(currentFull.id(), EntitySendState::new);
-                    boolean forceFull = !deltaEnabled || state.isForceFullNext() || state.getLastSentSnapshot() == null;
+                    boolean rateAllowsSend = entityTick >= state.getNextEligibleTick();
+                    if (rateAllowsSend) {
+                        double dx = currentFull.x() - session.portalCenterX;
+                        double dy = currentFull.y() - session.portalCenterY;
+                        double dz = currentFull.z() - session.portalCenterZ;
+                        state.setNextEligibleTick(entityTick + scheduler.claimSendInterval((dx * dx) + (dy * dy) + (dz * dz)));
+                    }
+                    boolean forceFull = !deltaEnabled
+                        || state.isForceFullNext()
+                        || state.getLastSentSnapshot() == null
+                        || (sideband && state.isSidebandFullDue(entityTick, SIDEBAND_FULL_RESYNC_TICKS, SIDEBAND_FULL_RESYNC_JITTER_TICKS));
                     if (!rateAllowsSend && !forceFull) {
                         continue;
                     }
-                    int sequence = state.allocateSequence();
-                    EntityVisual outboundVisual;
                     if (forceFull) {
-                        outboundVisual = withSequenceAndMode(currentFull, sequence, EntityVisual.MODE_FULL);
-                        state.recordSent(currentFull, true);
+                        int sequence = state.allocateSequence();
+                        outbound.add(withSequenceAndMode(currentFull, sequence, EntityVisual.MODE_FULL));
+                        state.recordSent(currentFull, true, entityTick);
                     } else {
-                        EntityVisual delta = EntityDeltaCodec.buildDelta(currentFull, state.getLastSentSnapshot(), sequence, velocityThreshold);
-                        outboundVisual = delta;
-                        state.recordSent(currentFull, false);
-                        state.recordMiss(missesBeforeResync);
+                        int mask = EntityDeltaCodec.computeMask(currentFull, state.getLastSentSnapshot());
+                        if (mask == 0) {
+                            continue;
+                        }
+                        int sequence = state.allocateSequence();
+                        outbound.add(EntityDeltaCodec.buildDelta(currentFull, state.getLastSentSnapshot(), sequence, mask));
+                        state.recordSent(currentFull, false, entityTick);
                     }
-                    outbound.add(outboundVisual);
                 }
                 Set<UUID> previousPresent = session.lastSentPresentIds.get(peerName);
                 boolean presentChanged = previousPresent == null || !previousPresent.equals(presentIds);
@@ -532,10 +571,19 @@ public final class ViewServer implements Listener {
                 if (outbound.isEmpty() && !presentChanged) {
                     continue;
                 }
-                session.lastSentPresentIds.put(peerName, new HashSet<>(presentIds));
                 WireMessage.ViewEntities message = new WireMessage.ViewEntities(session.portalId, outbound, new ArrayList<>(presentIds));
-                network.send(peerName, message);
-                entitySendCount.addAndGet(outbound.size());
+                boolean sent = network.send(peerName, message);
+                if (sent) {
+                    session.lastSentPresentIds.put(peerName, new HashSet<>(presentIds));
+                    entitySendCount.addAndGet(outbound.size());
+                } else {
+                    for (EntityVisual failedVisual : outbound) {
+                        EntitySendState failedState = peerStates.get(failedVisual.id());
+                        if (failedState != null) {
+                            failedState.requestFull();
+                        }
+                    }
+                }
             }
         } catch (Throwable e) {
             Wormholes.v("net: entity view capture failed for portal " + session.portalId + ": " + e.getMessage());
@@ -544,13 +592,15 @@ public final class ViewServer implements Listener {
         }
     }
 
-    private EntityVisual captureEntityVisualFull(Session session, Entity entity) {
+    private EntityVisual captureEntityVisualFull(Session session, Entity entity, long entityTick) {
         Location location = entity.getLocation();
         Vector look = entity instanceof LivingEntity living ? living.getEyeLocation().getDirection() : location.getDirection();
         Vector velocity = entity.getVelocity();
         String playerName = "";
         String textureValue = "";
         String textureSignature = "";
+        Material mainHand = Material.AIR;
+        Material offHand = Material.AIR;
         if (entity instanceof Player player) {
             playerName = player.getName();
             if (session.sentProfiles.add(player.getUniqueId())) {
@@ -558,6 +608,8 @@ public final class ViewServer implements Listener {
                 textureValue = textures[0];
                 textureSignature = textures[1];
             }
+            mainHand = player.getInventory().getItemInMainHand().getType();
+            offHand = player.getInventory().getItemInOffHand().getType();
         }
         UUID passengerOf = entity.getVehicle() == null ? null : entity.getVehicle().getUniqueId();
         UUID leashHolder = null;
@@ -570,8 +622,20 @@ public final class ViewServer implements Listener {
             } catch (IllegalStateException ignored) {
             }
         }
-        byte[] metadata = PacketBlobs.captureMetadata(entity);
-        byte[] equipment = PacketBlobs.captureEquipment(entity);
+        EntityVisual previousVisual = session.lastCapturedSnapshots.get(entity.getUniqueId());
+        BlobCaptureState previousBlobState = session.blobCaptureStates.get(entity.getUniqueId());
+        Pose pose = entity.getPose();
+        boolean onFire = entity.getFireTicks() > 0;
+        byte[] metadata;
+        byte[] equipment;
+        if (shouldRecaptureBlobs(previousVisual, previousBlobState, entityTick, BLOB_RECAPTURE_INTERVAL_TICKS, pose, onFire, mainHand, offHand)) {
+            metadata = PacketBlobs.captureMetadata(entity);
+            equipment = PacketBlobs.captureEquipment(entity);
+            session.blobCaptureStates.put(entity.getUniqueId(), new BlobCaptureState(entityTick, pose, onFire, mainHand, offHand));
+        } else {
+            metadata = previousVisual.metadata();
+            equipment = previousVisual.equipment();
+        }
         return EntityVisual.full(
             entity.getUniqueId(),
             entity.getType().getKey().toString(),
@@ -590,6 +654,17 @@ public final class ViewServer implements Listener {
             equipment,
             0
         );
+    }
+
+    static boolean shouldRecaptureBlobs(EntityVisual previousVisual, BlobCaptureState previousBlobState, long entityTick, long intervalTicks,
+                                        Pose pose, boolean onFire, Material mainHand, Material offHand) {
+        return previousVisual == null
+            || previousBlobState == null
+            || entityTick - previousBlobState.lastCaptureTick() >= intervalTicks
+            || previousBlobState.pose() != pose
+            || previousBlobState.onFire() != onFire
+            || previousBlobState.mainHand() != mainHand
+            || previousBlobState.offHand() != offHand;
     }
 
     private static EntityVisual withSequenceAndMode(EntityVisual source, int sequence, byte mode) {
@@ -692,11 +767,9 @@ public final class ViewServer implements Listener {
             return;
         }
         for (Session session : sessions.values()) {
-            if (session.lastCapturedSnapshots.containsKey(entityId)) {
+            if (session.lastCapturedSnapshots.containsKey(entityId) && !session.peers.isEmpty()) {
                 WireMessage.ViewEntityAnimation message = new WireMessage.ViewEntityAnimation(session.portalId, entityId, hurt, animationOrdinal, yaw);
-                for (String peerName : session.peers) {
-                    network.send(peerName, message);
-                }
+                network.sendToPeers(session.peers, message);
             }
         }
     }
@@ -739,7 +812,7 @@ public final class ViewServer implements Listener {
                         Wormholes.v("net: failed to encode chunk bulk for " + peerName + " (" + chunkX + "," + chunkZ + "): " + e.getMessage());
                         return;
                     }
-                    replication.sendBulk(peerName, chunkKey, payload);
+                    replication.sendBulk(peerName, chunkKey, payload, slice.contentHash());
                     if (session.lastSkyDarken >= 0) {
                         network.send(peerName, new WireMessage.ViewTime(session.portalId, session.lastSkyDarken));
                         timeSendCount.incrementAndGet();
@@ -986,11 +1059,13 @@ public final class ViewServer implements Listener {
 
     public Stats statsSnapshot() {
         int totalSubscriptions = 0;
+        int tracked = 0;
         for (Session session : sessions.values()) {
             totalSubscriptions += session.peers.size();
+            for (Map<UUID, EntitySendState> peerStates : session.sendStates.values()) {
+                tracked += peerStates.size();
+            }
         }
-        EntityRateScheduler scheduler = entityRateScheduler;
-        int tracked = scheduler == null ? 0 : scheduler.trackedEntityCount();
         ChunkReplicationManager.Stats replicationStats = network.getReplicationManager().statsSnapshot();
         return new Stats(
             totalSubscriptions,

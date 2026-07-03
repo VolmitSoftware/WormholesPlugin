@@ -61,9 +61,9 @@ public record WireTraversive(
     }
 
     public void write(DataOutputStream out) throws IOException {
-        out.writeUTF(frameNormal);
-        out.writeUTF(frameRight);
-        out.writeUTF(frameUp);
+        WireCodec.writeDirection(out, frameNormal);
+        WireCodec.writeDirection(out, frameRight);
+        WireCodec.writeDirection(out, frameUp);
         out.writeDouble(originX);
         out.writeDouble(originY);
         out.writeDouble(originZ);
@@ -80,9 +80,9 @@ public record WireTraversive(
     }
 
     public static WireTraversive read(DataInputStream in) throws IOException {
-        String frameNormal = in.readUTF();
-        String frameRight = in.readUTF();
-        String frameUp = in.readUTF();
+        String frameNormal = WireCodec.readDirection(in);
+        String frameRight = WireCodec.readDirection(in);
+        String frameUp = WireCodec.readDirection(in);
         double originX = in.readDouble();
         double originY = in.readDouble();
         double originZ = in.readDouble();

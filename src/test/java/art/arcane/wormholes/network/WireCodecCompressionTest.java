@@ -52,7 +52,7 @@ class WireCodecCompressionTest {
         );
     }
 
-    private static CompressionDictionary trainDictionary(int version) {
+    private static CompressionDictionary trainDictionary() {
         List<byte[]> samples = new ArrayList<>();
         Random random = new Random(0xCAFEL);
         for (int i = 0; i < 256; i++) {
@@ -62,7 +62,7 @@ class WireCodecCompressionTest {
             }
             samples.add(sample);
         }
-        return CompressionDictionary.train(samples, 8 * 1024, version);
+        return CompressionDictionary.train(samples, 8 * 1024);
     }
 
     @Test
@@ -80,7 +80,7 @@ class WireCodecCompressionTest {
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
             WireMessage.Hello hello = bigCompressibleHello(8192);
-            byte[] frame = WireCodec.encodeFrame(hello, compression, false);
+            byte[] frame = WireCodec.encodeFrame(hello, compression, 0);
             assertEquals(WireCompression.MODE_ZSTD_DICTLESS, frame[5]);
             WireMessage decoded = WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(frame)), compression);
             WireMessage.Hello echoed = assertInstanceOf(WireMessage.Hello.class, decoded);
@@ -94,16 +94,16 @@ class WireCodecCompressionTest {
     void dictCompressorEncodesMode2WithVersionPrefix() throws IOException {
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
-            CompressionDictionary dictionary = trainDictionary(77);
+            CompressionDictionary dictionary = trainDictionary();
             compression.installDictionary(dictionary);
             WireMessage.Hello hello = bigCompressibleHello(8192);
-            byte[] frame = WireCodec.encodeFrame(hello, compression, true);
+            byte[] frame = WireCodec.encodeFrame(hello, compression, dictionary.version());
             assertEquals(WireCompression.MODE_ZSTD_DICT, frame[5]);
             int version = (frame[6] & 0xFF)
                 | ((frame[7] & 0xFF) << 8)
                 | ((frame[8] & 0xFF) << 16)
                 | ((frame[9] & 0xFF) << 24);
-            assertEquals(77, version);
+            assertEquals(dictionary.version(), version);
             WireMessage decoded = WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(frame)), compression);
             WireMessage.Hello echoed = assertInstanceOf(WireMessage.Hello.class, decoded);
             assertEquals(hello.pluginVersion(), echoed.pluginVersion());
@@ -119,7 +119,7 @@ class WireCodecCompressionTest {
             int rawPayloadSize = 32 * 1024;
             WireMessage.Hello hello = bigCompressibleHello(rawPayloadSize);
             byte[] rawPayload = WireCodec.encodePayload(hello);
-            byte[] frame = WireCodec.encodeFrame(hello, compression, false);
+            byte[] frame = WireCodec.encodeFrame(hello, compression, 0);
             double ratio = (double) frame.length / (double) rawPayload.length;
             assertTrue(ratio < 0.5D, "expected compression ratio < 0.5, was " + ratio + " (frame=" + frame.length + " raw=" + rawPayload.length + ")");
         } finally {
@@ -132,11 +132,11 @@ class WireCodecCompressionTest {
         WireCompression dictless = new WireCompression(WireCompression.DEFAULT_LEVEL);
         WireCompression dictMode = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
-            CompressionDictionary dictionary = trainDictionary(1);
+            CompressionDictionary dictionary = trainDictionary();
             dictMode.installDictionary(dictionary);
             WireMessage.Hello hello = bigCompressibleHello(1024);
-            byte[] dictlessFrame = WireCodec.encodeFrame(hello, dictless, false);
-            byte[] dictFrame = WireCodec.encodeFrame(hello, dictMode, true);
+            byte[] dictlessFrame = WireCodec.encodeFrame(hello, dictless, 0);
+            byte[] dictFrame = WireCodec.encodeFrame(hello, dictMode, dictionary.version());
             int allowedOverhead = Math.max(dictlessFrame.length / 4, 64);
             assertTrue(dictFrame.length <= dictlessFrame.length + allowedOverhead,
                 "dict frame should not balloon compared to dictless: dict=" + dictFrame.length + " dictless=" + dictlessFrame.length);

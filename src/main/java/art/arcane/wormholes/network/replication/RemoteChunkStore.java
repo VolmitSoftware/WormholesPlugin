@@ -7,6 +7,7 @@ import java.io.DataInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -18,11 +19,13 @@ public final class RemoteChunkStore {
 
     public static final class ReplicatedChunk {
         private final long chunkKey;
-        private volatile byte[] bulkPayload;
         private volatile ViewSlice slice;
         private volatile long lastAppliedSeq;
         private volatile long firstGapMillis;
         private final TreeMap<Long, ChunkDiffBatch> pending = new TreeMap<>();
+        private final HashMap<String, Integer> paletteLookup = new HashMap<>(32);
+        private long cachedContentHash;
+        private boolean contentHashValid;
 
         private ReplicatedChunk(long chunkKey) {
             this.chunkKey = chunkKey;
@@ -30,10 +33,6 @@ public final class RemoteChunkStore {
 
         public long chunkKey() {
             return chunkKey;
-        }
-
-        public byte[] bulkPayload() {
-            return bulkPayload;
         }
 
         public ViewSlice slice() {
@@ -83,8 +82,13 @@ public final class RemoteChunkStore {
                 // cannot rewind the chunk to an older state.
                 return chunk;
             }
-            chunk.bulkPayload = bulk.bulkPayload();
             chunk.slice = decoded;
+            chunk.paletteLookup.clear();
+            List<String> palette = decoded.palette();
+            for (int i = 0; i < palette.size(); i++) {
+                chunk.paletteLookup.putIfAbsent(palette.get(i), i);
+            }
+            chunk.contentHashValid = false;
             chunk.lastAppliedSeq = bulk.sequence();
             chunk.firstGapMillis = 0L;
             // Drop diffs this bulk already supersedes, but KEEP any buffered diffs newer than the bulk
@@ -153,11 +157,17 @@ public final class RemoteChunkStore {
         if (chunk == null) {
             return 0L;
         }
-        ViewSlice slice = chunk.slice;
-        if (slice == null) {
-            return 0L;
+        synchronized (chunk) {
+            ViewSlice slice = chunk.slice;
+            if (slice == null) {
+                return 0L;
+            }
+            if (!chunk.contentHashValid) {
+                chunk.cachedContentHash = slice.contentHash();
+                chunk.contentHashValid = true;
+            }
+            return chunk.cachedContentHash;
         }
-        return slice.contentHash();
     }
 
     public void remove(long chunkKey) {
@@ -220,6 +230,9 @@ public final class RemoteChunkStore {
         if (current == null) {
             return;
         }
+        if (!batch.blocks().isEmpty()) {
+            chunk.contentHashValid = false;
+        }
         for (BlockChange change : batch.blocks()) {
             int worldX = (((int) (chunk.chunkKey() >> 32)) << 4) + BlockChange.unpackX(change.packedXyz());
             int worldZ = (((int) chunk.chunkKey()) << 4) + BlockChange.unpackZ(change.packedXyz());
@@ -228,7 +241,7 @@ public final class RemoteChunkStore {
                 continue;
             }
             int cellIndex = current.cellIndex(worldX, worldY, worldZ);
-            int paletteIndex = resolvePaletteIndex(current, change.state());
+            int paletteIndex = resolvePaletteIndex(chunk, current, change.state());
             if (paletteIndex < 0) {
                 continue;
             }
@@ -239,20 +252,22 @@ public final class RemoteChunkStore {
         }
     }
 
-    private static int resolvePaletteIndex(ViewSlice slice, String state) {
+    private static int resolvePaletteIndex(ReplicatedChunk chunk, ViewSlice slice, String state) {
         if (state == null) {
             return -1;
         }
-        List<String> palette = slice.palette();
-        int existing = palette.indexOf(state);
-        if (existing >= 0) {
-            return existing;
+        Integer existing = chunk.paletteLookup.get(state);
+        if (existing != null) {
+            return existing.intValue();
         }
+        List<String> palette = slice.palette();
         if (palette.size() > 65535) {
             return -1;
         }
         palette.add(state);
-        return palette.size() - 1;
+        int index = palette.size() - 1;
+        chunk.paletteLookup.put(state, index);
+        return index;
     }
 
     private void applyLightDiff(ViewSlice slice, LightDiff diff) {
@@ -261,34 +276,71 @@ public final class RemoteChunkStore {
         if (sectionMaxY < slice.minY() || sectionMinY >= slice.minY() + slice.sizeY()) {
             return;
         }
+        if (diff.data() != null) {
+            applyFullLight(slice, diff, sectionMinY);
+        } else if (diff.sparseCells() != null && diff.sparseLevels() != null) {
+            applySparseLight(slice, diff, sectionMinY);
+        }
+    }
+
+    private static void applyFullLight(ViewSlice slice, LightDiff diff, int sectionMinY) {
+        int minY = slice.minY();
+        int lyStart = Math.max(0, minY - sectionMinY);
+        int lyEnd = Math.min(15, minY + slice.sizeY() - 1 - sectionMinY);
+        int lxEnd = Math.min(15, slice.sizeX() - 1);
+        int lzEnd = Math.min(15, slice.sizeZ() - 1);
         byte[] target = slice.light();
         byte[] source = diff.data();
-        for (int ly = 0; ly < 16; ly++) {
-            int worldY = sectionMinY + ly;
-            if (worldY < slice.minY() || worldY >= slice.minY() + slice.sizeY()) {
-                continue;
-            }
-            for (int lz = 0; lz < 16; lz++) {
-                for (int lx = 0; lx < 16; lx++) {
-                    int worldX = slice.minX() + lx;
-                    int worldZ = slice.minZ() + lz;
-                    if (!slice.contains(worldX, worldY, worldZ)) {
-                        continue;
-                    }
-                    int sourceIndex = (ly << 8) | (lz << 4) | lx;
+        boolean sky = diff.lightType() == LightDiff.TYPE_SKYLIGHT;
+        for (int ly = lyStart; ly <= lyEnd; ly++) {
+            int yBase = (sectionMinY + ly - minY) * slice.sizeZ();
+            int sourceYBase = ly << 8;
+            for (int lz = 0; lz <= lzEnd; lz++) {
+                int rowBase = (yBase + lz) * slice.sizeX();
+                int sourceRow = sourceYBase | (lz << 4);
+                for (int lx = 0; lx <= lxEnd; lx++) {
+                    int sourceIndex = sourceRow | lx;
                     if ((sourceIndex >> 1) >= source.length) {
                         continue;
                     }
                     int nibble = (sourceIndex & 1) == 0 ? (source[sourceIndex >> 1] & 0x0F) : ((source[sourceIndex >> 1] >> 4) & 0x0F);
-                    int cellIndex = slice.cellIndex(worldX, worldY, worldZ);
-                    byte existing = target[cellIndex];
-                    if (diff.lightType() == LightDiff.TYPE_SKYLIGHT) {
-                        target[cellIndex] = (byte) (((nibble & 0x0F) << 4) | (existing & 0x0F));
-                    } else {
-                        target[cellIndex] = (byte) ((existing & 0xF0) | (nibble & 0x0F));
-                    }
+                    applyLightCell(target, rowBase + lx, sky, nibble);
                 }
             }
+        }
+    }
+
+    private static void applySparseLight(ViewSlice slice, LightDiff diff, int sectionMinY) {
+        int minY = slice.minY();
+        int maxYExclusive = minY + slice.sizeY();
+        int[] cells = diff.sparseCells();
+        byte[] levels = diff.sparseLevels();
+        byte[] target = slice.light();
+        boolean sky = diff.lightType() == LightDiff.TYPE_SKYLIGHT;
+        for (int i = 0; i < cells.length; i++) {
+            int cell = cells[i];
+            int lx = cell & 0xF;
+            int lz = (cell >> 4) & 0xF;
+            int ly = (cell >> 8) & 0xF;
+            int worldY = sectionMinY + ly;
+            if (worldY < minY || worldY >= maxYExclusive || lx >= slice.sizeX() || lz >= slice.sizeZ()) {
+                continue;
+            }
+            if ((i >> 1) >= levels.length) {
+                continue;
+            }
+            int nibble = (i & 1) == 0 ? (levels[i >> 1] & 0x0F) : ((levels[i >> 1] >> 4) & 0x0F);
+            int cellIndex = ((worldY - minY) * slice.sizeZ() + lz) * slice.sizeX() + lx;
+            applyLightCell(target, cellIndex, sky, nibble);
+        }
+    }
+
+    private static void applyLightCell(byte[] target, int cellIndex, boolean sky, int nibble) {
+        byte existing = target[cellIndex];
+        if (sky) {
+            target[cellIndex] = (byte) (((nibble & 0x0F) << 4) | (existing & 0x0F));
+        } else {
+            target[cellIndex] = (byte) ((existing & 0xF0) | (nibble & 0x0F));
         }
     }
 }

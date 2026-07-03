@@ -143,14 +143,14 @@ public final class WormholesBandwidthHarness {
                 for (SubscriberState subscriber : subscriberStates) {
                     for (int f = 0; f < FRAMES_PER_SUBSCRIBER_PER_TICK; f++) {
                         WireMessage message = buildEntityFrame(subscriber, config, tick);
-                        byte[] frame = WireCodec.encodeFrame(message, compression, config.dictMode);
+                        byte[] frame = WireCodec.encodeFrame(message, compression, config.dictVersion());
                         frameSizes.add(frame.length);
                         totalTxBytes += frame.length;
                         totalRxBytes += frame.length;
                     }
                     if (tick % VIEW_SLICE_EVERY_N_TICKS == 0) {
                         WireMessage.ChunkBulkBatch chunkBatch = buildLegacySliceBatch(subscriber, tick);
-                        byte[] frame = WireCodec.encodeFrame(chunkBatch, compression, config.dictMode);
+                        byte[] frame = WireCodec.encodeFrame(chunkBatch, compression, config.dictVersion());
                         frameSizes.add(frame.length);
                         totalTxBytes += frame.length;
                         totalRxBytes += frame.length;
@@ -280,9 +280,10 @@ public final class WormholesBandwidthHarness {
             EntityVisual outgoing;
             if (config.deltaEnabled) {
                 EntityVisual previous = sendState.getLastSentSnapshot();
-                EntityVisual delta = EntityDeltaCodec.buildDelta(currentFull, previous, sendState.allocateSequence(), 0.05D);
+                int mask = previous == null ? 0 : EntityDeltaCodec.computeMask(currentFull, previous);
+                EntityVisual delta = EntityDeltaCodec.buildDelta(currentFull, previous, sendState.allocateSequence(), mask);
                 outgoing = delta;
-                sendState.recordSent(currentFull, delta.isFull());
+                sendState.recordSent(currentFull, delta.isFull(), tick);
             } else {
                 outgoing = EntityVisual.full(
                     currentFull.id(), currentFull.typeKey(),
@@ -301,7 +302,7 @@ public final class WormholesBandwidthHarness {
                     currentFull.equipment(),
                     sendState.allocateSequence()
                 );
-                sendState.recordSent(currentFull, true);
+                sendState.recordSent(currentFull, true, tick);
             }
             entities.add(outgoing);
         }
@@ -372,25 +373,33 @@ public final class WormholesBandwidthHarness {
         biomePalette.add("minecraft:swamp");
         short[] indices = new short[cells];
         byte[] light = new byte[cells];
-        short[] biomes = new short[cells];
         int runStart = 0;
         short currentBlock = (short) (random.nextInt(palette.size()));
         byte currentLight = (byte) random.nextInt(16);
-        short currentBiome = (short) random.nextInt(biomePalette.size());
         while (runStart < cells) {
             int runLength = Math.min(cells - runStart, 4 + random.nextInt(16));
             for (int i = 0; i < runLength; i++) {
                 indices[runStart + i] = currentBlock;
                 light[runStart + i] = currentLight;
-                biomes[runStart + i] = currentBiome;
             }
             runStart += runLength;
             currentBlock = (short) random.nextInt(palette.size());
             currentLight = (byte) random.nextInt(16);
-            currentBiome = (short) random.nextInt(biomePalette.size());
         }
         int minX = columnIndex << 4;
         int minZ = subscriberId << 4;
+        int gridLength = ViewSlice.biomeGridSpan(minX, SLICE_SIZE_X) * ViewSlice.biomeGridSpan(60, SLICE_SIZE_Y) * ViewSlice.biomeGridSpan(minZ, SLICE_SIZE_Z);
+        short[] biomes = new short[gridLength];
+        int gridStart = 0;
+        short currentBiome = (short) random.nextInt(biomePalette.size());
+        while (gridStart < gridLength) {
+            int runLength = Math.min(gridLength - gridStart, 1 + random.nextInt(4));
+            for (int i = 0; i < runLength; i++) {
+                biomes[gridStart + i] = currentBiome;
+            }
+            gridStart += runLength;
+            currentBiome = (short) random.nextInt(biomePalette.size());
+        }
         return new ViewSlice(minX, 60, minZ, SLICE_SIZE_X, SLICE_SIZE_Y, SLICE_SIZE_Z, palette, indices, light, biomePalette, biomes);
     }
 
@@ -424,7 +433,7 @@ public final class WormholesBandwidthHarness {
         if (samples.isEmpty()) {
             return null;
         }
-        return CompressionDictionary.train(samples, DICT_TARGET_SIZE_BYTES, 1);
+        return CompressionDictionary.train(samples, DICT_TARGET_SIZE_BYTES);
     }
 
     private static void printTable(List<String> scenarios, Map<String, ScenarioResult> results) {
@@ -503,6 +512,10 @@ public final class WormholesBandwidthHarness {
             this.dictMode = dictMode;
             this.deltaEnabled = deltaEnabled;
             this.dictionary = dictionary;
+        }
+
+        private int dictVersion() {
+            return dictMode && dictionary != null ? dictionary.version() : 0;
         }
     }
 

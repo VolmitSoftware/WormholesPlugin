@@ -24,11 +24,11 @@ class HandshakeCompressionTest {
         return keyPair.getPublic().getEncoded();
     }
 
-    private static CompressionDictionary trainDictionary(int version) {
-        return trainDictionary(version, 0xDEADBEEFL);
+    private static CompressionDictionary trainDictionary() {
+        return trainDictionary(0xDEADBEEFL);
     }
 
-    private static CompressionDictionary trainDictionary(int version, long seed) {
+    private static CompressionDictionary trainDictionary(long seed) {
         List<byte[]> samples = new ArrayList<>();
         Random random = new Random(seed);
         for (int i = 0; i < 256; i++) {
@@ -38,7 +38,7 @@ class HandshakeCompressionTest {
             }
             samples.add(sample);
         }
-        return CompressionDictionary.train(samples, 8 * 1024, version);
+        return CompressionDictionary.train(samples, 8 * 1024);
     }
 
     private static boolean negotiateUseDict(WireMessage.Hello local, WireMessage.Hello remote) {
@@ -52,7 +52,7 @@ class HandshakeCompressionTest {
 
     @Test
     void helloCarriesCompressionFlagsAndRoundTrips() throws Exception {
-        CompressionDictionary dictionary = trainDictionary(91);
+        CompressionDictionary dictionary = trainDictionary();
         WireMessage.Hello hello = new WireMessage.Hello(
             WireCodec.PROTOCOL_VERSION,
             "26.2",
@@ -65,18 +65,18 @@ class HandshakeCompressionTest {
             generatePublicKey(),
             true,
             dictionary.hash(),
-            91
+            dictionary.version()
         );
         byte[] frame = WireCodec.encodeFrame(hello);
         WireMessage.Hello decoded = assertInstanceOf(WireMessage.Hello.class, WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(frame))));
         assertTrue(decoded.compressionSupported());
         assertArrayEquals(dictionary.hash(), decoded.currentDictHash());
-        assertEquals(91, decoded.currentDictVersion());
+        assertEquals(dictionary.version(), decoded.currentDictVersion());
     }
 
     @Test
     void challengeCarriesCompressionFlagsAndRoundTrips() throws Exception {
-        CompressionDictionary dictionary = trainDictionary(92);
+        CompressionDictionary dictionary = trainDictionary();
         WireMessage.Challenge challenge = new WireMessage.Challenge(
             "beta",
             "10.0.0.2",
@@ -87,24 +87,24 @@ class HandshakeCompressionTest {
             new byte[]{1, 2, 3, 4},
             true,
             dictionary.hash(),
-            92
+            dictionary.version()
         );
         byte[] frame = WireCodec.encodeFrame(challenge);
         WireMessage.Challenge decoded = assertInstanceOf(WireMessage.Challenge.class, WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(frame))));
         assertTrue(decoded.compressionSupported());
         assertArrayEquals(dictionary.hash(), decoded.currentDictHash());
-        assertEquals(92, decoded.currentDictVersion());
+        assertEquals(dictionary.version(), decoded.currentDictVersion());
     }
 
     @Test
     void matchingDictHashAndVersionEnablesDictMode() throws Exception {
-        CompressionDictionary dictionary = trainDictionary(50);
+        CompressionDictionary dictionary = trainDictionary();
         WireMessage.Hello local = new WireMessage.Hello(
             WireCodec.PROTOCOL_VERSION, "26.2", "1.0.0", "alpha", "10.0.0.1", 8901, 25565,
-            Handshake.newNonce(), generatePublicKey(), true, dictionary.hash(), 50);
+            Handshake.newNonce(), generatePublicKey(), true, dictionary.hash(), dictionary.version());
         WireMessage.Hello remote = new WireMessage.Hello(
             WireCodec.PROTOCOL_VERSION, "26.2", "1.0.0", "beta", "10.0.0.2", 8901, 25565,
-            Handshake.newNonce(), generatePublicKey(), true, dictionary.hash(), 50);
+            Handshake.newNonce(), generatePublicKey(), true, dictionary.hash(), dictionary.version());
         assertTrue(negotiateUseDict(local, remote));
     }
 
@@ -127,10 +127,10 @@ class HandshakeCompressionTest {
 
     @Test
     void unsupportedRemoteForcesPlainMode() throws Exception {
-        CompressionDictionary dictionary = trainDictionary(60);
+        CompressionDictionary dictionary = trainDictionary();
         WireMessage.Hello local = new WireMessage.Hello(
             WireCodec.PROTOCOL_VERSION, "26.2", "1.0.0", "alpha", "10.0.0.1", 8901, 25565,
-            Handshake.newNonce(), generatePublicKey(), true, dictionary.hash(), 60);
+            Handshake.newNonce(), generatePublicKey(), true, dictionary.hash(), dictionary.version());
         WireMessage.Hello remote = new WireMessage.Hello(
             WireCodec.PROTOCOL_VERSION, "26.2", "1.0.0", "beta", "10.0.0.2", 8901, 25565,
             Handshake.newNonce(), generatePublicKey(), false, CompressionDictionary.ZERO_HASH, 0);

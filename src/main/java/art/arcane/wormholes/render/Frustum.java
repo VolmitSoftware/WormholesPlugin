@@ -3,17 +3,14 @@ package art.arcane.wormholes.render;
 import org.bukkit.Location;
 import org.bukkit.util.Vector;
 
-import art.arcane.volmlib.util.collection.KList;
 import art.arcane.wormholes.portal.PortalStructure;
 import art.arcane.wormholes.util.Axis;
 import art.arcane.wormholes.util.AxisAlignedBB;
 import art.arcane.wormholes.util.Direction;
-import art.arcane.wormholes.util.VectorMath;
 
 public final class Frustum {
     private static final double EPSILON = 1.0E-7D;
 
-    private final Location origin;
     private final double originX;
     private final double originY;
     private final double originZ;
@@ -40,7 +37,6 @@ public final class Frustum {
     }
 
     public Frustum(Location apex, AxisAlignedBB apertureFace, Direction cubeFace, double range, double aperturePadding) {
-        this.origin = apex;
         this.originX = apex.getX();
         this.originY = apex.getY();
         this.originZ = apex.getZ();
@@ -54,42 +50,46 @@ public final class Frustum {
         this.faceZa = face.getZa();
         this.faceZb = face.getZb();
         this.rangeSquared = range * range;
-        KList<Location> nearPoints = new KList<Location>();
-        KList<Location> farPoints = new KList<Location>();
 
-        switch (face.getThinAxis()) {
-            case X:
-                nearPoints.add(new Location(apex.getWorld(), planeCoordinate, faceYb, faceZb));
-                nearPoints.add(new Location(apex.getWorld(), planeCoordinate, faceYb, faceZa));
-                nearPoints.add(new Location(apex.getWorld(), planeCoordinate, faceYa, faceZb));
-                nearPoints.add(new Location(apex.getWorld(), planeCoordinate, faceYa, faceZa));
-                break;
-            case Y:
-                nearPoints.add(new Location(apex.getWorld(), faceXb, planeCoordinate, faceZb));
-                nearPoints.add(new Location(apex.getWorld(), faceXb, planeCoordinate, faceZa));
-                nearPoints.add(new Location(apex.getWorld(), faceXa, planeCoordinate, faceZb));
-                nearPoints.add(new Location(apex.getWorld(), faceXa, planeCoordinate, faceZa));
-                break;
-            case Z:
-                nearPoints.add(new Location(apex.getWorld(), faceXb, faceYb, planeCoordinate));
-                nearPoints.add(new Location(apex.getWorld(), faceXb, faceYa, planeCoordinate));
-                nearPoints.add(new Location(apex.getWorld(), faceXa, faceYb, planeCoordinate));
-                nearPoints.add(new Location(apex.getWorld(), faceXa, faceYa, planeCoordinate));
-                break;
-            default:
-                break;
+        Axis thinAxis = face.getThinAxis();
+        double minX = Double.POSITIVE_INFINITY;
+        double minY = Double.POSITIVE_INFINITY;
+        double minZ = Double.POSITIVE_INFINITY;
+        double maxX = Double.NEGATIVE_INFINITY;
+        double maxY = Double.NEGATIVE_INFINITY;
+        double maxZ = Double.NEGATIVE_INFINITY;
+        for (int corner = 0; corner < 4; corner++) {
+            boolean firstHigh = corner < 2;
+            boolean secondHigh = (corner & 1) == 0;
+            double nearX = switch (thinAxis) {
+                case X -> planeCoordinate;
+                case Y, Z -> firstHigh ? faceXb : faceXa;
+            };
+            double nearY = switch (thinAxis) {
+                case X -> firstHigh ? faceYb : faceYa;
+                case Y -> planeCoordinate;
+                case Z -> secondHigh ? faceYb : faceYa;
+            };
+            double nearZ = switch (thinAxis) {
+                case X, Y -> secondHigh ? faceZb : faceZa;
+                case Z -> planeCoordinate;
+            };
+            double dx = nearX - originX;
+            double dy = nearY - originY;
+            double dz = nearZ - originZ;
+            double len = Math.sqrt((dx * dx) + (dy * dy) + (dz * dz));
+            double farX = nearX + ((dx / len) * range);
+            double farY = nearY + ((dy / len) * range);
+            double farZ = nearZ + ((dz / len) * range);
+            minX = Math.min(minX, Math.min(nearX, farX));
+            minY = Math.min(minY, Math.min(nearY, farY));
+            minZ = Math.min(minZ, Math.min(nearZ, farZ));
+            maxX = Math.max(maxX, Math.max(nearX, farX));
+            maxY = Math.max(maxY, Math.max(nearY, farY));
+            maxZ = Math.max(maxZ, Math.max(nearZ, farZ));
         }
 
-        for (Location near : nearPoints) {
-            Vector dir = VectorMath.direction(apex, near);
-            farPoints.add(near.clone().add(dir.multiply(range)));
-        }
-
-        KList<Location> all = new KList<Location>();
-        all.addAll(nearPoints);
-        all.addAll(farPoints);
-
-        this.region = new AxisAlignedBB(all);
+        this.region = new AxisAlignedBB(minX, maxX, minY, maxY, minZ, maxZ);
         this.regionXa = region.getXa();
         this.regionXb = region.getXb();
         this.regionYa = region.getYa();
@@ -141,10 +141,6 @@ public final class Frustum {
 
     public AxisAlignedBB getRegion() {
         return region;
-    }
-
-    public Location getOrigin() {
-        return origin;
     }
 
     private boolean containsFacePoint(double x, double y, double z) {

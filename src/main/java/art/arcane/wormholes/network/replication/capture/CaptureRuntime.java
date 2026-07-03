@@ -34,6 +34,10 @@ public final class CaptureRuntime {
         this.blockChangeCapture = new BlockChangeCapture(accumulator, blockEntityCapture);
         this.regionScheduler = new CaptureRegionScheduler(plugin, accumulator, lightDiffCapture);
         this.snapshotComparator = new ChunkSnapshotComparator(plugin, replication, accumulator, this.settings, logger);
+        replication.setEvictionListener((worldId, chunkKey) -> {
+            accumulator.resetChunk(worldId, chunkKey);
+            snapshotComparator.evict(worldId, chunkKey);
+        });
     }
 
     public void start() {

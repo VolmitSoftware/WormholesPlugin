@@ -11,6 +11,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Logger;
 
 public final class PeerConnection {
     public enum State {
@@ -36,17 +37,17 @@ public final class PeerConnection {
 
         CompressionDictionary currentDictionary();
 
-        void recordOutboundSample(byte[] payload);
+        void recordDictionarySample(WireMessageType type, byte[] payload);
 
         void onDictionaryAdvertised(PeerConnection connection, byte[] peerDictHash, int peerDictVersion);
 
         void onDictionaryNegotiated(PeerConnection connection, int dictVersion);
     }
 
+    private static final Logger LOG = Logger.getLogger(PeerConnection.class.getName());
     private static final int HANDSHAKE_TIMEOUT_MS = 10_000;
     private static final int READ_TIMEOUT_MS = 30_000;
     private static final int WRITE_QUEUE_CAPACITY = 1024;
-    private static final byte[] CLOSE_SENTINEL = new byte[0];
 
     private final PeerTransport.PeerChannel channel;
     private final boolean dialer;
@@ -55,13 +56,12 @@ public final class PeerConnection {
     private final Listener listener;
     private final CompressionProvider compressionProvider;
     private final WireCompression compression;
-    private final WireCodec.PayloadSampler outboundSampler;
-    private final LinkedBlockingQueue<byte[]> writeQueue = new LinkedBlockingQueue<>(WRITE_QUEUE_CAPACITY);
+    private final WireCodec.PayloadSampler sampler;
+    private final LinkedBlockingQueue<OutboundFrame> writeQueue = new LinkedBlockingQueue<>(WRITE_QUEUE_CAPACITY);
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicReference<State> state = new AtomicReference<>(State.HANDSHAKING);
     private final AtomicLong lastInboundMillis = new AtomicLong(System.currentTimeMillis());
     private final AtomicLong rttMillis = new AtomicLong(-1L);
-    private final AtomicBoolean dictNegotiated = new AtomicBoolean(false);
 
     private volatile String peerName;
     private volatile String expectedPeerName;
@@ -86,7 +86,7 @@ public final class PeerConnection {
         this.listener = listener;
         this.compressionProvider = compressionProvider;
         this.compression = compressionProvider == null ? null : compressionProvider.compression();
-        this.outboundSampler = compressionProvider == null ? null : compressionProvider::recordOutboundSample;
+        this.sampler = compressionProvider == null ? null : compressionProvider::recordDictionarySample;
     }
 
     public void start() {
@@ -102,13 +102,11 @@ public final class PeerConnection {
     }
 
     public boolean send(WireMessage message) {
+        return send(new OutboundFrame(message));
+    }
+
+    public boolean send(OutboundFrame frame) {
         if (state.get() == State.CLOSED) {
-            return false;
-        }
-        byte[] frame;
-        try {
-            frame = WireCodec.encodeFrame(message, compression, dictNegotiated.get(), outboundSampler);
-        } catch (IOException e) {
             return false;
         }
         if (!writeQueue.offer(frame)) {
@@ -124,7 +122,7 @@ public final class PeerConnection {
         }
         state.set(State.CLOSED);
         writeQueue.clear();
-        writeQueue.offer(CLOSE_SENTINEL);
+        writeQueue.offer(OutboundFrame.CLOSE);
         try {
             channel.close();
         } catch (IOException ignored) {
@@ -177,7 +175,7 @@ public final class PeerConnection {
     }
 
     public boolean isDictionaryNegotiated() {
-        return dictNegotiated.get();
+        return negotiatedDictVersion > 0;
     }
 
     public int getNegotiatedDictVersion() {
@@ -186,12 +184,15 @@ public final class PeerConnection {
 
     public void enableDictionary(int dictVersion) {
         negotiatedDictVersion = dictVersion;
-        dictNegotiated.set(true);
     }
 
     public void disableDictionary() {
-        dictNegotiated.set(false);
         negotiatedDictVersion = 0;
+    }
+
+    public void updatePeerDictionary(byte[] hash, int version) {
+        peerDictHash = hash;
+        peerDictVersion = version;
     }
 
     public long getLastInboundMillis() {
@@ -229,7 +230,7 @@ public final class PeerConnection {
             listener.onReady(this);
 
             while (!closed.get()) {
-                WireMessage message = WireCodec.readFrame(in, compression);
+                WireMessage message = WireCodec.readFrame(in, compression, sampler);
                 lastInboundMillis.set(System.currentTimeMillis());
                 if (message instanceof WireMessage.Ping ping) {
                     send(new WireMessage.Pong(ping.sentAtMillis()));
@@ -366,8 +367,7 @@ public final class PeerConnection {
     }
 
     private void sendNow(WireMessage message) throws IOException {
-        byte[] frame = WireCodec.encodeFrame(message, compression, dictNegotiated.get());
-        if (!writeQueue.offer(frame)) {
+        if (!writeQueue.offer(new OutboundFrame(message))) {
             throw new IOException("write queue overflow during handshake");
         }
     }
@@ -377,14 +377,21 @@ public final class PeerConnection {
             OutputStream rawOut = channel.getOutputStream();
             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(rawOut, 65536));
             while (!closed.get()) {
-                byte[] frame = writeQueue.poll(500, TimeUnit.MILLISECONDS);
+                OutboundFrame frame = writeQueue.poll(500, TimeUnit.MILLISECONDS);
                 if (frame == null) {
                     continue;
                 }
-                if (frame == CLOSE_SENTINEL) {
+                if (frame == OutboundFrame.CLOSE) {
                     return;
                 }
-                out.write(frame);
+                byte[] bytes;
+                try {
+                    bytes = frame.encodedFrame(compression, negotiatedDictVersion, sampler);
+                } catch (IOException e) {
+                    LOG.warning("net: dropped " + frame.message().type() + " to " + describeRemote() + ": " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                    continue;
+                }
+                out.write(bytes);
                 if (writeQueue.isEmpty()) {
                     out.flush();
                 }

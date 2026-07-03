@@ -47,6 +47,7 @@ import art.arcane.wormholes.util.ParticleEffect;
 
 public class EffectManager implements Listener
 {
+	private static final int LOOKING_SCAN_INTERVAL_TICKS = 3;
 	private static final int SYNC_SWEEP_INTERVAL_TICKS = 15;
 	private static final double SYNC_AUDIENCE_RANGE = 48.0;
 	private final Map<UUID, Boolean> portalSyncActive = new ConcurrentHashMap<>();
@@ -55,14 +56,23 @@ public class EffectManager implements Listener
 	{
 		Wormholes.v("Starting Effect Manager");
 
-		new AR()
+		new AR(LOOKING_SCAN_INTERVAL_TICKS)
 		{
 			@Override
 			public void run()
 			{
+				if(Wormholes.portalManager == null)
+				{
+					return;
+				}
+				List<ILocalPortal> portals = Wormholes.portalManager.getLocalPortals();
+				if(portals.isEmpty())
+				{
+					return;
+				}
 				for(Player player : Bukkit.getOnlinePlayers())
 				{
-					FoliaScheduler.runEntity(Wormholes.instance, player, () -> scanLookingPortalsFor(player));
+					FoliaScheduler.runEntity(Wormholes.instance, player, () -> scanLookingPortalsFor(player, portals));
 				}
 			}
 		};
@@ -174,12 +184,15 @@ public class EffectManager implements Listener
 		world.playSound(center, Sound.BLOCK_PORTAL_TRIGGER, 0.5f, 1.8f);
 	}
 
-	private void scanLookingPortalsFor(Player player)
+	private void scanLookingPortalsFor(Player player, List<ILocalPortal> portals)
 	{
 		ItemStack handItem = player.getInventory().getItemInMainHand();
-		boolean holdingPortalTool = Wormholes.blockManager.isPortalTool(handItem);
+		if(!Wormholes.blockManager.isPortalTool(handItem))
+		{
+			return;
+		}
 
-		for(ILocalPortal portal : Wormholes.portalManager.getLocalPortals())
+		for(ILocalPortal portal : portals)
 		{
 			if(portal.isLookingAt(player))
 			{
@@ -189,7 +202,7 @@ public class EffectManager implements Listener
 					continue;
 				}
 
-				FoliaScheduler.runRegion(Wormholes.instance, portalCenter, () -> portal.onLooking(player, holdingPortalTool));
+				FoliaScheduler.runRegion(Wormholes.instance, portalCenter, () -> portal.onLooking(player, true));
 			}
 		}
 	}
@@ -207,7 +220,7 @@ public class EffectManager implements Listener
 
 		Player player = e.getPlayer();
 		ItemStack handItem = player.getInventory().getItemInMainHand();
-		if(!Wormholes.blockManager.isSame(handItem, Wormholes.blockManager.getWand()))
+		if(!Wormholes.blockManager.isWand(handItem))
 		{
 			return;
 		}

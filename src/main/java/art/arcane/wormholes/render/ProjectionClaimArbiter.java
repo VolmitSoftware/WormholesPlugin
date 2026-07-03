@@ -5,128 +5,236 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.ToIntFunction;
 
 import org.bukkit.Location;
 import org.bukkit.World;
-import org.bukkit.block.Block;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Player;
 
+import com.github.retrooper.packetevents.PacketEvents;
+import com.github.retrooper.packetevents.util.Vector3i;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerMultiBlockChange;
+
+import io.github.retrooper.packetevents.util.SpigotConversionUtil;
+
 import art.arcane.wormholes.Settings;
+import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.portal.ILocalPortal;
+import art.arcane.wormholes.render.view.ProjectionWorldView;
 import art.arcane.wormholes.service.WormholesTelemetry;
 
 public final class ProjectionClaimArbiter {
-    private final Map<UUID, ObserverClaims> observers;
-    private final Map<UUID, ObserverFrame> frames;
+    private final ConcurrentHashMap<UUID, ObserverClaims> observers;
+    private final ConcurrentHashMap<BlockData, Integer> blockGlobalIds;
+    private volatile boolean blockMappingFailed;
 
     public ProjectionClaimArbiter() {
-        this.observers = new HashMap<UUID, ObserverClaims>();
-        this.frames = new HashMap<UUID, ObserverFrame>();
+        this.observers = new ConcurrentHashMap<UUID, ObserverClaims>();
+        this.blockGlobalIds = new ConcurrentHashMap<BlockData, Integer>();
+        this.blockMappingFailed = false;
     }
 
-    public synchronized void beginFrame(Player observer, World localWorld, boolean allowLightingUpdate) {
+    public void beginFrame(Player observer, World localWorld, boolean allowLightingUpdate) {
         if (observer == null || !observer.isOnline() || localWorld == null) {
             return;
         }
-        frames.put(observer.getUniqueId(), new ObserverFrame(observer, localWorld, allowLightingUpdate));
+        UUID observerId = observer.getUniqueId();
+        while (true) {
+            ObserverClaims state = observers.computeIfAbsent(observerId, ignored -> new ObserverClaims());
+            synchronized (state) {
+                if (state.retired) {
+                    continue;
+                }
+                state.frame = new ObserverFrame(observer, localWorld, allowLightingUpdate);
+                return;
+            }
+        }
     }
 
-    public synchronized ClaimUpdateResult flushFrame(Player observer) {
+    public ClaimUpdateResult flushFrame(Player observer) {
         if (observer == null) {
             return ClaimUpdateResult.empty();
         }
-        ObserverFrame frame = frames.remove(observer.getUniqueId());
-        if (frame == null) {
+        UUID observerId = observer.getUniqueId();
+        ObserverClaims state = observers.get(observerId);
+        if (state == null) {
             return ClaimUpdateResult.empty();
         }
-        ObserverClaims observerClaims = observers.get(observer.getUniqueId());
-        if (observerClaims == null) {
-            return ClaimUpdateResult.empty();
-        }
-        ClaimUpdateResult result = applyResult(frame.observer, frame.localWorld, observerClaims, frame.result, frame.allowLightingUpdate);
-        removeObserverIfEmpty(observer.getUniqueId(), observerClaims);
-        return result;
-    }
-
-    public synchronized ClaimUpdateResult submit(Player observer,
-                                                 ILocalPortal portal,
-                                                 World localWorld,
-                                                 Long2ObjectMap<ProjectedBlockClaim> claims,
-                                                 double priorityDistance,
-                                                 boolean allowLightingUpdate) {
-        if (observer == null || portal == null || portal.getId() == null) {
-            return ClaimUpdateResult.empty();
-        }
-        ObserverClaims observerClaims = observers.computeIfAbsent(observer.getUniqueId(), ignored -> new ObserverClaims());
-        String tieKey = portal.getId().toString();
-        ProjectionClaimSet.ProjectionClaimSetResult setResult = observerClaims.claimSet.replacePortalClaims(
-            portal.getId(), tieKey, priorityDistance, claims);
-        ObserverFrame frame = frames.get(observer.getUniqueId());
-        if (frame != null) {
-            if (allowLightingUpdate) {
-                frame.allowLightingUpdate = true;
+        synchronized (state) {
+            if (state.retired) {
+                return ClaimUpdateResult.empty();
             }
-            frame.result.merge(setResult);
-            return new ClaimUpdateResult(0, setResult.getConflicts(), setResult.getWinnerChanges(), setResult.getReverts());
+            ObserverFrame frame = state.frame;
+            state.frame = null;
+            if (frame == null) {
+                return ClaimUpdateResult.empty();
+            }
+            ClaimUpdateResult result = applyResult(frame.observer, frame.localWorld, state, frame.result, frame.allowLightingUpdate);
+            removeObserverIfEmpty(observerId, state);
+            return result;
         }
-        return applyResult(observer, localWorld, observerClaims, setResult, allowLightingUpdate);
     }
 
-    public synchronized ClaimUpdateResult release(Player observer, ILocalPortal portal, World localWorld, boolean allowLightingUpdate) {
+    public ClaimUpdateResult submit(Player observer,
+                                    ILocalPortal portal,
+                                    World localWorld,
+                                    Long2ObjectMap<ProjectedBlockClaim> claims,
+                                    double priorityDistance,
+                                    boolean allowLightingUpdate) {
         if (observer == null || portal == null || portal.getId() == null) {
             return ClaimUpdateResult.empty();
         }
-        ObserverClaims observerClaims = observers.get(observer.getUniqueId());
-        if (observerClaims == null) {
+        UUID observerId = observer.getUniqueId();
+        while (true) {
+            ObserverClaims state = observers.computeIfAbsent(observerId, ignored -> new ObserverClaims());
+            synchronized (state) {
+                if (state.retired) {
+                    continue;
+                }
+                String tieKey = portal.getId().toString();
+                ProjectionClaimSet.ProjectionClaimSetResult setResult = state.claimSet.replacePortalClaims(
+                    portal.getId(), tieKey, priorityDistance, claims);
+                ObserverFrame frame = state.frame;
+                if (frame != null) {
+                    if (allowLightingUpdate) {
+                        frame.allowLightingUpdate = true;
+                    }
+                    frame.result.merge(setResult);
+                    return new ClaimUpdateResult(0, setResult.getConflicts(), setResult.getWinnerChanges(), setResult.getReverts());
+                }
+                return applyResult(observer, localWorld, state, setResult, allowLightingUpdate);
+            }
+        }
+    }
+
+    public ClaimUpdateResult release(Player observer, ILocalPortal portal, World localWorld, boolean allowLightingUpdate) {
+        if (observer == null || portal == null || portal.getId() == null) {
             return ClaimUpdateResult.empty();
         }
-        ProjectionClaimSet.ProjectionClaimSetResult setResult = observerClaims.claimSet.releasePortal(portal.getId());
-        ClaimUpdateResult result = applyResult(observer, localWorld, observerClaims, setResult, allowLightingUpdate);
-        removeObserverIfEmpty(observer.getUniqueId(), observerClaims);
-        return result;
+        UUID observerId = observer.getUniqueId();
+        ObserverClaims state = observers.get(observerId);
+        if (state == null) {
+            return ClaimUpdateResult.empty();
+        }
+        synchronized (state) {
+            if (state.retired) {
+                return ClaimUpdateResult.empty();
+            }
+            ProjectionClaimSet.ProjectionClaimSetResult setResult = state.claimSet.releasePortal(portal.getId());
+            ClaimUpdateResult result = applyResult(observer, localWorld, state, setResult, allowLightingUpdate);
+            removeObserverIfEmpty(observerId, state);
+            return result;
+        }
     }
 
-    public synchronized void releaseSilently(UUID observerId, UUID portalId) {
-        ObserverClaims observerClaims = observers.get(observerId);
-        if (observerClaims == null) {
+    public void releaseSilently(UUID observerId, UUID portalId) {
+        ObserverClaims state = observers.get(observerId);
+        if (state == null) {
             return;
         }
-        observerClaims.claimSet.releasePortal(portalId);
-        observerClaims.pendingLightingKeys.clear();
-        observerClaims.sentBlocks.clear();
-        removeObserverIfEmpty(observerId, observerClaims);
+        synchronized (state) {
+            if (state.retired) {
+                return;
+            }
+            state.claimSet.releasePortal(portalId);
+            state.pendingLightingKeys.clear();
+            state.sentBlocks.clear();
+            removeObserverIfEmpty(observerId, state);
+        }
     }
 
-    public synchronized void releaseObserver(UUID observerId) {
-        ObserverClaims observerClaims = observers.remove(observerId);
-        if (observerClaims == null) {
+    public void releaseObserver(UUID observerId) {
+        ObserverClaims state = observers.get(observerId);
+        if (state == null) {
             return;
         }
-        observerClaims.claimSet.clear();
-        observerClaims.pendingLightingKeys.clear();
-        observerClaims.sentBlocks.clear();
-    }
-
-    public synchronized void clear() {
-        for (ObserverClaims observerClaims : observers.values()) {
-            observerClaims.claimSet.clear();
-            observerClaims.pendingLightingKeys.clear();
-            observerClaims.sentBlocks.clear();
+        synchronized (state) {
+            if (state.retired) {
+                return;
+            }
+            state.claimSet.clear();
+            state.pendingLightingKeys.clear();
+            state.sentBlocks.clear();
+            state.frame = null;
+            state.retired = true;
+            observers.remove(observerId, state);
         }
-        observers.clear();
-        frames.clear();
     }
 
-    public synchronized boolean hasPendingLighting(Player observer) {
+    public void clear() {
+        for (Map.Entry<UUID, ObserverClaims> entry : observers.entrySet()) {
+            ObserverClaims state = entry.getValue();
+            synchronized (state) {
+                state.retired = true;
+                state.claimSet.clear();
+                state.pendingLightingKeys.clear();
+                state.sentBlocks.clear();
+                state.frame = null;
+            }
+            observers.remove(entry.getKey(), state);
+        }
+    }
+
+    public boolean hasPendingLighting(Player observer) {
         if (observer == null) {
             return false;
         }
-        ObserverClaims observerClaims = observers.get(observer.getUniqueId());
-        return observerClaims != null && !observerClaims.pendingLightingKeys.isEmpty();
+        ObserverClaims state = observers.get(observer.getUniqueId());
+        if (state == null) {
+            return false;
+        }
+        synchronized (state) {
+            if (state.retired) {
+                return false;
+            }
+            return !state.pendingLightingKeys.isEmpty();
+        }
+    }
+
+    static void groupBySection(Long2ObjectMap<BlockData> blockChanges,
+                               ToIntFunction<BlockData> idResolver,
+                               Long2ObjectMap<List<WrapperPlayServerMultiBlockChange.EncodedBlock>> sectionsOut,
+                               Long2ObjectMap<BlockData> fallbackOut) {
+        for (Long2ObjectMap.Entry<BlockData> change : blockChanges.long2ObjectEntrySet()) {
+            long key = change.getLongKey();
+            BlockData data = change.getValue();
+            int x = unpackX(key);
+            int y = unpackY(key);
+            int z = unpackZ(key);
+            int id = idResolver.applyAsInt(data);
+            if (id < 0 || (id == 0 && !ProjectionWorldView.isAir(data.getMaterial()))) {
+                fallbackOut.put(key, data);
+                continue;
+            }
+            long sectionKey = packSectionKey(x >> 4, y >> 4, z >> 4);
+            List<WrapperPlayServerMultiBlockChange.EncodedBlock> entries = sectionsOut.get(sectionKey);
+            if (entries == null) {
+                entries = new ArrayList<WrapperPlayServerMultiBlockChange.EncodedBlock>(8);
+                sectionsOut.put(sectionKey, entries);
+            }
+            entries.add(new WrapperPlayServerMultiBlockChange.EncodedBlock(id, x, y, z));
+        }
+    }
+
+    static int unpackSectionX(long key) {
+        long raw = (key >> 38) & 0x3FFFFFFL;
+        return (int) ((raw << 38) >> 38);
+    }
+
+    static int unpackSectionY(long key) {
+        long raw = (key >> 26) & 0xFFFL;
+        return (int) ((raw << 52) >> 52);
+    }
+
+    static int unpackSectionZ(long key) {
+        long raw = key & 0x3FFFFFFL;
+        return (int) ((raw << 38) >> 38);
     }
 
     private ClaimUpdateResult applyResult(Player observer,
@@ -150,8 +258,7 @@ public final class ProjectionClaimArbiter {
                     if (!observerClaims.sentBlocks.containsKey(key)) {
                         continue;
                     }
-                    Block localBlock = localWorld.getBlockAt(x, y, z);
-                    BlockData localData = localBlock.getBlockData();
+                    BlockData localData = localWorld.getBlockData(x, y, z);
                     BlockData sentData = observerClaims.sentBlocks.get(key);
                     observerClaims.sentBlocks.remove(key);
                     if (sentData.equals(localData)) {
@@ -169,11 +276,7 @@ public final class ProjectionClaimArbiter {
                 }
             }
             if (!blockChanges.isEmpty()) {
-                for (Long2ObjectMap.Entry<BlockData> change : blockChanges.long2ObjectEntrySet()) {
-                    long k = change.getLongKey();
-                    observer.sendBlockChange(new Location(localWorld, unpackX(k), unpackY(k), unpackZ(k)), change.getValue());
-                    WormholesTelemetry.countBlockChange();
-                }
+                sendBlockChanges(observer, localWorld, blockChanges);
             }
         } else {
             observerClaims.sentBlocks.clear();
@@ -209,10 +312,65 @@ public final class ProjectionClaimArbiter {
         observerClaims.pendingLightingKeys.clear();
     }
 
-    private void removeObserverIfEmpty(UUID observerId, ObserverClaims observerClaims) {
-        if (observerClaims.claimSet.isEmpty()) {
-            observers.remove(observerId);
+    private void sendBlockChanges(Player observer, World localWorld, Long2ObjectMap<BlockData> blockChanges) {
+        if (blockChanges.size() == 1 || blockMappingFailed) {
+            for (Long2ObjectMap.Entry<BlockData> change : blockChanges.long2ObjectEntrySet()) {
+                long key = change.getLongKey();
+                observer.sendBlockChange(new Location(localWorld, unpackX(key), unpackY(key), unpackZ(key)), change.getValue());
+                WormholesTelemetry.countBlockChange();
+            }
+            return;
         }
+        Long2ObjectOpenHashMap<List<WrapperPlayServerMultiBlockChange.EncodedBlock>> sections =
+            new Long2ObjectOpenHashMap<List<WrapperPlayServerMultiBlockChange.EncodedBlock>>(8);
+        Long2ObjectOpenHashMap<BlockData> fallback = new Long2ObjectOpenHashMap<BlockData>(4);
+        groupBySection(blockChanges, this::resolveGlobalId, sections, fallback);
+        for (Long2ObjectMap.Entry<List<WrapperPlayServerMultiBlockChange.EncodedBlock>> entry : sections.long2ObjectEntrySet()) {
+            long sectionKey = entry.getLongKey();
+            List<WrapperPlayServerMultiBlockChange.EncodedBlock> entries = entry.getValue();
+            WrapperPlayServerMultiBlockChange.EncodedBlock[] blocks =
+                entries.toArray(new WrapperPlayServerMultiBlockChange.EncodedBlock[entries.size()]);
+            Vector3i sectionPos = new Vector3i(unpackSectionX(sectionKey), unpackSectionY(sectionKey), unpackSectionZ(sectionKey));
+            WrapperPlayServerMultiBlockChange wrapper = new WrapperPlayServerMultiBlockChange(sectionPos, null, blocks);
+            PacketEvents.getAPI().getPlayerManager().sendPacket(observer, wrapper);
+            for (int i = 0; i < blocks.length; i++) {
+                WormholesTelemetry.countBlockChange();
+            }
+        }
+        for (Long2ObjectMap.Entry<BlockData> change : fallback.long2ObjectEntrySet()) {
+            long key = change.getLongKey();
+            observer.sendBlockChange(new Location(localWorld, unpackX(key), unpackY(key), unpackZ(key)), change.getValue());
+            WormholesTelemetry.countBlockChange();
+        }
+    }
+
+    private int resolveGlobalId(BlockData data) {
+        Integer cached = blockGlobalIds.get(data);
+        if (cached != null) {
+            return cached.intValue();
+        }
+        int id;
+        try {
+            id = SpigotConversionUtil.fromBukkitBlockData(data).getGlobalId();
+        } catch (RuntimeException ex) {
+            blockMappingFailed = true;
+            Wormholes.w("[ClaimArbiter] block state mapping failed for " + data.getAsString() + ", falling back to bukkit block updates");
+            ex.printStackTrace();
+            return -1;
+        }
+        blockGlobalIds.put(data, Integer.valueOf(id));
+        return id;
+    }
+
+    private void removeObserverIfEmpty(UUID observerId, ObserverClaims state) {
+        if (state.claimSet.isEmpty() && state.frame == null) {
+            state.retired = true;
+            observers.remove(observerId, state);
+        }
+    }
+
+    private static long packSectionKey(int sectionX, int sectionY, int sectionZ) {
+        return (((long) sectionX & 0x3FFFFFFL) << 38) | ((((long) sectionY) & 0xFFFL) << 26) | (((long) sectionZ) & 0x3FFFFFFL);
     }
 
     private static int unpackX(long key) {
@@ -271,12 +429,16 @@ public final class ProjectionClaimArbiter {
         private final LongOpenHashSet pendingLightingKeys;
         private final Long2ObjectOpenHashMap<BlockData> sentBlocks;
         private final ProjectorLighting lighting;
+        private ObserverFrame frame;
+        private boolean retired;
 
         private ObserverClaims() {
             this.claimSet = new ProjectionClaimSet();
             this.pendingLightingKeys = new LongOpenHashSet();
             this.sentBlocks = new Long2ObjectOpenHashMap<BlockData>(256);
             this.lighting = new ProjectorLighting();
+            this.frame = null;
+            this.retired = false;
         }
     }
 

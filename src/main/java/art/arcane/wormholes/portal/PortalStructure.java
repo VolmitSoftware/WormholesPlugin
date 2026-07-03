@@ -1,6 +1,6 @@
 package art.arcane.wormholes.portal;
 
-import java.util.HashSet;
+import java.util.Arrays;
 import java.util.Set;
 
 import org.bukkit.Bukkit;
@@ -27,7 +27,9 @@ public class PortalStructure implements IWritable
 	private World world;
 	private KMap<Direction, AxisAlignedBB> faceCache = new KMap<>();
 	private KSet<Location> cornerCache;
-	private final HashSet<Long> blockKeys = new HashSet<Long>();
+	private volatile Location centerCache;
+	private long[] blockKeys = new long[0];
+	private int blockKeyCount;
 	private final KList<Vector> blockPositions = new KList<Vector>();
 
 	@Override
@@ -110,9 +112,15 @@ public class PortalStructure implements IWritable
 
 	public Location getCenter()
 	{
-		Location min = corner(Direction.W, Direction.D, Direction.N);
-		Location max = corner(Direction.E, Direction.U, Direction.S);
-		return min.clone().add(max.clone().subtract(min).toVector().multiply(0.5));
+		Location cached = centerCache;
+		if(cached == null)
+		{
+			Location min = corner(Direction.W, Direction.D, Direction.N);
+			Location max = corner(Direction.E, Direction.U, Direction.S);
+			cached = min.clone().add(max.clone().subtract(min).toVector().multiply(0.5));
+			centerCache = cached;
+		}
+		return cached.clone();
 	}
 
 	public Location randomLocation()
@@ -129,6 +137,7 @@ public class PortalStructure implements IWritable
 	public void setWorld(World world)
 	{
 		this.world = world;
+		centerCache = null;
 	}
 
 	public Set<Location> getCorners()
@@ -230,12 +239,12 @@ public class PortalStructure implements IWritable
 
 	public boolean containsBlock(int x, int y, int z)
 	{
-		if(blockKeys.isEmpty())
+		if(blockKeyCount == 0)
 		{
 			return getArea() != null && getArea().containsPrimitive(x + 0.5D, y + 0.5D, z + 0.5D);
 		}
 
-		return blockKeys.contains(Long.valueOf(packBlockKey(x, y, z)));
+		return Arrays.binarySearch(blockKeys, 0, blockKeyCount, packBlockKey(x, y, z)) >= 0;
 	}
 
 	public KList<Vector> getBlockPositions()
@@ -267,7 +276,7 @@ public class PortalStructure implements IWritable
 
 	public boolean isFullCuboid()
 	{
-		return !blockKeys.isEmpty() && blockKeys.size() == getBoundingBlockVolume();
+		return blockKeyCount > 0 && blockKeyCount == getBoundingBlockVolume();
 	}
 
 	private void invalidateCache()
@@ -275,6 +284,7 @@ public class PortalStructure implements IWritable
 		faceCache.clear();
 		cornerCache = null;
 		box = null;
+		centerCache = null;
 	}
 
 	public double getSize()
@@ -294,7 +304,7 @@ public class PortalStructure implements IWritable
 
 	private void clearBlockCells()
 	{
-		blockKeys.clear();
+		blockKeyCount = 0;
 		blockPositions.clear();
 	}
 
@@ -310,6 +320,11 @@ public class PortalStructure implements IWritable
 	private void setBlockCellsFromAreaBounds()
 	{
 		clearBlockCells();
+		int volume = getBoundingBlockVolume();
+		if(blockKeys.length < volume)
+		{
+			blockKeys = new long[volume];
+		}
 		int xa = (int) Math.floor(getArea().getXa());
 		int ya = (int) Math.floor(getArea().getYa());
 		int za = (int) Math.floor(getArea().getZa());
@@ -331,11 +346,22 @@ public class PortalStructure implements IWritable
 
 	private void addBlockCell(int x, int y, int z)
 	{
-		Long key = Long.valueOf(packBlockKey(x, y, z));
-		if(blockKeys.add(key))
+		long key = packBlockKey(x, y, z);
+		int index = Arrays.binarySearch(blockKeys, 0, blockKeyCount, key);
+		if(index >= 0)
 		{
-			blockPositions.add(new Vector(x, y, z));
+			return;
 		}
+
+		int insertion = -(index + 1);
+		if(blockKeyCount == blockKeys.length)
+		{
+			blockKeys = Arrays.copyOf(blockKeys, Math.max(16, blockKeys.length * 2));
+		}
+		System.arraycopy(blockKeys, insertion, blockKeys, insertion + 1, blockKeyCount - insertion);
+		blockKeys[insertion] = key;
+		blockKeyCount++;
+		blockPositions.add(new Vector(x, y, z));
 	}
 
 	private int getBoundingBlockVolume()

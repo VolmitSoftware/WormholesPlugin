@@ -13,6 +13,7 @@ import java.util.logging.Level;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Projectile;
@@ -47,7 +48,7 @@ public class ProjectionManager implements Listener {
 
     private final ProjectionClaimArbiter claimArbiter;
     private final Map<UUID, Map<UUID, PortalProjector>> projectors;
-    private final Map<String, Long> interestGraceUntil;
+    private final Map<UUID, Map<UUID, Long>> interestGraceUntil;
     private long lastDiagnostic;
     private long tickCount;
     private boolean firstTickLogged;
@@ -60,7 +61,7 @@ public class ProjectionManager implements Listener {
     public ProjectionManager() {
         this.claimArbiter = new ProjectionClaimArbiter();
         this.projectors = new HashMap<UUID, Map<UUID, PortalProjector>>();
-        this.interestGraceUntil = new HashMap<String, Long>();
+        this.interestGraceUntil = new HashMap<UUID, Map<UUID, Long>>();
         this.lastDiagnostic = 0L;
         this.tickCount = 0L;
         this.firstTickLogged = false;
@@ -212,6 +213,7 @@ public class ProjectionManager implements Listener {
 
     private Map<UUID, ObserverProjectionPlan> collectObserverPlans(List<ILocalPortal> active) {
         Map<UUID, ObserverProjectionPlan> plans = new HashMap<UUID, ObserverProjectionPlan>();
+        Map<World, List<Player>> playersByWorld = new HashMap<World, List<Player>>(2);
         for (ILocalPortal portal : active) {
             Location center = portal.getCenter();
             if (center == null || center.getWorld() == null) {
@@ -222,7 +224,13 @@ public class ProjectionManager implements Listener {
             if (view == null) {
                 continue;
             }
-            for (Player observer : center.getWorld().getPlayers()) {
+            World world = center.getWorld();
+            List<Player> worldPlayers = playersByWorld.get(world);
+            if (worldPlayers == null) {
+                worldPlayers = world.getPlayers();
+                playersByWorld.put(world, worldPlayers);
+            }
+            for (Player observer : worldPlayers) {
                 Location observerLocation = observer.getLocation();
                 if (!view.contains(observerLocation)) {
                     continue;
@@ -293,7 +301,7 @@ public class ProjectionManager implements Listener {
                 it.remove();
             }
         }
-        pruneInterestGrace(plannedByPortal);
+        pruneInterestGrace();
     }
 
     private int updateObserver(ObserverProjectionPlan plan, int remainingProjectors, boolean updateBlocks, boolean updateEntities) {
@@ -388,7 +396,11 @@ public class ProjectionManager implements Listener {
         if (!hasProjector(portal, observer.getUniqueId())) {
             return false;
         }
-        Long until = interestGraceUntil.get(graceKey(portal.getId(), observer.getUniqueId()));
+        Map<UUID, Long> byObserver = interestGraceUntil.get(portal.getId());
+        if (byObserver == null) {
+            return false;
+        }
+        Long until = byObserver.get(observer.getUniqueId());
         return until != null && until.longValue() >= tickCount;
     }
 
@@ -397,7 +409,12 @@ public class ProjectionManager implements Listener {
         if (graceTicks <= 0) {
             return;
         }
-        interestGraceUntil.put(graceKey(portal.getId(), observer.getUniqueId()), Long.valueOf(tickCount + graceTicks));
+        Map<UUID, Long> byObserver = interestGraceUntil.get(portal.getId());
+        if (byObserver == null) {
+            byObserver = new HashMap<UUID, Long>(4);
+            interestGraceUntil.put(portal.getId(), byObserver);
+        }
+        byObserver.put(observer.getUniqueId(), Long.valueOf(tickCount + graceTicks));
     }
 
     private boolean hasProjector(ILocalPortal portal, UUID observerId) {
@@ -405,19 +422,20 @@ public class ProjectionManager implements Listener {
         return portalProjectors != null && portalProjectors.containsKey(observerId);
     }
 
-    private void pruneInterestGrace(Map<UUID, Set<UUID>> plannedByPortal) {
-        Iterator<Map.Entry<String, Long>> iterator = interestGraceUntil.entrySet().iterator();
-        while (iterator.hasNext()) {
-            Map.Entry<String, Long> entry = iterator.next();
-            if (entry.getValue().longValue() >= tickCount) {
-                continue;
+    private void pruneInterestGrace() {
+        Iterator<Map.Entry<UUID, Map<UUID, Long>>> portalIterator = interestGraceUntil.entrySet().iterator();
+        while (portalIterator.hasNext()) {
+            Map<UUID, Long> byObserver = portalIterator.next().getValue();
+            Iterator<Map.Entry<UUID, Long>> observerIterator = byObserver.entrySet().iterator();
+            while (observerIterator.hasNext()) {
+                if (observerIterator.next().getValue().longValue() < tickCount) {
+                    observerIterator.remove();
+                }
             }
-            iterator.remove();
+            if (byObserver.isEmpty()) {
+                portalIterator.remove();
+            }
         }
-    }
-
-    private static String graceKey(UUID portalId, UUID observerId) {
-        return portalId.toString() + "/" + observerId.toString();
     }
 
     private static double distanceSquared(Player observer, ILocalPortal portal) {
@@ -540,7 +558,7 @@ public class ProjectionManager implements Listener {
 
     public void removeProjector(ILocalPortal portal) {
         Map<UUID, PortalProjector> portalProjectors = projectors.remove(portal.getId());
-        interestGraceUntil.entrySet().removeIf(entry -> entry.getKey().startsWith(portal.getId().toString() + "/"));
+        interestGraceUntil.remove(portal.getId());
         if (portalProjectors == null) {
             return;
         }
@@ -561,7 +579,14 @@ public class ProjectionManager implements Listener {
             closeOnRegion(projector, center);
         }
         claimArbiter.releaseObserver(id);
-        interestGraceUntil.entrySet().removeIf(entry -> entry.getKey().endsWith("/" + id.toString()));
+        Iterator<Map.Entry<UUID, Map<UUID, Long>>> graceIterator = interestGraceUntil.entrySet().iterator();
+        while (graceIterator.hasNext()) {
+            Map<UUID, Long> byObserver = graceIterator.next().getValue();
+            byObserver.remove(id);
+            if (byObserver.isEmpty()) {
+                graceIterator.remove();
+            }
+        }
     }
 
     public void reprimeArrival(Player player) {

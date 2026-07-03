@@ -165,6 +165,119 @@ class RemoteChunkStoreTest {
     }
 
     @Test
+    void sparseLightDiffPatchesOnlyListedCells() throws IOException {
+        RemoteChunkStore store = new RemoteChunkStore();
+        long chunkKey = ViewSlice.columnKey(0, 0);
+        store.applyBulk(new ChunkBulk(chunkKey, 1L, synthesizeBulkPayload(0, 0)));
+        int cellA = (0 << 8) | (2 << 4) | 3;
+        int cellB = (0 << 8) | (6 << 4) | 4;
+        int[] cells = {cellA, cellB};
+        byte[] levels = {(byte) ((9 << 4) | 5)};
+        ChunkDiffBatch skyBatch = new ChunkDiffBatch(chunkKey, 2L,
+            List.<BlockChange>of(),
+            List.of(LightDiff.sparse(4, LightDiff.TYPE_SKYLIGHT, cells, levels)),
+            List.<BlockEntityDiff>of());
+        assertTrue(store.applyDiff(skyBatch).applied());
+        ViewSlice slice = store.get(chunkKey).slice();
+        assertEquals(0x50, slice.light()[slice.cellIndex(3, 64, 2)] & 0xFF);
+        assertEquals(0x90, slice.light()[slice.cellIndex(4, 64, 6)] & 0xFF);
+        int nonZero = 0;
+        for (byte level : slice.light()) {
+            if (level != 0) {
+                nonZero++;
+            }
+        }
+        assertEquals(2, nonZero);
+
+        ChunkDiffBatch blockBatch = new ChunkDiffBatch(chunkKey, 3L,
+            List.<BlockChange>of(),
+            List.of(LightDiff.sparse(4, LightDiff.TYPE_BLOCKLIGHT, new int[]{cellA}, new byte[]{0x07})),
+            List.<BlockEntityDiff>of());
+        assertTrue(store.applyDiff(blockBatch).applied());
+        assertEquals(0x57, slice.light()[slice.cellIndex(3, 64, 2)] & 0xFF,
+            "block-light sparse patch must preserve the sky nibble");
+    }
+
+    @Test
+    void sparseLightDiffForOutOfRangeSectionIsNoOp() throws IOException {
+        RemoteChunkStore store = new RemoteChunkStore();
+        long chunkKey = ViewSlice.columnKey(0, 0);
+        store.applyBulk(new ChunkBulk(chunkKey, 1L, synthesizeBulkPayload(0, 0)));
+        ChunkDiffBatch batch = new ChunkDiffBatch(chunkKey, 2L,
+            List.<BlockChange>of(),
+            List.of(LightDiff.sparse(20, LightDiff.TYPE_SKYLIGHT, new int[]{0}, new byte[]{0x0F})),
+            List.<BlockEntityDiff>of());
+        assertTrue(store.applyDiff(batch).applied());
+        ViewSlice slice = store.get(chunkKey).slice();
+        for (byte level : slice.light()) {
+            assertEquals(0, level);
+        }
+    }
+
+    @Test
+    void fullLightDiffAppliesOnlyToOverlappingRows() throws IOException {
+        RemoteChunkStore store = new RemoteChunkStore();
+        long chunkKey = ViewSlice.columnKey(0, 0);
+        store.applyBulk(new ChunkBulk(chunkKey, 1L, synthesizeBulkPayload(0, 0)));
+        byte[] data = new byte[LightDiff.DATA_LENGTH];
+        java.util.Arrays.fill(data, (byte) 0xBA);
+        ChunkDiffBatch batch = new ChunkDiffBatch(chunkKey, 2L,
+            List.<BlockChange>of(),
+            List.of(LightDiff.full(3, LightDiff.TYPE_BLOCKLIGHT, data)),
+            List.<BlockEntityDiff>of());
+        assertTrue(store.applyDiff(batch).applied());
+        ViewSlice slice = store.get(chunkKey).slice();
+        for (int y = 60; y < 84; y++) {
+            for (int z = 0; z < 16; z++) {
+                for (int x = 0; x < 16; x++) {
+                    int actual = slice.light()[slice.cellIndex(x, y, z)] & 0xFF;
+                    if (y <= 63) {
+                        int sourceCell = ((y - 48) << 8) | (z << 4) | x;
+                        int expected = (sourceCell & 1) == 0 ? 0x0A : 0x0B;
+                        assertEquals(expected, actual, "cell " + x + "," + y + "," + z);
+                    } else {
+                        assertEquals(0, actual, "cell " + x + "," + y + "," + z);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void hashAtCacheInvalidatesOnBlockDiff() throws IOException {
+        RemoteChunkStore store = new RemoteChunkStore();
+        long chunkKey = ViewSlice.columnKey(0, 0);
+        store.applyBulk(new ChunkBulk(chunkKey, 1L, synthesizeBulkPayload(0, 0)));
+        long before = store.hashAt(chunkKey);
+        assertEquals(before, store.hashAt(chunkKey));
+        ChunkDiffBatch batch = new ChunkDiffBatch(chunkKey, 2L,
+            List.of(new BlockChange(BlockChange.pack(1, 61, 1), "minecraft:oak_planks", BlockChange.FLAG_NONE)),
+            List.<LightDiff>of(),
+            List.<BlockEntityDiff>of());
+        assertTrue(store.applyDiff(batch).applied());
+        long after = store.hashAt(chunkKey);
+        assertTrue(before != after, "content hash must change after an applied block diff");
+        assertEquals(store.get(chunkKey).slice().contentHash(), after);
+    }
+
+    @Test
+    void lightOnlyDiffKeepsHashAtAndProbeMatch() throws IOException {
+        RemoteChunkStore store = new RemoteChunkStore();
+        long chunkKey = ViewSlice.columnKey(0, 0);
+        store.applyBulk(new ChunkBulk(chunkKey, 1L, synthesizeBulkPayload(0, 0)));
+        long before = store.hashAt(chunkKey);
+        byte[] litData = new byte[LightDiff.DATA_LENGTH];
+        java.util.Arrays.fill(litData, (byte) 0x77);
+        ChunkDiffBatch batch = new ChunkDiffBatch(chunkKey, 2L,
+            List.<BlockChange>of(),
+            List.of(LightDiff.full(4, LightDiff.TYPE_SKYLIGHT, litData)),
+            List.<BlockEntityDiff>of());
+        assertTrue(store.applyDiff(batch).applied());
+        assertEquals(before, store.hashAt(chunkKey));
+        assertTrue(store.mismatches(List.of(new ChunkHashProbe.ChunkHashEntry(chunkKey, 2L, before))).isEmpty());
+    }
+
+    @Test
     void removeWipesChunk() throws IOException {
         RemoteChunkStore store = new RemoteChunkStore();
         long chunkKey = ViewSlice.columnKey(0, 0);
@@ -185,12 +298,14 @@ class RemoteChunkStoreTest {
         int sizeY = 24;
         int sizeZ = 16;
         int cells = sizeX * sizeY * sizeZ;
+        int minX = chunkX << 4;
+        int minZ = chunkZ << 4;
         short[] indices = new short[cells];
         byte[] light = new byte[cells];
-        short[] biomes = new short[cells];
+        short[] biomes = new short[ViewSlice.biomeGridSpan(minX, sizeX) * ViewSlice.biomeGridSpan(60, sizeY) * ViewSlice.biomeGridSpan(minZ, sizeZ)];
         List<String> palette = List.of("minecraft:stone", "minecraft:dirt");
         List<String> biomePalette = List.of("minecraft:plains");
-        ViewSlice slice = new ViewSlice(chunkX << 4, 60, chunkZ << 4, sizeX, sizeY, sizeZ, palette, indices, light, biomePalette, biomes);
+        ViewSlice slice = new ViewSlice(minX, 60, minZ, sizeX, sizeY, sizeZ, palette, indices, light, biomePalette, biomes);
         try {
             return ChunkBulkBuilder.encodeSliceBytes(slice);
         } catch (IOException ex) {

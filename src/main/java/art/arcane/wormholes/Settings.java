@@ -33,8 +33,6 @@ public final class Settings {
     public static volatile boolean PROJECTION_FOVEATED_UNRENDERING = false;
     public static volatile double PROJECTION_OBSERVER_INTEREST_DOT = -0.2D;
     public static volatile double PROJECTION_SIDE_GRACE_DOT = 0.12D;
-    public static volatile double PROJECTION_STATIONARY_REUSE_DISTANCE_BLOCKS = 0.0D;
-    public static volatile double PROJECTION_STATIONARY_REUSE_ANGLE_DEGREES = 1.5D;
     public static volatile int PROJECTION_MAX_PROJECTORS_PER_TICK = 24;
     public static volatile int PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK = 4;
     public static volatile int PROJECTION_INTEREST_GRACE_TICKS = 5;
@@ -89,8 +87,6 @@ public final class Settings {
         PROJECTION_FOVEATED_UNRENDERING = projection.foveatedUnrendering;
         PROJECTION_OBSERVER_INTEREST_DOT = clampDouble(projection.observerInterestDot, -1.0D, 1.0D);
         PROJECTION_SIDE_GRACE_DOT = clampDouble(projection.sideGraceDot, 0.0D, 1.0D);
-        PROJECTION_STATIONARY_REUSE_DISTANCE_BLOCKS = clampDouble(projection.stationaryReuseDistanceBlocks, 0.0D, 2.0D);
-        PROJECTION_STATIONARY_REUSE_ANGLE_DEGREES = clampDouble(projection.stationaryReuseAngleDegrees, 0.0D, 45.0D);
         PROJECTION_MAX_PROJECTORS_PER_TICK = clampInt(projection.maxProjectorsPerTick, 1, 512);
         PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK = clampInt(projection.maxPortalsPerObserverTick, 1, 64);
         PROJECTION_INTEREST_GRACE_TICKS = clampInt(projection.interestGraceTicks, 0, 100);

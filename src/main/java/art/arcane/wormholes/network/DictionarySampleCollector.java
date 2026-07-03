@@ -12,6 +12,7 @@ public final class DictionarySampleCollector {
     private final int budgetBytes;
     private final Deque<byte[]> samples = new ArrayDeque<>();
     private long accumulatedBytes;
+    private volatile boolean full;
 
     public DictionarySampleCollector(int budgetBytes) {
         if (budgetBytes <= 0) {
@@ -20,7 +21,7 @@ public final class DictionarySampleCollector {
         this.budgetBytes = budgetBytes;
     }
 
-    public synchronized boolean record(byte[] payload) {
+    public boolean record(byte[] payload) {
         if (payload == null) {
             return false;
         }
@@ -28,20 +29,23 @@ public final class DictionarySampleCollector {
             return false;
         }
         byte[] copy = payload.clone();
-        samples.addLast(copy);
-        accumulatedBytes += copy.length;
-        while (accumulatedBytes > budgetBytes && samples.size() > 1) {
-            byte[] removed = samples.pollFirst();
-            if (removed == null) {
-                break;
+        synchronized (this) {
+            samples.addLast(copy);
+            accumulatedBytes += copy.length;
+            while (accumulatedBytes > budgetBytes && samples.size() > 1) {
+                byte[] removed = samples.pollFirst();
+                if (removed == null) {
+                    break;
+                }
+                accumulatedBytes -= removed.length;
             }
-            accumulatedBytes -= removed.length;
+            full = accumulatedBytes >= budgetBytes;
+            return full;
         }
-        return accumulatedBytes >= budgetBytes;
     }
 
-    public synchronized boolean isFull() {
-        return accumulatedBytes >= budgetBytes;
+    public boolean isFull() {
+        return full;
     }
 
     public synchronized long accumulatedBytes() {
@@ -59,6 +63,7 @@ public final class DictionarySampleCollector {
     public synchronized void reset() {
         samples.clear();
         accumulatedBytes = 0L;
+        full = false;
     }
 
     public int budgetBytes() {

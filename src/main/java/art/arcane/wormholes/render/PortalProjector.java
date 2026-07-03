@@ -12,7 +12,6 @@ import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
-import org.bukkit.block.Block;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Player;
 
@@ -41,7 +40,6 @@ public final class PortalProjector {
     private static final int RECURSIVE_BUCKET_SHIFT = 3;
     private static final int MAX_RECURSIVE_INDEXES_PER_PASS = 256;
     private static final int STABLE_RESAMPLE_BACKSTOP_TICKS = 40;
-    private static final double MOVEMENT_RESYNC_DISTANCE_SQ = 4.0D;
 
     private final ILocalPortal portal;
     private final Player observer;
@@ -81,12 +79,17 @@ public final class PortalProjector {
     private double lastEyeX;
     private double lastEyeY;
     private double lastEyeZ;
-    private float lastYaw;
-    private float lastPitch;
     private boolean hasCameraSnapshot;
-    private String transformedBlockCacheFrameKey;
+    private Direction cachedFromNormal;
+    private Direction cachedFromRight;
+    private Direction cachedFromUp;
+    private Direction cachedToNormal;
+    private Direction cachedToRight;
+    private Direction cachedToUp;
     private BlockData remoteFallback;
     private String remoteFallbackState;
+    private RemoteWorldView cachedRemoteWorldView;
+    private RemoteViewCache.RemoteView cachedRemoteViewSource;
     private long lastRemoteRevision = -1L;
     private boolean pendingRemoteResample;
     private int remoteResendStage;
@@ -124,10 +127,13 @@ public final class PortalProjector {
         this.lastEyeX = 0.0D;
         this.lastEyeY = 0.0D;
         this.lastEyeZ = 0.0D;
-        this.lastYaw = 0.0F;
-        this.lastPitch = 0.0F;
         this.hasCameraSnapshot = false;
-        this.transformedBlockCacheFrameKey = "";
+        this.cachedFromNormal = null;
+        this.cachedFromRight = null;
+        this.cachedFromUp = null;
+        this.cachedToNormal = null;
+        this.cachedToRight = null;
+        this.cachedToUp = null;
     }
 
     public ILocalPortal getPortal() {
@@ -272,7 +278,7 @@ public final class PortalProjector {
             maybeForceRemoteResend(remoteResendView);
         }
         boolean stableResample = computeStableResample(destWorld, destAnchor, remoteView);
-        if (canReuseProjection(eye, stableResample)) {
+        if (canReuseProjection(eye, stableResample, remoteView == null)) {
             lastReuseSkips++;
             lastBlockChanges = 0;
             lastProjectNanos = System.nanoTime() - startNanos;
@@ -285,7 +291,7 @@ public final class PortalProjector {
 
         double portalDepth = portal.getNetworkViewDepth();
         double range = capProjectionDistance(observer, portalDepth);
-        double depthBlocks = capProjectionDistance(observer, portalDepth);
+        double depthBlocks = range;
         Frustum4D next;
         try {
             next = new Frustum4D(eye, portal.getStructure(), range);
@@ -366,14 +372,6 @@ public final class PortalProjector {
             lastResampleVersion = Wormholes.projectionChangeTracker.currentVersion();
         }
         boolean forceFullSend = initialFullSendPassesRemaining > 0;
-        if (!forceFullSend && hasCameraSnapshot) {
-            double moveX = eyeX - lastEyeX;
-            double moveY = eyeY - lastEyeY;
-            double moveZ = eyeZ - lastEyeZ;
-            if (moveX * moveX + moveY * moveY + moveZ * moveZ > MOVEMENT_RESYNC_DISTANCE_SQ) {
-                forceFullSend = true;
-            }
-        }
         PortalPlaneWindow planeWindow = PortalPlaneWindow.create(portal.getStructure(), portal.getStructure().getArea(), projectionLocalFrame,
             localOriginX, localOriginY, localOriginZ, Settings.PROJECTION_APERTURE_PADDING_BLOCKS,
             projectionEyeDot);
@@ -404,11 +402,40 @@ public final class PortalProjector {
             zb = Math.min(zb, maxBlockForCenter(Math.max(centerA, centerB)));
         }
 
-        for (int x = xa; x <= xb; x++) {
-            double cx = x + 0.5D;
-            for (int y = ya; y <= yb; y++) {
-                double cy = y + 0.5D;
-                for (int z = za; z <= zb; z++) {
+        Direction projectionNormalDirection = projectionLocalFrame.getNormal();
+        Direction projectionRightDirection = projectionLocalFrame.getRight();
+        Direction projectionUpDirection = projectionLocalFrame.getUp();
+        int normalAxis = projectionNormalDirection.x() != 0 ? 0 : (projectionNormalDirection.y() != 0 ? 1 : 2);
+        int rightAxis = projectionRightDirection.x() != 0 ? 0 : (projectionRightDirection.y() != 0 ? 1 : 2);
+        int rightSign = projectionRightDirection.x() + projectionRightDirection.y() + projectionRightDirection.z();
+        int upAxis = projectionUpDirection.x() != 0 ? 0 : (projectionUpDirection.y() != 0 ? 1 : 2);
+        int upSign = projectionUpDirection.x() + projectionUpDirection.y() + projectionUpDirection.z();
+        int[] axisMin = new int[] { xa, ya, za };
+        int[] axisMax = new int[] { xb, yb, zb };
+        double[] axisOrigin = new double[] { localOriginX, localOriginY, localOriginZ };
+        double projectionFacingNormal = normalAxis == 0 ? projectionFacingX : (normalAxis == 1 ? projectionFacingY : projectionFacingZ);
+        double[] slabWindowBounds = new double[4];
+        int[] cellCoords = new int[3];
+
+        for (int n = axisMin[normalAxis]; n <= axisMax[normalAxis]; n++) {
+            double slabSignedDistance = projectionFacingNormal * ((n + 0.5D) - axisOrigin[normalAxis]);
+            if (!planeWindow.slabWindow(eyeX, eyeY, eyeZ, slabSignedDistance, slabWindowBounds)) {
+                continue;
+            }
+            int rightBlockMin = PortalPlaneWindow.slabBlockMin(slabWindowBounds[0], slabWindowBounds[1], rightSign, axisOrigin[rightAxis], axisMin[rightAxis]);
+            int rightBlockMax = PortalPlaneWindow.slabBlockMax(slabWindowBounds[0], slabWindowBounds[1], rightSign, axisOrigin[rightAxis], axisMax[rightAxis]);
+            int upBlockMin = PortalPlaneWindow.slabBlockMin(slabWindowBounds[2], slabWindowBounds[3], upSign, axisOrigin[upAxis], axisMin[upAxis]);
+            int upBlockMax = PortalPlaneWindow.slabBlockMax(slabWindowBounds[2], slabWindowBounds[3], upSign, axisOrigin[upAxis], axisMax[upAxis]);
+            cellCoords[normalAxis] = n;
+            for (int r = rightBlockMin; r <= rightBlockMax; r++) {
+                cellCoords[rightAxis] = r;
+                for (int u = upBlockMin; u <= upBlockMax; u++) {
+                    cellCoords[upAxis] = u;
+                    int x = cellCoords[0];
+                    int y = cellCoords[1];
+                    int z = cellCoords[2];
+                    double cx = x + 0.5D;
+                    double cy = y + 0.5D;
                     double cz = z + 0.5D;
 
                     double cellRelX = cx - localOriginX;
@@ -557,7 +584,7 @@ public final class PortalProjector {
 
         double portalDepth = portal.getNetworkViewDepth();
         double range = capProjectionDistance(observer, portalDepth);
-        double depthBlocks = capProjectionDistance(observer, portalDepth);
+        double depthBlocks = range;
         Frustum4D frustum;
         try {
             frustum = new Frustum4D(eye, portal.getStructure(), range);
@@ -692,11 +719,17 @@ public final class PortalProjector {
         }
         RemoteViewCache.RemoteView view = subscriptions.touch(peerName, portalId, portal.getNetworkViewUnsubscribeGraceSeconds());
         String fallbackState = portal.getNetworkViewFallbackBlock();
-        if (remoteFallback == null || !fallbackState.equals(remoteFallbackState)) {
+        boolean fallbackChanged = remoteFallback == null || !fallbackState.equals(remoteFallbackState);
+        if (fallbackChanged) {
             remoteFallback = parseRemoteFallback(fallbackState);
             remoteFallbackState = fallbackState;
         }
-        return new RemoteWorldView(view, remoteFallback);
+        if (!fallbackChanged && cachedRemoteViewSource == view && cachedRemoteWorldView != null) {
+            return cachedRemoteWorldView;
+        }
+        cachedRemoteViewSource = view;
+        cachedRemoteWorldView = new RemoteWorldView(view, remoteFallback);
+        return cachedRemoteWorldView;
     }
 
     private static BlockData parseRemoteFallback(String fallbackState) {
@@ -809,8 +842,7 @@ public final class PortalProjector {
     }
 
     private static boolean isLocalAir(World world, int x, int y, int z) {
-        Block localBlock = world.getBlockAt(x, y, z);
-        return isAir(localBlock.getType());
+        return isAir(world.getType(x, y, z));
     }
 
     static boolean shouldMaskRecursivePortalAperture(boolean traversable, boolean cycle, int remainingDepth) {
@@ -869,64 +901,41 @@ public final class PortalProjector {
         return (projectCallCount % projectPassInterval) == 0L;
     }
 
-    private boolean canReuseProjection(Location eye, boolean stableResample) {
-        if (!firstProjectionDone || projected.isEmpty() || !hasCameraSnapshot) {
+    private boolean canReuseProjection(Location eye, boolean stableResample, boolean localDestination) {
+        boolean lightingBlocked = claimArbiter.hasPendingLighting(observer) && isLightingUpdatePass();
+        return canReuseProjection(firstProjectionDone, !projected.isEmpty(), hasCameraSnapshot, localDestination,
+            initialFullSendPassesRemaining, stableResample, pendingRemoteResample, lightingBlocked,
+            eye.getX(), eye.getY(), eye.getZ(), lastEyeX, lastEyeY, lastEyeZ);
+    }
+
+    static boolean canReuseProjection(boolean firstProjectionDone,
+                                      boolean hasProjection,
+                                      boolean hasCameraSnapshot,
+                                      boolean localDestination,
+                                      int initialFullSendPassesRemaining,
+                                      boolean stableResample,
+                                      boolean pendingRemoteResample,
+                                      boolean lightingBlocked,
+                                      double eyeX,
+                                      double eyeY,
+                                      double eyeZ,
+                                      double lastEyeX,
+                                      double lastEyeY,
+                                      double lastEyeZ) {
+        if (!firstProjectionDone || !hasProjection || !hasCameraSnapshot || !localDestination) {
             return false;
         }
-        if (Settings.PROJECTION_STATIONARY_REUSE_DISTANCE_BLOCKS <= 0.0D || Settings.PROJECTION_STATIONARY_REUSE_ANGLE_DEGREES <= 0.0D) {
+        if (initialFullSendPassesRemaining > 0 || stableResample || pendingRemoteResample || lightingBlocked) {
             return false;
         }
-        if (stableResample) {
-            return false;
-        }
-        if (claimArbiter.hasPendingLighting(observer) && isLightingUpdatePass()) {
-            return false;
-        }
-        return isStationaryCamera(eye.getX(), eye.getY(), eye.getZ(), eye.getYaw(), eye.getPitch(),
-            lastEyeX, lastEyeY, lastEyeZ, lastYaw, lastPitch,
-            Settings.PROJECTION_STATIONARY_REUSE_DISTANCE_BLOCKS, Settings.PROJECTION_STATIONARY_REUSE_ANGLE_DEGREES);
+        return eyeX == lastEyeX && eyeY == lastEyeY && eyeZ == lastEyeZ;
     }
 
     private void rememberCamera(Location eye) {
         lastEyeX = eye.getX();
         lastEyeY = eye.getY();
         lastEyeZ = eye.getZ();
-        lastYaw = eye.getYaw();
-        lastPitch = eye.getPitch();
         hasCameraSnapshot = true;
-    }
-
-    static boolean isStationaryCamera(double eyeX,
-                                      double eyeY,
-                                      double eyeZ,
-                                      float yaw,
-                                      float pitch,
-                                      double lastEyeX,
-                                      double lastEyeY,
-                                      double lastEyeZ,
-                                      float lastYaw,
-                                      float lastPitch,
-                                      double maxDistance,
-                                      double maxAngleDegrees) {
-        double dx = eyeX - lastEyeX;
-        double dy = eyeY - lastEyeY;
-        double dz = eyeZ - lastEyeZ;
-        if (((dx * dx) + (dy * dy) + (dz * dz)) > maxDistance * maxDistance) {
-            return false;
-        }
-        return Math.abs(angleDeltaDegrees(yaw, lastYaw)) <= maxAngleDegrees
-            && Math.abs(angleDeltaDegrees(pitch, lastPitch)) <= maxAngleDegrees;
-    }
-
-    private static float angleDeltaDegrees(float current, float previous) {
-        float delta = current - previous;
-        while (delta > 180.0F) {
-            delta -= 360.0F;
-        }
-        while (delta < -180.0F) {
-            delta += 360.0F;
-        }
-        return delta;
     }
 
     private boolean computeStableResample(World destWorld, IPortal destAnchor, ProjectionWorldView remoteView) {
@@ -958,7 +967,7 @@ public final class PortalProjector {
         int maxChunkX = ((int) Math.floor(originX + depth)) >> 4;
         int minChunkZ = ((int) Math.floor(originZ - depth)) >> 4;
         int maxChunkZ = ((int) Math.floor(originZ + depth)) >> 4;
-        return Wormholes.projectionChangeTracker.dirtySince(destWorld, minChunkX, minChunkZ, maxChunkX, maxChunkZ, lastResampleVersion);
+        return Wormholes.projectionChangeTracker.dirtySince(destWorld.getUID(), minChunkX, minChunkZ, maxChunkX, maxChunkZ, lastResampleVersion);
     }
 
     private static int stablePassInterval(int intervalTicks) {
@@ -968,11 +977,20 @@ public final class PortalProjector {
     }
 
     private void prepareTransformCache(PortalFrame fromFrame, PortalFrame toFrame) {
-        String frameKey = frameCacheKey(fromFrame) + ">" + frameCacheKey(toFrame);
-        if (frameKey.equals(transformedBlockCacheFrameKey)) {
+        if (cachedFromNormal == fromFrame.getNormal()
+            && cachedFromRight == fromFrame.getRight()
+            && cachedFromUp == fromFrame.getUp()
+            && cachedToNormal == toFrame.getNormal()
+            && cachedToRight == toFrame.getRight()
+            && cachedToUp == toFrame.getUp()) {
             return;
         }
-        transformedBlockCacheFrameKey = frameKey;
+        cachedFromNormal = fromFrame.getNormal();
+        cachedFromRight = fromFrame.getRight();
+        cachedFromUp = fromFrame.getUp();
+        cachedToNormal = toFrame.getNormal();
+        cachedToRight = toFrame.getRight();
+        cachedToUp = toFrame.getUp();
         transformedBlockCache.clear();
     }
 
@@ -992,10 +1010,6 @@ public final class PortalProjector {
         }
         transformedBlockCache.put(source, transformed);
         return transformed;
-    }
-
-    private static String frameCacheKey(PortalFrame frame) {
-        return frame.getNormal().name() + "/" + frame.getRight().name() + "/" + frame.getUp().name();
     }
 
     public void close() {
@@ -1714,6 +1728,54 @@ public final class PortalProjector {
                 frame.getRight().x(), frame.getRight().y(), frame.getRight().z(),
                 frame.getUp().x(), frame.getUp().y(), frame.getUp().z(),
                 eyeSignedDistance, rightMin - padding, rightMax + padding, upMin - padding, upMax + padding);
+        }
+
+        boolean slabWindow(double eyeX, double eyeY, double eyeZ, double cellSignedDistance, double[] out4) {
+            double denom = cellSignedDistance - eyeSignedDistance;
+            if (Math.abs(denom) <= EPSILON) {
+                return false;
+            }
+            double t = -eyeSignedDistance / denom;
+            if (t < -EPSILON || t > 1.0D + EPSILON) {
+                return false;
+            }
+            if (t <= 1.0E-6D) {
+                out4[0] = Double.NEGATIVE_INFINITY;
+                out4[1] = Double.POSITIVE_INFINITY;
+                out4[2] = Double.NEGATIVE_INFINITY;
+                out4[3] = Double.POSITIVE_INFINITY;
+                return true;
+            }
+            double relX = eyeX - originX;
+            double relY = eyeY - originY;
+            double relZ = eyeZ - originZ;
+            double eyeR = (relX * rightX) + (relY * rightY) + (relZ * rightZ);
+            double eyeU = (relX * upX) + (relY * upY) + (relZ * upZ);
+            out4[0] = eyeR + (((rightMin - EPSILON) - eyeR) / t);
+            out4[1] = eyeR + (((rightMax + EPSILON) - eyeR) / t);
+            out4[2] = eyeU + (((upMin - EPSILON) - eyeU) / t);
+            out4[3] = eyeU + (((upMax + EPSILON) - eyeU) / t);
+            return true;
+        }
+
+        static int slabBlockMin(double windowLow, double windowHigh, int sign, double axisOrigin, int clampMin) {
+            double a = axisOrigin + (sign * windowLow);
+            double b = axisOrigin + (sign * windowHigh);
+            double lowest = Math.floor(Math.min(a, b)) - 1.0D;
+            if (lowest <= clampMin) {
+                return clampMin;
+            }
+            return (int) lowest;
+        }
+
+        static int slabBlockMax(double windowLow, double windowHigh, int sign, double axisOrigin, int clampMax) {
+            double a = axisOrigin + (sign * windowLow);
+            double b = axisOrigin + (sign * windowHigh);
+            double highest = Math.ceil(Math.max(a, b)) + 1.0D;
+            if (highest >= clampMax) {
+                return clampMax;
+            }
+            return (int) highest;
         }
 
         boolean containsRayIntersection(double eyeX,

@@ -4,43 +4,51 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.bukkit.World;
-
 public final class ProjectionWorldChangeTracker {
     private static final int MAX_TRACKED_CHUNKS_PER_WORLD = 8192;
 
     private final AtomicLong version = new AtomicLong();
     private final ConcurrentHashMap<UUID, ConcurrentHashMap<Long, Long>> worldChunks = new ConcurrentHashMap<UUID, ConcurrentHashMap<Long, Long>>();
     private final ConcurrentHashMap<UUID, Long> clearFloor = new ConcurrentHashMap<UUID, Long>();
+    private final ConcurrentHashMap<UUID, AtomicLong> worldMaxStamp = new ConcurrentHashMap<UUID, AtomicLong>();
 
     public long currentVersion() {
         return version.get();
     }
 
-    public void markChanged(World world, int blockX, int blockZ) {
-        if (world == null) {
+    public void markChanged(UUID worldId, int blockX, int blockZ) {
+        if (worldId == null) {
             return;
         }
-        UUID id = world.getUID();
+        ConcurrentHashMap<Long, Long> chunks = worldChunks.computeIfAbsent(worldId, ignored -> new ConcurrentHashMap<Long, Long>(256));
+        Long key = Long.valueOf(chunkKey(blockX >> 4, blockZ >> 4));
+        Long existing = chunks.get(key);
+        if (existing != null && existing.longValue() == version.get()) {
+            return;
+        }
         long stamp = version.incrementAndGet();
-        ConcurrentHashMap<Long, Long> chunks = worldChunks.computeIfAbsent(id, ignored -> new ConcurrentHashMap<Long, Long>(256));
-        chunks.put(Long.valueOf(chunkKey(blockX >> 4, blockZ >> 4)), Long.valueOf(stamp));
+        Long boxed = Long.valueOf(stamp);
+        chunks.put(key, boxed);
+        worldMaxStamp.computeIfAbsent(worldId, ignored -> new AtomicLong()).accumulateAndGet(stamp, Math::max);
         if (chunks.size() > MAX_TRACKED_CHUNKS_PER_WORLD) {
             chunks.clear();
-            clearFloor.put(id, Long.valueOf(stamp));
+            clearFloor.put(worldId, boxed);
         }
     }
 
-    public boolean dirtySince(World world, int minChunkX, int minChunkZ, int maxChunkX, int maxChunkZ, long sinceVersion) {
-        if (world == null) {
+    public boolean dirtySince(UUID worldId, int minChunkX, int minChunkZ, int maxChunkX, int maxChunkZ, long sinceVersion) {
+        if (worldId == null) {
             return true;
         }
-        UUID id = world.getUID();
-        Long floor = clearFloor.get(id);
+        Long floor = clearFloor.get(worldId);
         if (floor != null && floor.longValue() > sinceVersion) {
             return true;
         }
-        ConcurrentHashMap<Long, Long> chunks = worldChunks.get(id);
+        AtomicLong maxStamp = worldMaxStamp.get(worldId);
+        if (maxStamp == null || maxStamp.get() <= sinceVersion) {
+            return false;
+        }
+        ConcurrentHashMap<Long, Long> chunks = worldChunks.get(worldId);
         if (chunks == null || chunks.isEmpty()) {
             return false;
         }
@@ -55,12 +63,13 @@ public final class ProjectionWorldChangeTracker {
         return false;
     }
 
-    public void clearWorld(World world) {
-        if (world == null) {
+    public void clearWorld(UUID worldId) {
+        if (worldId == null) {
             return;
         }
-        worldChunks.remove(world.getUID());
-        clearFloor.remove(world.getUID());
+        worldChunks.remove(worldId);
+        clearFloor.remove(worldId);
+        worldMaxStamp.remove(worldId);
     }
 
     private static long chunkKey(int chunkX, int chunkZ) {

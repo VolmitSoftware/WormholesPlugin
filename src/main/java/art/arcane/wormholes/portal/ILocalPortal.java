@@ -30,6 +30,10 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 
 	public void setOpen(boolean open);
 
+	public boolean isAmbientAttended();
+
+	public void setAmbientAttended(boolean attended);
+
 	public void onLooking(Player p, boolean holdingWand);
 
 	public void onWanded(Player p);

@@ -31,10 +31,13 @@ class ViewSliceTest {
         List<String> biomePalette = List.of("minecraft:plains", "minecraft:desert", "minecraft:swamp");
         short[] indices = new short[cells];
         byte[] light = new byte[cells];
-        short[] biomes = new short[cells];
+        int gridLength = ViewSlice.biomeGridSpan(minX, sizeX) * ViewSlice.biomeGridSpan(60, sizeY) * ViewSlice.biomeGridSpan(minZ, sizeZ);
+        short[] biomes = new short[gridLength];
         for (int i = 0; i < cells; i++) {
             indices[i] = (short) random.nextInt(palette.size());
             light[i] = (byte) random.nextInt(256);
+        }
+        for (int i = 0; i < gridLength; i++) {
             biomes[i] = (short) random.nextInt(biomePalette.size());
         }
         return new ViewSlice(minX, 60, minZ, sizeX, sizeY, sizeZ, palette, indices, light, biomePalette, biomes);
@@ -68,8 +71,111 @@ class ViewSliceTest {
         assertNotEquals(first.contentHash(), second.contentHash());
 
         ViewSlice third = randomSlice(7L, 0, 0);
-        third.biomes()[100] = (short) ((third.biomes()[100] + 1) % 3);
+        third.biomes()[50] = (short) ((third.biomes()[50] + 1) % 3);
         assertNotEquals(first.contentHash(), third.contentHash());
+    }
+
+    @Test
+    void adaptiveIndexWidthRoundTrips() throws IOException {
+        Random random = new Random(11L);
+        int sizeX = 16;
+        int sizeY = 24;
+        int sizeZ = 16;
+        int cells = sizeX * sizeY * sizeZ;
+        List<String> widePalette = new java.util.ArrayList<>(300);
+        for (int i = 0; i < 300; i++) {
+            widePalette.add("minecraft:synthetic_state_" + i + "[variant=" + (i % 7) + "]");
+        }
+        int gridLength = ViewSlice.biomeGridSpan(0, sizeX) * ViewSlice.biomeGridSpan(60, sizeY) * ViewSlice.biomeGridSpan(0, sizeZ);
+        short[] indices = new short[cells];
+        byte[] light = new byte[cells];
+        short[] biomes = new short[gridLength];
+        for (int i = 0; i < cells; i++) {
+            indices[i] = (short) random.nextInt(widePalette.size());
+            light[i] = (byte) random.nextInt(256);
+        }
+        for (int i = 0; i < gridLength; i++) {
+            biomes[i] = 0;
+        }
+        ViewSlice wide = new ViewSlice(0, 60, 0, sizeX, sizeY, sizeZ, widePalette, indices, light, List.of("minecraft:plains"), biomes);
+        ViewSlice wideDecoded = encodeDecode(wide);
+        assertEquals(wide.palette(), wideDecoded.palette());
+        assertArrayEquals(wide.indices(), wideDecoded.indices());
+        assertArrayEquals(wide.light(), wideDecoded.light());
+        assertEquals(wide.biomePalette(), wideDecoded.biomePalette());
+        assertArrayEquals(wide.biomes(), wideDecoded.biomes());
+        assertEquals(wide.contentHash(), wideDecoded.contentHash());
+
+        ViewSlice narrow = randomSlice(12L, 16, -32);
+        ViewSlice narrowDecoded = encodeDecode(narrow);
+        assertEquals(narrow.palette(), narrowDecoded.palette());
+        assertArrayEquals(narrow.indices(), narrowDecoded.indices());
+        assertArrayEquals(narrow.light(), narrowDecoded.light());
+        assertEquals(narrow.biomePalette(), narrowDecoded.biomePalette());
+        assertArrayEquals(narrow.biomes(), narrowDecoded.biomes());
+        assertEquals(narrow.contentHash(), narrowDecoded.contentHash());
+    }
+
+    @Test
+    void unalignedNegativeBoundsBiomeGridRoundTrips() throws IOException {
+        Random random = new Random(23L);
+        int minX = -7;
+        int minY = -62;
+        int minZ = 13;
+        int sizeX = 16;
+        int sizeY = 24;
+        int sizeZ = 16;
+        int cells = sizeX * sizeY * sizeZ;
+        int gridLength = ViewSlice.biomeGridSpan(minX, sizeX) * ViewSlice.biomeGridSpan(minY, sizeY) * ViewSlice.biomeGridSpan(minZ, sizeZ);
+        short[] indices = new short[cells];
+        byte[] light = new byte[cells];
+        short[] biomes = new short[gridLength];
+        List<String> biomePalette = List.of("minecraft:plains", "minecraft:desert", "minecraft:swamp");
+        for (int i = 0; i < gridLength; i++) {
+            biomes[i] = (short) random.nextInt(biomePalette.size());
+        }
+        ViewSlice slice = new ViewSlice(minX, minY, minZ, sizeX, sizeY, sizeZ, List.of("minecraft:air"), indices, light, biomePalette, biomes);
+        for (int y = minY; y < minY + sizeY; y++) {
+            for (int z = minZ; z < minZ + sizeZ; z++) {
+                for (int x = minX; x < minX + sizeX; x++) {
+                    int gridIndex = slice.biomeGridIndex(x, y, z);
+                    assertTrue(gridIndex >= 0 && gridIndex < slice.biomeGridLength(),
+                        "grid index " + gridIndex + " out of range for cell " + x + "," + y + "," + z);
+                }
+            }
+        }
+        ViewSlice decoded = encodeDecode(slice);
+        assertArrayEquals(slice.biomes(), decoded.biomes());
+        assertEquals(slice.biomeGridLength(), decoded.biomes().length);
+    }
+
+    @Test
+    void contentHashStableAcrossEncodeDecode() throws IOException {
+        for (long seed = 1L; seed <= 5L; seed++) {
+            ViewSlice slice = randomSlice(seed, (int) seed * 16, (int) -seed * 16);
+            assertEquals(slice.contentHash(), encodeDecode(slice).contentHash());
+        }
+        Random random = new Random(99L);
+        int cells = 16 * 8 * 16;
+        List<String> palette = new java.util.ArrayList<>(300);
+        for (int i = 0; i < 300; i++) {
+            palette.add("minecraft:wide_state_" + i);
+        }
+        short[] indices = new short[cells];
+        byte[] light = new byte[cells];
+        for (int i = 0; i < cells; i++) {
+            indices[i] = (short) random.nextInt(palette.size());
+        }
+        int gridLength = ViewSlice.biomeGridSpan(-16, 16) * ViewSlice.biomeGridSpan(-64, 8) * ViewSlice.biomeGridSpan(48, 16);
+        short[] biomes = new short[gridLength];
+        ViewSlice wide = new ViewSlice(-16, -64, 48, 16, 8, 16, palette, indices, light, List.of("minecraft:plains"), biomes);
+        assertEquals(wide.contentHash(), encodeDecode(wide).contentHash());
+    }
+
+    private static ViewSlice encodeDecode(ViewSlice slice) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        slice.write(new DataOutputStream(buffer));
+        return ViewSlice.read(new DataInputStream(new ByteArrayInputStream(buffer.toByteArray())));
     }
 
     @Test

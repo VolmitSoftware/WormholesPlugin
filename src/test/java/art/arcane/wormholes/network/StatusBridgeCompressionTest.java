@@ -108,6 +108,30 @@ class StatusBridgeCompressionTest {
         assertArrayEquals(bulk.chunks().get(0).bulkPayload(), recoveredBulk.chunks().get(0).bulkPayload());
     }
 
+    @Test
+    void maxMessagesRoundTripAtRaisedCap() throws Exception {
+        KeyPair keyPair = keyPair();
+        WireCompression encodeSide = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        WireCompression decodeSide = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        assertEquals(64, MinecraftStatusBridge.MAX_MESSAGES);
+        List<MinecraftStatusBridge.EncodedMessage> messages = new ArrayList<>(MinecraftStatusBridge.MAX_MESSAGES);
+        for (int i = 0; i < MinecraftStatusBridge.MAX_MESSAGES; i++) {
+            WireMessage.Routed routed = new WireMessage.Routed("alpha", "beta", 4, WireMessageType.PING, repeating((byte) ('a' + (i % 26)), 200));
+            messages.add(new MinecraftStatusBridge.EncodedMessage(routed, WireCodec.encodeFrame(routed)));
+        }
+
+        MinecraftStatusBridge.StatusPacket packet = MinecraftStatusBridge.create(
+            "alpha", "beta", "26.2", "1.0.0", "10.0.0.5", 25565,
+            keyPair.getPublic().getEncoded(), keyPair.getPrivate(), messages);
+
+        String encoded = packet.encode(encodeSide);
+        assertTrue(encoded.length() < MinecraftStatusBridge.MAX_ENCODED_CHARS, "a full 64-message packet must stay under the encoded cap, got " + encoded.length());
+
+        MinecraftStatusBridge.StatusPacket decoded = MinecraftStatusBridge.StatusPacket.decode(encoded, decodeSide);
+        assertEquals(MinecraftStatusBridge.MAX_MESSAGES, decoded.messages().size());
+        assertTrue(decoded.verify(), "signature must verify after a max-message round trip");
+    }
+
     private static List<MinecraftStatusBridge.EncodedMessage> fragmentMessages(byte[] frame) throws IOException {
         int total = (frame.length + FRAGMENT_CHUNK_BYTES - 1) / FRAGMENT_CHUNK_BYTES;
         List<MinecraftStatusBridge.EncodedMessage> fragments = new ArrayList<>(total);

@@ -1,6 +1,8 @@
 package art.arcane.wormholes.network.replication.capture;
 
-import org.bukkit.Location;
+import art.arcane.wormholes.network.view.ViewSlice;
+
+import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.TileState;
@@ -69,10 +71,17 @@ public final class BlockEntityCapture implements Listener {
         if (block == null) {
             return;
         }
-        Location location = block.getLocation();
-        int worldX = location.getBlockX();
-        int worldY = location.getBlockY();
-        int worldZ = location.getBlockZ();
+        if (!accumulator.settings().blockEntityCaptureEnabled()) {
+            return;
+        }
+        int worldX = block.getX();
+        int worldY = block.getY();
+        int worldZ = block.getZ();
+        World world = block.getWorld();
+        long chunkKey = ViewSlice.columnKey(worldX >> 4, worldZ >> 4);
+        if (!accumulator.isRelevant(world, chunkKey)) {
+            return;
+        }
         BlockState state;
         try {
             state = block.getState(false);
@@ -97,6 +106,6 @@ public final class BlockEntityCapture implements Listener {
         if (payload.length > MAX_NBT_BYTES) {
             return;
         }
-        accumulator.recordBlockEntityChange(block.getWorld(), worldX, worldY, worldZ, payload);
+        accumulator.recordBlockEntityChange(world, worldX, worldY, worldZ, payload);
     }
 }

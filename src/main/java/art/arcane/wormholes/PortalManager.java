@@ -8,12 +8,17 @@ import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.World;
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.world.WorldLoadEvent;
@@ -23,10 +28,11 @@ import art.arcane.wormholes.portal.IPortal;
 import art.arcane.wormholes.portal.LocalPortal;
 import art.arcane.wormholes.portal.PortalStructure;
 import art.arcane.wormholes.portal.PortalType;
-import art.arcane.volmlib.util.collection.KList;
+import art.arcane.wormholes.portal.PortalUpdateGate;
 import art.arcane.volmlib.util.collection.KMap;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.network.view.ViewServer;
+import art.arcane.wormholes.util.AxisAlignedBB;
 import art.arcane.wormholes.util.J;
 import art.arcane.wormholes.util.JSONObject;
 import art.arcane.wormholes.util.VIO;
@@ -35,25 +41,32 @@ public class PortalManager implements Listener
 {
 	private static final int LOAD_RETRY_INTERVAL_TICKS = 20;
 	private static final int LOAD_RETRY_ATTEMPTS = 30;
+	private static final int ATTENDANCE_REFRESH_INTERVAL_TICKS = 5;
+	private static final double ATTENDANCE_BASE_RANGE = 64.0D;
 
 	private KMap<UUID, ILocalPortal> portals;
+	private volatile List<ILocalPortal> portalSnapshot = List.of();
 	private final List<File> pendingPortalFiles;
+	private final boolean foliaRuntime;
 	private boolean initialLoadComplete;
 	private int loadedPortalFiles;
 	private int pendingWorldPortalFiles;
 	private int failedPortalFiles;
 	private int unresolvedTunnelCount;
+	private long driverTick;
 
 	public PortalManager()
 	{
 		Wormholes.v("Starting Portal Manager");
 		portals = new KMap<>();
 		pendingPortalFiles = new ArrayList<File>();
+		foliaRuntime = FoliaScheduler.isFoliaThreading(Bukkit.getServer());
 		initialLoadComplete = false;
 		loadedPortalFiles = 0;
 		pendingWorldPortalFiles = 0;
 		failedPortalFiles = 0;
 		unresolvedTunnelCount = 0;
+		driverTick = 0L;
 		int loadDelay = Bukkit.getWorlds().isEmpty() ? 40 : 1;
 		J.s(() -> loadExistingPortals(), loadDelay);
 		schedulePendingLoadRetry(LOAD_RETRY_ATTEMPTS);
@@ -223,7 +236,7 @@ public class PortalManager implements Listener
 
 	public void saveAll()
 	{
-		for(ILocalPortal i : portals.v())
+		for(ILocalPortal i : getLocalPortals())
 		{
 			i.save();
 		}
@@ -231,7 +244,7 @@ public class PortalManager implements Listener
 
 	public void saveAllNow()
 	{
-		for(ILocalPortal i : portals.v())
+		for(ILocalPortal i : getLocalPortals())
 		{
 			try
 			{
@@ -251,9 +264,119 @@ public class PortalManager implements Listener
 		{
 			return;
 		}
-		for(ILocalPortal i : getLocalPortals())
+
+		driverTick++;
+		List<ILocalPortal> snapshot = getLocalPortals();
+
+		if(driverTick % ATTENDANCE_REFRESH_INTERVAL_TICKS == 0)
 		{
-			updateLocalPortal(i);
+			refreshAttendance(snapshot);
+		}
+
+		if(foliaRuntime)
+		{
+			for(ILocalPortal i : snapshot)
+			{
+				if(PortalUpdateGate.isDue(i.isOpen(), i.isAmbientAttended(), driverTick, PortalUpdateGate.staggerOffset(i.getId())))
+				{
+					updateLocalPortal(i);
+				}
+			}
+			return;
+		}
+
+		Map<UUID, WorldBatch> byWorld = new HashMap<UUID, WorldBatch>();
+		for(ILocalPortal i : snapshot)
+		{
+			if(!PortalUpdateGate.isDue(i.isOpen(), i.isAmbientAttended(), driverTick, PortalUpdateGate.staggerOffset(i.getId())))
+			{
+				continue;
+			}
+
+			Location center = i.getCenter();
+			if(center == null || center.getWorld() == null)
+			{
+				continue;
+			}
+
+			UUID worldId = center.getWorld().getUID();
+			WorldBatch batch = byWorld.get(worldId);
+			if(batch == null)
+			{
+				batch = new WorldBatch(center, new ArrayList<ILocalPortal>());
+				byWorld.put(worldId, batch);
+			}
+			batch.portals().add(i);
+		}
+
+		for(WorldBatch batch : byWorld.values())
+		{
+			FoliaScheduler.runRegion(Wormholes.instance, batch.anchor(), () ->
+			{
+				for(ILocalPortal portal : batch.portals())
+				{
+					try
+					{
+						runPortalUpdate(portal);
+					}
+					catch(Throwable e)
+					{
+						e.printStackTrace();
+					}
+				}
+			});
+		}
+	}
+
+	private void refreshAttendance(List<ILocalPortal> snapshot)
+	{
+		Collection<? extends Player> online = Bukkit.getOnlinePlayers();
+		List<PlayerPosition> positions = new ArrayList<PlayerPosition>(online.size());
+		for(Player player : online)
+		{
+			Location location = player.getLocation();
+			World world = location.getWorld();
+			if(world == null)
+			{
+				continue;
+			}
+			positions.add(new PlayerPosition(world, location.getX(), location.getY(), location.getZ()));
+		}
+
+		for(ILocalPortal portal : snapshot)
+		{
+			Location center = portal.getCenter();
+			if(center == null || center.getWorld() == null)
+			{
+				portal.setAmbientAttended(false);
+				continue;
+			}
+
+			AxisAlignedBB area = portal.getArea();
+			double threshold = ATTENDANCE_BASE_RANGE;
+			if(area != null)
+			{
+				threshold += 0.5D * Math.sqrt((area.sizeX() * area.sizeX()) + (area.sizeY() * area.sizeY()) + (area.sizeZ() * area.sizeZ()));
+			}
+			double thresholdSquared = threshold * threshold;
+			World world = center.getWorld();
+			boolean attended = false;
+			for(PlayerPosition position : positions)
+			{
+				if(!world.equals(position.world()))
+				{
+					continue;
+				}
+				double dx = position.x() - center.getX();
+				double dy = position.y() - center.getY();
+				double dz = position.z() - center.getZ();
+				if((dx * dx) + (dy * dy) + (dz * dz) <= thresholdSquared)
+				{
+					attended = true;
+					break;
+				}
+			}
+			portal.setAmbientAttended(attended);
 		}
 	}
 
@@ -302,9 +425,9 @@ public class PortalManager implements Listener
 		}
 	}
 
-	public KList<ILocalPortal> getLocalPortals()
+	public List<ILocalPortal> getLocalPortals()
 	{
-		return portals.v();
+		return portalSnapshot;
 	}
 
 	public boolean hasLocalPortal(UUID id)
@@ -327,6 +450,7 @@ public class PortalManager implements Listener
 		if(!hasLocalPortal(portal))
 		{
 			portals.put(portal.getId(), portal);
+			refreshPortalSnapshot();
 			Wormholes.instance.registerListener(portal);
 
 			if(Wormholes.portalSyncService != null)
@@ -350,6 +474,7 @@ public class PortalManager implements Listener
 		}
 
 		portals.remove(portal);
+		refreshPortalSnapshot();
 		syncGatewayTickets();
 	}
 
@@ -360,11 +485,7 @@ public class PortalManager implements Listener
 
 	public int deleteAllPortals()
 	{
-		List<ILocalPortal> snapshot = new ArrayList<ILocalPortal>();
-		for(ILocalPortal portal : portals.v())
-		{
-			snapshot.add(portal);
-		}
+		List<ILocalPortal> snapshot = getLocalPortals();
 
 		for(ILocalPortal portal : snapshot)
 		{
@@ -380,6 +501,7 @@ public class PortalManager implements Listener
 		}
 
 		portals.clear();
+		refreshPortalSnapshot();
 		pendingPortalFiles.clear();
 		initialLoadComplete = true;
 		loadedPortalFiles = 0;
@@ -414,7 +536,7 @@ public class PortalManager implements Listener
 		}
 		double radiusSquared = radius * radius;
 		List<GatewayPortalInfo> matches = new ArrayList<GatewayPortalInfo>();
-		for(ILocalPortal portal : portals.v())
+		for(ILocalPortal portal : getLocalPortals())
 		{
 			if(!portal.isGateway())
 			{
@@ -450,7 +572,7 @@ public class PortalManager implements Listener
 	{
 		int g = 0;
 
-		for(ILocalPortal i : portals.v())
+		for(ILocalPortal i : getLocalPortals())
 		{
 			if(i.isGateway())
 			{
@@ -472,12 +594,13 @@ public class PortalManager implements Listener
 		saveAllNow();
 		pendingPortalFiles.clear();
 		portals.clear();
+		refreshPortalSnapshot();
 	}
 
 	private void refreshUnresolvedTunnelCount()
 	{
 		int unresolved = 0;
-		for(ILocalPortal portal : portals.v())
+		for(ILocalPortal portal : getLocalPortals())
 		{
 			if(portal.getTunnel() != null && !portal.hasTunnel())
 			{
@@ -485,6 +608,11 @@ public class PortalManager implements Listener
 			}
 		}
 		unresolvedTunnelCount = unresolved;
+	}
+
+	private synchronized void refreshPortalSnapshot()
+	{
+		portalSnapshot = List.copyOf(portals.values());
 	}
 
 	private void syncGatewayTickets()
@@ -537,5 +665,13 @@ public class PortalManager implements Listener
 		LOADED,
 		PENDING_WORLD,
 		FAILED
+	}
+
+	private record PlayerPosition(World world, double x, double y, double z)
+	{
+	}
+
+	private record WorldBatch(Location anchor, List<ILocalPortal> portals)
+	{
 	}
 }

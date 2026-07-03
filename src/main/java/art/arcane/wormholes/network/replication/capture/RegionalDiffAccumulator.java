@@ -20,11 +20,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class RegionalDiffAccumulator {
+    private static final int STATE_STRING_CACHE_MAX = 4096;
+
     private final ChunkReplicationManager replication;
     private final BlockChangeFeed feed;
     private volatile CaptureSettings settings;
     private final Map<UUID, Map<Long, ChunkDirtySet>> worldDirty = new ConcurrentHashMap<>();
     private final Map<UUID, Map<Long, ChunkLightShadow>> worldLightShadows = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<BlockData, String> stateStrings = new ConcurrentHashMap<>(256);
     private final AtomicLong blocksCaptured = new AtomicLong();
     private final AtomicLong blocksDropped = new AtomicLong();
     private final AtomicLong overflowDrops = new AtomicLong();
@@ -69,7 +72,7 @@ public final class RegionalDiffAccumulator {
         int lx = worldX & 0xF;
         int lz = worldZ & 0xF;
         int packed = BlockChange.pack(lx, worldY, lz);
-        String stateString = newData.getAsString();
+        String stateString = stateStringFor(newData);
         if (Settings.DEBUG) {
             Wormholes.v("[block] CAPTURE " + stateString + " at " + worldX + "," + worldY + "," + worldZ + " chunk=" + chunkX + "," + chunkZ + " -> queued diff");
         }
@@ -100,21 +103,21 @@ public final class RegionalDiffAccumulator {
         entityDiffsCaptured.incrementAndGet();
     }
 
-    public void recordLightSection(World world, long chunkKey, int sectionY, byte lightType, byte[] data) {
-        if (!settings.lightCaptureEnabled() || world == null || data == null) {
+    public void recordLightSection(World world, long chunkKey, LightDiff diff) {
+        if (!settings.lightCaptureEnabled() || world == null || diff == null || diff.data() == null) {
             return;
         }
-        if (data.length != LightDiff.DATA_LENGTH) {
+        if (diff.data().length != LightDiff.DATA_LENGTH) {
             return;
         }
         if (!replication.hasSubscribers(world, chunkKey)) {
             return;
         }
         ChunkDirtySet set = dirtySetFor(world, chunkKey);
-        if (lightType == LightDiff.TYPE_BLOCKLIGHT) {
-            set.putBlockLight(sectionY, data);
+        if (diff.lightType() == LightDiff.TYPE_BLOCKLIGHT) {
+            set.putBlockLight(diff);
         } else {
-            set.putSkyLight(sectionY, data);
+            set.putSkyLight(diff);
         }
         lightDiffsCaptured.incrementAndGet();
     }
@@ -122,6 +125,14 @@ public final class RegionalDiffAccumulator {
     public ChunkLightShadow lightShadowFor(World world, long chunkKey) {
         Map<Long, ChunkLightShadow> worldMap = worldLightShadows.computeIfAbsent(world.getUID(), ignored -> new ConcurrentHashMap<>());
         return worldMap.computeIfAbsent(chunkKey, ignored -> new ChunkLightShadow());
+    }
+
+    public ChunkLightShadow lightShadowIfPresent(World world, long chunkKey) {
+        Map<Long, ChunkLightShadow> worldMap = worldLightShadows.get(world.getUID());
+        if (worldMap == null) {
+            return null;
+        }
+        return worldMap.get(chunkKey);
     }
 
     public ChunkDirtySet dirtySetFor(World world, long chunkKey) {
@@ -147,10 +158,7 @@ public final class RegionalDiffAccumulator {
             return;
         }
         if (hook != null) {
-            java.util.Set<Integer> blockPacked = set.snapshotBlockPacked();
-            if (!blockPacked.isEmpty()) {
-                hook.beforeDrain(world, chunkKey, blockPacked);
-            }
+            hook.beforeDrain(world, chunkKey, set.snapshotBlockPacked());
         }
         ChunkDirtySet.Drain drained;
         synchronized (set) {
@@ -181,10 +189,7 @@ public final class RegionalDiffAccumulator {
                 long chunkKey = chunkEntry.getKey();
                 ChunkDirtySet set = chunkEntry.getValue();
                 if (hook != null) {
-                    java.util.Set<Integer> blockPacked = set.snapshotBlockPacked();
-                    if (!blockPacked.isEmpty()) {
-                        hook.beforeDrain(world, chunkKey, blockPacked);
-                    }
+                    hook.beforeDrain(world, chunkKey, set.snapshotBlockPacked());
                 }
                 ChunkDirtySet.Drain drained;
                 synchronized (set) {
@@ -199,18 +204,27 @@ public final class RegionalDiffAccumulator {
         tickDrains.incrementAndGet();
     }
 
-    public void resetChunk(World world, long chunkKey) {
-        if (world == null) {
+    public void resetChunk(UUID worldId, long chunkKey) {
+        if (worldId == null) {
             return;
         }
-        Map<Long, ChunkDirtySet> dirtyMap = worldDirty.get(world.getUID());
+        Map<Long, ChunkDirtySet> dirtyMap = worldDirty.get(worldId);
         if (dirtyMap != null) {
             dirtyMap.remove(chunkKey);
         }
-        Map<Long, ChunkLightShadow> lightMap = worldLightShadows.get(world.getUID());
+        Map<Long, ChunkLightShadow> lightMap = worldLightShadows.get(worldId);
         if (lightMap != null) {
             lightMap.remove(chunkKey);
         }
+    }
+
+    public boolean hasPendingLight(UUID worldId, long chunkKey) {
+        Map<Long, ChunkLightShadow> lightMap = worldLightShadows.get(worldId);
+        if (lightMap == null) {
+            return false;
+        }
+        ChunkLightShadow shadow = lightMap.get(chunkKey);
+        return shadow != null && shadow.hasPending();
     }
 
     public Stats stats() {
@@ -227,18 +241,24 @@ public final class RegionalDiffAccumulator {
     public record Stats(long blocksCaptured, long blocksDropped, long lightDiffsCaptured, long entityDiffsCaptured, long overflowDrops, long tickDrains) {
     }
 
+    private String stateStringFor(BlockData data) {
+        String cached = stateStrings.get(data);
+        if (cached != null) {
+            return cached;
+        }
+        String computed = data.getAsString();
+        BlockData key = data.clone();
+        if (key == null) {
+            return computed;
+        }
+        if (stateStrings.size() >= STATE_STRING_CACHE_MAX) {
+            stateStrings.clear();
+        }
+        stateStrings.put(key, computed);
+        return computed;
+    }
+
     private void dispatchDrain(World world, long chunkKey, ChunkDirtySet.Drain drained) {
-        List<BlockChange> blocks = drained.blocks();
-        for (int i = 0; i < blocks.size(); i++) {
-            feed.onBlockChange(world, chunkKey, blocks.get(i));
-        }
-        List<LightDiff> lights = drained.lights();
-        for (int i = 0; i < lights.size(); i++) {
-            feed.onLightChange(world, chunkKey, lights.get(i));
-        }
-        List<BlockEntityDiff> entities = drained.entities();
-        for (int i = 0; i < entities.size(); i++) {
-            feed.onBlockEntityChange(world, chunkKey, entities.get(i));
-        }
+        feed.onChunkDrain(world, chunkKey, drained.blocks(), drained.lights(), drained.entities());
     }
 }

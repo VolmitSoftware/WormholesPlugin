@@ -43,8 +43,6 @@ public class NetworkConfig {
 
     public static class ViewConfig {
         public boolean entityDeltaEnabled = true;
-        public int entityDeltaMissesBeforeResync = 5;
-        public double entityDeltaVelocityThreshold = 0.02D;
         public double entityRateNearRange = 16.0D;
         public double entityRateMidRange = 64.0D;
         public double entityRateFarRange = 128.0D;

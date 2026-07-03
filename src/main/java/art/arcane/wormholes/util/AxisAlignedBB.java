@@ -149,7 +149,7 @@ public class AxisAlignedBB implements IWritable
 
 	public Collection<Entity> getEntities(World w)
 	{
-		return w.getNearbyEntities(center().toLocation(w), sizeX() / 2D, sizeZ() / 2D, sizeZ() / 2D);
+		return w.getNearbyEntities(new Location(w, (xa + xb) / 2D, (ya + yb) / 2D, (za + zb) / 2D), sizeX() / 2D, sizeY() / 2D, sizeZ() / 2D);
 	}
 
 	public void encapsulate(KList<Vector> b)
@@ -175,8 +175,8 @@ public class AxisAlignedBB implements IWritable
 	public Vector getCornerVector(Direction x, Direction y, Direction z)
 	{
 		assert x.getAxis().equals(Axis.X) : " X direction must be on the X axis.";
-		assert x.getAxis().equals(Axis.Y) : " Y direction must be on the Y axis.";
-		assert x.getAxis().equals(Axis.Z) : " Z direction must be on the Z axis.";
+		assert y.getAxis().equals(Axis.Y) : " Y direction must be on the Y axis.";
+		assert z.getAxis().equals(Axis.Z) : " Z direction must be on the Z axis.";
 		return new Vector(x.x() == 1 ? xb : xa, y.y() == 1 ? yb : ya, z.z() == 1 ? zb : za);
 	}
 

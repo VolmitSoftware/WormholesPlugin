@@ -81,7 +81,7 @@ class EntityDeltaCodecTest {
     void deltaWithPositionOnlySetsPositionBit() {
         EntityVisual previous = baseSnapshot(1);
         EntityVisual current = movedSnapshot(previous, 0.5D, 0.0D, 0.0D, 2);
-        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 2, 0.05D);
+        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 2, EntityDeltaCodec.computeMask(current, previous));
         assertEquals(EntityVisual.MODE_DELTA, delta.mode());
         assertTrue((delta.presentMask() & EntityVisual.FIELD_POSITION) != 0);
         assertEquals(0, delta.presentMask() & EntityVisual.FIELD_YAW_PITCH);
@@ -96,7 +96,7 @@ class EntityDeltaCodecTest {
     @Test
     void firstDeltaIsForcedFullWhenPreviousIsNull() {
         EntityVisual current = baseSnapshot(0);
-        EntityVisual delta = EntityDeltaCodec.buildDelta(current, null, 0, 0.05D);
+        EntityVisual delta = EntityDeltaCodec.buildDelta(current, null, 0, 0);
         assertEquals(EntityVisual.MODE_FULL, delta.mode());
         assertEquals(EntityVisual.FIELD_ALL_FULL, delta.presentMask());
     }
@@ -105,7 +105,7 @@ class EntityDeltaCodecTest {
     void applyDeltaMergesPositionOntoPrevious() {
         EntityVisual previous = baseSnapshot(1);
         EntityVisual current = movedSnapshot(previous, 0.5D, 0.0D, 0.0D, 2);
-        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 2, 0.05D);
+        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 2, EntityDeltaCodec.computeMask(current, previous));
         EntityVisual merged = EntityDeltaCodec.applyDelta(delta, previous);
         assertEquals(EntityVisual.MODE_FULL, merged.mode());
         assertEquals(2, merged.sequence());
@@ -120,11 +120,11 @@ class EntityDeltaCodecTest {
         EntityVisual after1 = movedSnapshot(previous, 1.0D, 0.0D, 0.0D, 1);
         EntityVisual after2 = movedSnapshot(after1, 0.0D, 0.0D, 1.0D, 2);
         EntityVisual after3 = movedSnapshot(after2, 0.0D, 1.0D, 0.0D, 3);
-        EntityVisual d1 = EntityDeltaCodec.buildDelta(after1, previous, 1, 0.05D);
+        EntityVisual d1 = EntityDeltaCodec.buildDelta(after1, previous, 1, EntityDeltaCodec.computeMask(after1, previous));
         EntityVisual merged1 = EntityDeltaCodec.applyDelta(d1, previous);
-        EntityVisual d2 = EntityDeltaCodec.buildDelta(after2, after1, 2, 0.05D);
+        EntityVisual d2 = EntityDeltaCodec.buildDelta(after2, after1, 2, EntityDeltaCodec.computeMask(after2, after1));
         EntityVisual merged2 = EntityDeltaCodec.applyDelta(d2, merged1);
-        EntityVisual d3 = EntityDeltaCodec.buildDelta(after3, after2, 3, 0.05D);
+        EntityVisual d3 = EntityDeltaCodec.buildDelta(after3, after2, 3, EntityDeltaCodec.computeMask(after3, after2));
         EntityVisual merged3 = EntityDeltaCodec.applyDelta(d3, merged2);
         assertEquals(after3.x(), merged3.x(), 1.0D / 4096.0D);
         assertEquals(after3.y(), merged3.y(), 1.0D / 4096.0D);
@@ -140,26 +140,6 @@ class EntityDeltaCodecTest {
         assertEquals(0, first);
         assertEquals(1, second);
         assertEquals(2, third);
-    }
-
-    @Test
-    void recordAckUpdatesLastAckedAndResetsMissCounter() {
-        EntitySendState state = new EntitySendState(new UUID(1L, 1L));
-        state.recordMiss(3);
-        state.recordAck(5);
-        assertEquals(5, state.getLastAckedSequence());
-        assertEquals(0, state.getMissCounter());
-    }
-
-    @Test
-    void missesBeforeResyncTriggerForceFull() {
-        EntitySendState state = new EntitySendState(new UUID(1L, 1L));
-        state.recordSent(baseSnapshot(0), true);
-        assertTrue(!state.isForceFullNext());
-        state.recordMiss(3);
-        state.recordMiss(3);
-        state.recordMiss(3);
-        assertTrue(state.isForceFullNext());
     }
 
     @Test
@@ -182,7 +162,7 @@ class EntityDeltaCodecTest {
             previous.leashHolder(),
             previous.metadata(), previous.equipment()
         );
-        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 1, 0.05D);
+        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 1, EntityDeltaCodec.computeMask(current, previous));
         assertTrue((delta.presentMask() & EntityVisual.FIELD_YAW_PITCH) != 0);
     }
 
@@ -206,7 +186,7 @@ class EntityDeltaCodecTest {
             previous.leashHolder(),
             previous.metadata(), new byte[]{9, 9, 9, 9}
         );
-        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 1, 0.05D);
+        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 1, EntityDeltaCodec.computeMask(current, previous));
         assertTrue((delta.presentMask() & EntityVisual.FIELD_EQUIPMENT) != 0);
     }
 
@@ -291,7 +271,7 @@ class EntityDeltaCodecTest {
             previous.leashHolder(),
             previous.metadata(), previous.equipment()
         );
-        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 1, 0.05D);
+        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 1, EntityDeltaCodec.computeMask(current, previous));
         assertEquals(0, delta.presentMask() & EntityVisual.FIELD_VELOCITY);
     }
 
@@ -315,8 +295,137 @@ class EntityDeltaCodecTest {
             previous.leashHolder(),
             previous.metadata(), previous.equipment()
         );
-        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 1, 0.05D);
+        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 1, EntityDeltaCodec.computeMask(current, previous));
         assertTrue((delta.presentMask() & EntityVisual.FIELD_VELOCITY) != 0);
+    }
+
+    private static EntityVisual withPose(EntityVisual base, double lookX, double lookY, double lookZ,
+                                         float yaw, float pitch, double vx, double vy, double vz) {
+        return new EntityVisual(
+            EntityVisual.MODE_FULL,
+            1,
+            EntityVisual.FIELD_ALL_FULL,
+            base.id(),
+            base.typeKey(),
+            base.x(), base.y(), base.z(),
+            base.height(),
+            lookX, lookY, lookZ,
+            yaw, pitch,
+            vx, vy, vz,
+            base.onGround(),
+            base.playerName(), base.textureValue(), base.textureSignature(),
+            base.passengerOf(),
+            base.leashHolder(),
+            base.metadata(), base.equipment()
+        );
+    }
+
+    @Test
+    void identicalSnapshotsProduceZeroMask() {
+        EntityVisual base = baseSnapshot(0);
+        EntityVisual copy = baseSnapshot(1);
+        assertEquals(0, EntityDeltaCodec.computeMask(copy, base));
+    }
+
+    @Test
+    void subQuantumYawJitterDoesNotSetYawPitchBit() {
+        EntityVisual base = baseSnapshot(0);
+        EntityVisual jittered = withPose(base, base.lookX(), base.lookY(), base.lookZ(), 90.5F, base.pitch(),
+            base.velocityX(), base.velocityY(), base.velocityZ());
+        assertEquals(0, EntityDeltaCodec.computeMask(jittered, base) & EntityVisual.FIELD_YAW_PITCH);
+        EntityVisual turned = withPose(base, base.lookX(), base.lookY(), base.lookZ(), 92.0F, base.pitch(),
+            base.velocityX(), base.velocityY(), base.velocityZ());
+        assertTrue((EntityDeltaCodec.computeMask(turned, base) & EntityVisual.FIELD_YAW_PITCH) != 0);
+    }
+
+    @Test
+    void yawWraparoundComparesEqualAcrossZero() {
+        EntityVisual base = baseSnapshot(0);
+        EntityVisual atHighYaw = withPose(base, base.lookX(), base.lookY(), base.lookZ(), 359.9F, base.pitch(),
+            base.velocityX(), base.velocityY(), base.velocityZ());
+        EntityVisual justPastZero = withPose(base, base.lookX(), base.lookY(), base.lookZ(), 0.05F, base.pitch(),
+            base.velocityX(), base.velocityY(), base.velocityZ());
+        assertEquals(0, EntityDeltaCodec.computeMask(justPastZero, atHighYaw) & EntityVisual.FIELD_YAW_PITCH);
+        EntityVisual pastQuantum = withPose(base, base.lookX(), base.lookY(), base.lookZ(), 0.8F, base.pitch(),
+            base.velocityX(), base.velocityY(), base.velocityZ());
+        assertTrue((EntityDeltaCodec.computeMask(pastQuantum, atHighYaw) & EntityVisual.FIELD_YAW_PITCH) != 0);
+    }
+
+    @Test
+    void subQuantumLookVecJitterDoesNotSetLookBit() {
+        EntityVisual base = baseSnapshot(0);
+        EntityVisual jittered = withPose(base, base.lookX() + 0.00001D, base.lookY(), base.lookZ(), base.yaw(), base.pitch(),
+            base.velocityX(), base.velocityY(), base.velocityZ());
+        assertEquals(0, EntityDeltaCodec.computeMask(jittered, base) & EntityVisual.FIELD_LOOK_VEC);
+    }
+
+    @Test
+    void constantGravityVelocityDoesNotSetVelocityBit() {
+        EntityVisual base = baseSnapshot(0);
+        EntityVisual falling = withPose(base, base.lookX(), base.lookY(), base.lookZ(), base.yaw(), base.pitch(),
+            0.0D, -0.0784D, 0.0D);
+        EntityVisual stillFalling = withPose(base, base.lookX(), base.lookY(), base.lookZ(), base.yaw(), base.pitch(),
+            0.0D, -0.0784D, 0.0D);
+        assertEquals(0, EntityDeltaCodec.computeMask(stillFalling, falling) & EntityVisual.FIELD_VELOCITY);
+    }
+
+    @Test
+    void velocityChangeAcrossQuantumSetsVelocityBit() {
+        EntityVisual base = baseSnapshot(0);
+        EntityVisual moving = withPose(base, base.lookX(), base.lookY(), base.lookZ(), base.yaw(), base.pitch(),
+            0.5D, 0.0D, 0.0D);
+        assertTrue((EntityDeltaCodec.computeMask(moving, base) & EntityVisual.FIELD_VELOCITY) != 0);
+    }
+
+    @Test
+    void wireHeaderRoundTripsAtSequenceBoundaries() throws IOException {
+        EntityVisual zero = baseSnapshot(0);
+        EntityVisual zeroDecoded = encodeAndDecode(zero);
+        assertEquals(0, zeroDecoded.sequence());
+        assertEquals(EntityVisual.MODE_FULL, zeroDecoded.mode());
+
+        EntityVisual max = baseSnapshot(65535);
+        EntityVisual maxDecoded = encodeAndDecode(max);
+        assertEquals(65535, maxDecoded.sequence());
+        assertEquals(EntityVisual.MODE_FULL, maxDecoded.mode());
+        assertEquals(EntityVisual.FIELD_ALL_FULL, maxDecoded.presentMask());
+    }
+
+    @Test
+    void deltaModeWithAllFieldBitsRoundTripsHeader() throws IOException {
+        EntityVisual base = baseSnapshot(1);
+        EntityVisual delta = new EntityVisual(
+            EntityVisual.MODE_DELTA,
+            777,
+            EntityVisual.FIELD_ALL_FULL,
+            base.id(),
+            base.typeKey(),
+            base.x(), base.y(), base.z(),
+            base.height(),
+            base.lookX(), base.lookY(), base.lookZ(),
+            base.yaw(), base.pitch(),
+            base.velocityX(), base.velocityY(), base.velocityZ(),
+            base.onGround(),
+            base.playerName(), base.textureValue(), base.textureSignature(),
+            base.passengerOf(),
+            base.leashHolder(),
+            base.metadata(), base.equipment()
+        );
+        EntityVisual decoded = encodeAndDecode(delta);
+        assertEquals(EntityVisual.MODE_DELTA, decoded.mode());
+        assertEquals(EntityVisual.FIELD_ALL_FULL, decoded.presentMask());
+        assertEquals(777, decoded.sequence());
+    }
+
+    @Test
+    void allocateSequenceWrapsAtSixteenBits() throws IOException {
+        EntitySendState state = new EntitySendState(new UUID(2L, 2L));
+        for (int i = 0; i < 65535; i++) {
+            state.allocateSequence();
+        }
+        assertEquals(65535, state.allocateSequence());
+        assertEquals(0, state.allocateSequence());
+        assertEquals(1, state.allocateSequence());
     }
 
     @Test
@@ -325,7 +434,7 @@ class EntityDeltaCodecTest {
         EntityVisual current = movedSnapshot(previous, 0.5D, 0.0D, 0.0D, 1);
         ByteArrayOutputStream fullBuf = new ByteArrayOutputStream();
         current.write(new DataOutputStream(fullBuf));
-        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 1, 0.05D);
+        EntityVisual delta = EntityDeltaCodec.buildDelta(current, previous, 1, EntityDeltaCodec.computeMask(current, previous));
         ByteArrayOutputStream deltaBuf = new ByteArrayOutputStream();
         delta.write(new DataOutputStream(deltaBuf));
         assertNotEquals(0, fullBuf.size());

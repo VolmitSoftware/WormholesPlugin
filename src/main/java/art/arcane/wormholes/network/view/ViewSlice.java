@@ -30,6 +30,30 @@ public record ViewSlice(int minX, int minY, int minZ, int sizeX, int sizeY, int 
         return (((long) chunkX) << 32) | (((long) chunkZ) & 0xFFFFFFFFL);
     }
 
+    public static int biomeGridSpan(int min, int size) {
+        return ((min + size - 1) >> 2) - (min >> 2) + 1;
+    }
+
+    public int biomeGridSizeX() {
+        return biomeGridSpan(minX, sizeX);
+    }
+
+    public int biomeGridSizeY() {
+        return biomeGridSpan(minY, sizeY);
+    }
+
+    public int biomeGridSizeZ() {
+        return biomeGridSpan(minZ, sizeZ);
+    }
+
+    public int biomeGridLength() {
+        return biomeGridSizeX() * biomeGridSizeY() * biomeGridSizeZ();
+    }
+
+    public int biomeGridIndex(int x, int y, int z) {
+        return ((((y >> 2) - (minY >> 2)) * biomeGridSizeZ() + ((z >> 2) - (minZ >> 2))) * biomeGridSizeX()) + ((x >> 2) - (minX >> 2));
+    }
+
     /**
      * Palette-order- and light-independent hash of the slice's logical content (blocks + biomes).
      * Each cell contributes the hash of the actual block/biome it resolves to, so two slices with
@@ -64,6 +88,9 @@ public record ViewSlice(int minX, int minY, int minZ, int sizeX, int sizeY, int 
     }
 
     public void write(DataOutputStream out) throws IOException {
+        if (biomes.length != biomeGridLength()) {
+            throw new IOException("View slice biome grid length mismatch: " + biomes.length + " != " + biomeGridLength());
+        }
         out.writeInt(minX);
         out.writeInt(minY);
         out.writeInt(minZ);
@@ -74,17 +101,52 @@ public record ViewSlice(int minX, int minY, int minZ, int sizeX, int sizeY, int 
         for (String entry : palette) {
             out.writeUTF(entry);
         }
-        for (short index : indices) {
-            out.writeShort(index);
-        }
+        writePackedIndices(out, indices, palette.size());
         out.write(light);
         out.writeShort(biomePalette.size());
         for (String entry : biomePalette) {
             out.writeUTF(entry);
         }
-        for (short biome : biomes) {
-            out.writeShort(biome);
+        writePackedIndices(out, biomes, biomePalette.size());
+    }
+
+    private static void writePackedIndices(DataOutputStream out, short[] values, int paletteSize) throws IOException {
+        int width = paletteSize <= 256 ? 1 : 2;
+        out.writeByte(width);
+        if (width == 1) {
+            byte[] raw = new byte[values.length];
+            for (int i = 0; i < values.length; i++) {
+                raw[i] = (byte) values[i];
+            }
+            out.write(raw);
+            return;
         }
+        byte[] raw = new byte[values.length * 2];
+        for (int i = 0; i < values.length; i++) {
+            raw[i * 2] = (byte) (values[i] >> 8);
+            raw[i * 2 + 1] = (byte) values[i];
+        }
+        out.write(raw);
+    }
+
+    private static short[] readPackedIndices(DataInputStream in, int count) throws IOException {
+        int width = in.readByte();
+        if (width != 1 && width != 2) {
+            throw new IOException("Invalid view slice index width: " + width);
+        }
+        byte[] raw = new byte[count * width];
+        in.readFully(raw);
+        short[] values = new short[count];
+        if (width == 1) {
+            for (int i = 0; i < count; i++) {
+                values[i] = (short) (raw[i] & 0xFF);
+            }
+            return values;
+        }
+        for (int i = 0; i < count; i++) {
+            values[i] = (short) (((raw[i * 2] & 0xFF) << 8) | (raw[i * 2 + 1] & 0xFF));
+        }
+        return values;
     }
 
     public static ViewSlice read(DataInputStream in) throws IOException {
@@ -106,10 +168,7 @@ public record ViewSlice(int minX, int minY, int minZ, int sizeX, int sizeY, int 
         for (int i = 0; i < paletteSize; i++) {
             palette.add(in.readUTF());
         }
-        short[] indices = new short[(int) cells];
-        for (int i = 0; i < indices.length; i++) {
-            indices[i] = in.readShort();
-        }
+        short[] indices = readPackedIndices(in, (int) cells);
         byte[] light = new byte[(int) cells];
         in.readFully(light);
         int biomePaletteSize = in.readUnsignedShort();
@@ -120,10 +179,8 @@ public record ViewSlice(int minX, int minY, int minZ, int sizeX, int sizeY, int 
         for (int i = 0; i < biomePaletteSize; i++) {
             biomePalette.add(in.readUTF());
         }
-        short[] biomes = new short[(int) cells];
-        for (int i = 0; i < biomes.length; i++) {
-            biomes[i] = in.readShort();
-        }
+        int gridLength = biomeGridSpan(minX, sizeX) * biomeGridSpan(minY, sizeY) * biomeGridSpan(minZ, sizeZ);
+        short[] biomes = readPackedIndices(in, gridLength);
         return new ViewSlice(minX, minY, minZ, sizeX, sizeY, sizeZ, palette, indices, light, biomePalette, biomes);
     }
 }

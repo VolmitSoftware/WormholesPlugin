@@ -77,7 +77,7 @@ class WireCodecTest {
         WireMessage.Hello hello = new WireMessage.Hello(WireCodec.PROTOCOL_VERSION, "26.2", bigVersion, "alpha", "10.0.0.5", 8901, 25565, Handshake.newNonce(), publicKey(), true, CompressionDictionary.ZERO_HASH, 0);
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
-            byte[] frame = WireCodec.encodeFrame(hello, compression, false);
+            byte[] frame = WireCodec.encodeFrame(hello, compression, 0);
             assertTrue(frame.length < 10_000, "highly repetitive payload should compress well, frame was " + frame.length);
             WireMessage.Hello decoded = assertInstanceOf(WireMessage.Hello.class, WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(frame)), compression));
             assertEquals(bigVersion, decoded.pluginVersion());
@@ -116,6 +116,45 @@ class WireCodecTest {
 
         DataInputStream in = new DataInputStream(new ByteArrayInputStream(buffer.toByteArray()));
         assertThrows(IOException.class, () -> WireCodec.readByteArray(in, 255));
+    }
+
+    @Test
+    void readFrameFeedsSamplerWithTypeAndExactPayload() throws IOException {
+        WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        try {
+            java.util.UUID portalId = java.util.UUID.randomUUID();
+            WireMessage.PortalUpsert upsert = new WireMessage.PortalUpsert(new PortalInfo(portalId, "Gateway test", "world", "GATEWAY", true, "N", "E", "U",
+                10.5D, 64.0D, 20.5D,
+                9.5D, 63.5D, 19.5D,
+                11.5D, 66.5D, 21.5D));
+            byte[] frame = WireCodec.encodeFrame(upsert, compression, 0);
+            java.util.List<WireMessageType> sampledTypes = new java.util.ArrayList<>();
+            java.util.List<byte[]> sampledPayloads = new java.util.ArrayList<>();
+            WireMessage decoded = WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(frame)), compression, (type, payload) -> {
+                sampledTypes.add(type);
+                sampledPayloads.add(payload);
+            });
+            WireMessage.PortalUpsert echoed = assertInstanceOf(WireMessage.PortalUpsert.class, decoded);
+            assertEquals(portalId, echoed.portal().id());
+            assertEquals(1, sampledTypes.size());
+            assertEquals(WireMessageType.PORTAL_UPSERT, sampledTypes.get(0));
+            assertArrayEquals(WireCodec.encodePayload(upsert), sampledPayloads.get(0));
+        } finally {
+            compression.close();
+        }
+    }
+
+    @Test
+    void readFrameWithoutSamplerDoesNotThrow() throws IOException {
+        WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        try {
+            byte[] frame = WireCodec.encodeFrame(new WireMessage.Ping(7L), compression, 0);
+            WireMessage.Ping decoded = assertInstanceOf(WireMessage.Ping.class,
+                WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(frame)), compression, null));
+            assertEquals(7L, decoded.sentAtMillis());
+        } finally {
+            compression.close();
+        }
     }
 
     private static byte[] publicKey() throws Exception {

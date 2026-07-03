@@ -77,4 +77,32 @@ class RemoteViewCacheEntityMergeTest {
         cache.applyEntities(PEER, portalId, List.of(), List.of());
         assertTrue(view.getEntities().isEmpty());
     }
+
+    @Test
+    void blobChangedIsTrueForFirstSight() {
+        assertTrue(RemoteViewCache.blobChanged(null, new byte[]{1, 2}));
+    }
+
+    @Test
+    void blobChangedIsFalseForIdenticalBytes() {
+        assertTrue(!RemoteViewCache.blobChanged(new byte[]{1, 2}, new byte[]{1, 2}));
+    }
+
+    @Test
+    void blobChangedIsTrueForDifferentBytes() {
+        assertTrue(RemoteViewCache.blobChanged(new byte[]{1, 2}, new byte[]{1, 3}));
+        assertTrue(RemoteViewCache.blobChanged(new byte[]{1, 2}, new byte[]{1, 2, 3}));
+    }
+
+    @Test
+    void emptyBlobsNeverBumpStateVersion() {
+        RemoteViewCache cache = new RemoteViewCache();
+        UUID portalId = UUID.randomUUID();
+        UUID a = UUID.randomUUID();
+        RemoteViewCache.RemoteView view = cache.getOrCreate(PEER, portalId);
+
+        cache.applyEntities(PEER, portalId, List.of(fullEntity(a, 1.0D)), List.of(a));
+        cache.applyEntities(PEER, portalId, List.of(fullEntity(a, 1.5D)), List.of(a));
+        assertEquals(0, view.getStateVersion(a));
+    }
 }

@@ -11,6 +11,7 @@ import art.arcane.wormholes.util.Direction;
 
 public final class Frustum4D {
     private static final double EPSILON = 1.0E-7D;
+    private static final Direction[] DIRECTIONS = Direction.values();
 
     private final Frustum[] frustums;
     private final AxisAlignedBB region;
@@ -47,7 +48,7 @@ public final class Frustum4D {
         double cullRatio = Settings.FRUSTUM_CULLING_RATIO;
         double aperturePadding = Settings.PROJECTION_APERTURE_PADDING_BLOCKS;
         KList<Frustum> built = new KList<Frustum>();
-        for (Direction face : Direction.values()) {
+        for (Direction face : DIRECTIONS) {
             if (face.x() == 1 && portalToEyeX > cullRatio) {
                 addFrustums(built, apex, structure, face, effectiveRange, aperturePadding);
                 continue;

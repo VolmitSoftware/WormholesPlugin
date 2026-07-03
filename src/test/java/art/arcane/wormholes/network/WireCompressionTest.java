@@ -3,15 +3,20 @@ package art.arcane.wormholes.network;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -32,6 +37,16 @@ class WireCompressionTest {
         return data;
     }
 
+    private static byte[] repetitiveWords(int length, long seed) {
+        String[] words = {"wormholes", "sideband", "status", "bridge", "packet", "gateway", "portal", "chunk"};
+        Random random = new Random(seed);
+        StringBuilder text = new StringBuilder(length + 16);
+        while (text.length() < length) {
+            text.append(words[random.nextInt(words.length)]).append(' ');
+        }
+        return text.substring(0, length).getBytes(StandardCharsets.UTF_8);
+    }
+
     private static int readLittleEndianInt(byte[] data, int offset) {
         return (data[offset] & 0xFF)
             | ((data[offset + 1] & 0xFF) << 8)
@@ -39,17 +54,21 @@ class WireCompressionTest {
             | ((data[offset + 3] & 0xFF) << 24);
     }
 
-    private static CompressionDictionary trainDictionary(int version) {
-        List<byte[]> samples = new ArrayList<>();
-        Random random = new Random(0xABCDL);
+    private static CompressionDictionary trainDictionary() {
+        return trainDictionary(0xABCDL, 'a');
+    }
+
+    private static CompressionDictionary trainDictionary(long seed, char base) {
+        List<byte[]> samples = new ArrayList<>(256);
+        Random random = new Random(seed);
         for (int i = 0; i < 256; i++) {
             byte[] sample = new byte[1024 + random.nextInt(1024)];
             for (int j = 0; j < sample.length; j++) {
-                sample[j] = (byte) ('a' + random.nextInt(16));
+                sample[j] = (byte) (base + random.nextInt(16));
             }
             samples.add(sample);
         }
-        return CompressionDictionary.train(samples, 8 * 1024, version);
+        return CompressionDictionary.train(samples, 8 * 1024);
     }
 
     @Test
@@ -57,7 +76,7 @@ class WireCompressionTest {
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
             byte[] payload = compressibleBytes(4096, 1L);
-            byte[] encoded = compression.encode(payload, false);
+            byte[] encoded = compression.encode(payload, 0);
             assertEquals(WireCompression.MODE_ZSTD_DICTLESS, encoded[0]);
             WireCompression.DecodeResult decoded = compression.decode(encoded);
             assertArrayEquals(payload, decoded.payload());
@@ -73,7 +92,7 @@ class WireCompressionTest {
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
             byte[] payload = randomBytes(8192, 2L);
-            byte[] encoded = compression.encode(payload, false);
+            byte[] encoded = compression.encode(payload, 0);
             WireCompression.DecodeResult decoded = compression.decode(encoded);
             assertArrayEquals(payload, decoded.payload());
         } finally {
@@ -86,7 +105,7 @@ class WireCompressionTest {
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
             byte[] payload = new byte[0];
-            byte[] encoded = compression.encode(payload, false);
+            byte[] encoded = compression.encode(payload, 0);
             assertEquals(WireCompression.MODE_NONE, encoded[0]);
             WireCompression.DecodeResult decoded = compression.decode(encoded);
             assertArrayEquals(payload, decoded.payload());
@@ -99,8 +118,10 @@ class WireCompressionTest {
     void belowThresholdPayloadIsForcedNoneMode() throws IOException {
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
+            CompressionDictionary dictionary = trainDictionary();
+            compression.installDictionary(dictionary);
             byte[] payload = compressibleBytes(WireCompression.COMPRESS_THRESHOLD_BYTES - 1, 3L);
-            byte[] encoded = compression.encode(payload, true);
+            byte[] encoded = compression.encode(payload, dictionary.version());
             assertEquals(WireCompression.MODE_NONE, encoded[0]);
         } finally {
             compression.close();
@@ -112,7 +133,7 @@ class WireCompressionTest {
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
             byte[] payload = compressibleBytes(1024 * 1024, 4L);
-            byte[] encoded = compression.encode(payload, false);
+            byte[] encoded = compression.encode(payload, 0);
             WireCompression.DecodeResult decoded = compression.decode(encoded);
             assertArrayEquals(payload, decoded.payload());
         } finally {
@@ -124,16 +145,16 @@ class WireCompressionTest {
     void dictModeEncodesWithVersionPrefix() throws IOException {
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
-            CompressionDictionary dictionary = trainDictionary(42);
+            CompressionDictionary dictionary = trainDictionary();
             compression.installDictionary(dictionary);
             byte[] payload = compressibleBytes(4096, 5L);
-            byte[] encoded = compression.encode(payload, true);
+            byte[] encoded = compression.encode(payload, dictionary.version());
             assertEquals(WireCompression.MODE_ZSTD_DICT, encoded[0]);
             int version = readLittleEndianInt(encoded, 1);
-            assertEquals(42, version);
+            assertEquals(dictionary.version(), version);
             WireCompression.DecodeResult decoded = compression.decode(encoded);
             assertArrayEquals(payload, decoded.payload());
-            assertEquals(42, decoded.dictVersion());
+            assertEquals(dictionary.version(), decoded.dictVersion());
         } finally {
             compression.close();
         }
@@ -143,10 +164,10 @@ class WireCompressionTest {
     void dictNotNegotiatedFallsBackToDictless() throws IOException {
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
-            CompressionDictionary dictionary = trainDictionary(7);
+            CompressionDictionary dictionary = trainDictionary();
             compression.installDictionary(dictionary);
             byte[] payload = compressibleBytes(4096, 6L);
-            byte[] encoded = compression.encode(payload, false);
+            byte[] encoded = compression.encode(payload, 0);
             assertEquals(WireCompression.MODE_ZSTD_DICTLESS, encoded[0]);
         } finally {
             compression.close();
@@ -157,13 +178,13 @@ class WireCompressionTest {
     void clearDictionaryRevertsToDictless() throws IOException {
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
-            CompressionDictionary dictionary = trainDictionary(11);
+            CompressionDictionary dictionary = trainDictionary();
             compression.installDictionary(dictionary);
             assertTrue(compression.hasDictionary());
             compression.clearDictionary();
             assertFalse(compression.hasDictionary());
             byte[] payload = compressibleBytes(4096, 7L);
-            byte[] encoded = compression.encode(payload, true);
+            byte[] encoded = compression.encode(payload, dictionary.version());
             assertEquals(WireCompression.MODE_ZSTD_DICTLESS, encoded[0]);
         } finally {
             compression.close();
@@ -207,10 +228,10 @@ class WireCompressionTest {
         WireCompression encoderCompression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         WireCompression decoderCompression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
-            CompressionDictionary dictionary = trainDictionary(13);
+            CompressionDictionary dictionary = trainDictionary();
             encoderCompression.installDictionary(dictionary);
             byte[] payload = compressibleBytes(4096, 8L);
-            byte[] encoded = encoderCompression.encode(payload, true);
+            byte[] encoded = encoderCompression.encode(payload, dictionary.version());
             assertEquals(WireCompression.MODE_ZSTD_DICT, encoded[0]);
             assertThrows(IOException.class, () -> decoderCompression.decode(encoded));
         } finally {
@@ -240,7 +261,7 @@ class WireCompressionTest {
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
             byte[] payload = randomBytes(2048, 9L);
-            byte[] encoded = compression.encode(payload, false);
+            byte[] encoded = compression.encode(payload, 0);
             assertNotNull(encoded);
             WireCompression.DecodeResult decoded = compression.decode(encoded);
             assertArrayEquals(payload, decoded.payload());
@@ -253,16 +274,173 @@ class WireCompressionTest {
     void switchingDictionaryUsesNewVersion() throws IOException {
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
-            CompressionDictionary first = trainDictionary(100);
-            CompressionDictionary second = trainDictionary(101);
+            CompressionDictionary first = trainDictionary(100L, 'a');
+            CompressionDictionary second = trainDictionary(101L, 'A');
+            assertNotEquals(first.version(), second.version());
             compression.installDictionary(first);
             byte[] payload = compressibleBytes(4096, 10L);
-            byte[] firstFrame = compression.encode(payload, true);
-            assertEquals(100, readLittleEndianInt(firstFrame, 1));
+            byte[] firstFrame = compression.encode(payload, first.version());
+            assertEquals(first.version(), readLittleEndianInt(firstFrame, 1));
             compression.installDictionary(second);
-            byte[] secondFrame = compression.encode(payload, true);
-            assertEquals(101, readLittleEndianInt(secondFrame, 1));
+            byte[] secondFrame = compression.encode(payload, second.version());
+            assertEquals(second.version(), readLittleEndianInt(secondFrame, 1));
             assertFalse(Arrays.equals(firstFrame, secondFrame));
+            assertArrayEquals(payload, compression.decode(firstFrame).payload());
+            assertArrayEquals(payload, compression.decode(secondFrame).payload());
+        } finally {
+            compression.close();
+        }
+    }
+
+    @Test
+    void decodeRetainsPreviousDictionaryVersionAfterInstall() throws IOException {
+        WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        try {
+            CompressionDictionary first = trainDictionary(11L, 'a');
+            CompressionDictionary second = trainDictionary(12L, 'A');
+            compression.installDictionary(first);
+            byte[] payload = compressibleBytes(4096, 11L);
+            byte[] firstFrame = compression.encode(payload, first.version());
+            assertEquals(WireCompression.MODE_ZSTD_DICT, firstFrame[0]);
+            compression.installDictionary(second);
+            assertArrayEquals(payload, compression.decode(firstFrame).payload());
+            byte[] secondFrame = compression.encode(payload, second.version());
+            assertEquals(WireCompression.MODE_ZSTD_DICT, secondFrame[0]);
+            assertArrayEquals(payload, compression.decode(secondFrame).payload());
+        } finally {
+            compression.close();
+        }
+    }
+
+    @Test
+    void retiredDictionariesEvictBeyondLimit() throws IOException {
+        WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        try {
+            CompressionDictionary d1 = trainDictionary(21L, 'a');
+            CompressionDictionary d2 = trainDictionary(22L, 'A');
+            CompressionDictionary d3 = trainDictionary(23L, '0');
+            CompressionDictionary d4 = trainDictionary(24L, 'P');
+            byte[] payload = compressibleBytes(4096, 21L);
+            compression.installDictionary(d1);
+            byte[] frame1 = compression.encode(payload, d1.version());
+            compression.installDictionary(d2);
+            compression.installDictionary(d3);
+            byte[] frame3 = compression.encode(payload, d3.version());
+            compression.installDictionary(d4);
+            byte[] frame4 = compression.encode(payload, d4.version());
+            assertArrayEquals(payload, compression.decode(frame3).payload());
+            assertArrayEquals(payload, compression.decode(frame4).payload());
+            assertThrows(IOException.class, () -> compression.decode(frame1));
+        } finally {
+            compression.close();
+        }
+    }
+
+    @Test
+    void reinstallingSameDictionaryDoesNotStackRetiredEntries() throws IOException {
+        WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        try {
+            CompressionDictionary d1 = trainDictionary(31L, 'a');
+            CompressionDictionary d2 = trainDictionary(32L, 'A');
+            byte[] payload = compressibleBytes(4096, 31L);
+            compression.installDictionary(d1);
+            byte[] frame1 = compression.encode(payload, d1.version());
+            compression.installDictionary(d2);
+            byte[] frame2 = compression.encode(payload, d2.version());
+            compression.installDictionary(d1);
+            assertArrayEquals(payload, compression.decode(frame1).payload());
+            assertArrayEquals(payload, compression.decode(frame2).payload());
+        } finally {
+            compression.close();
+        }
+    }
+
+    @Test
+    void encodeFallsBackToDictlessWhenNegotiatedVersionMismatchesCurrent() throws IOException {
+        WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        try {
+            CompressionDictionary d1 = trainDictionary(41L, 'a');
+            CompressionDictionary d2 = trainDictionary(42L, 'A');
+            compression.installDictionary(d2);
+            byte[] payload = compressibleBytes(4096, 41L);
+            byte[] encoded = compression.encode(payload, d1.version());
+            assertEquals(WireCompression.MODE_ZSTD_DICTLESS, encoded[0]);
+            assertArrayEquals(payload, compression.decode(encoded).payload());
+        } finally {
+            compression.close();
+        }
+    }
+
+    @Test
+    void encodeWithLevelOverrideRoundTripsAndDecodesLevelAgnostic() throws IOException {
+        WireCompression encoder = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        WireCompression decoder = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        try {
+            byte[] payload = compressibleBytes(64 * 1024, 12L);
+            byte[] encodedHigh = encoder.encode(payload, false, 12);
+            assertEquals(WireCompression.MODE_ZSTD_DICTLESS, encodedHigh[0]);
+            assertArrayEquals(payload, decoder.decode(encodedHigh).payload());
+
+            byte[] repetitive = repetitiveWords(256 * 1024, 13L);
+            byte[] levelTwelve = encoder.encode(repetitive, false, 12);
+            byte[] levelOne = encoder.encode(repetitive, false, 1);
+            assertTrue(levelTwelve.length <= levelOne.length, "level 12 must not encode larger than level 1, got " + levelTwelve.length + " vs " + levelOne.length);
+            assertArrayEquals(repetitive, decoder.decode(levelTwelve).payload());
+            assertArrayEquals(repetitive, decoder.decode(levelOne).payload());
+        } finally {
+            encoder.close();
+            decoder.close();
+        }
+    }
+
+    @Test
+    void concurrentDecodeSurvivesDictionaryRotation() throws Exception {
+        WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        try {
+            CompressionDictionary d1 = trainDictionary(51L, 'a');
+            CompressionDictionary d2 = trainDictionary(52L, 'A');
+            CompressionDictionary d3 = trainDictionary(53L, '0');
+            byte[] payload = compressibleBytes(4096, 51L);
+            compression.installDictionary(d1);
+            byte[] frame1 = compression.encode(payload, d1.version());
+            compression.installDictionary(d2);
+            byte[] frame2 = compression.encode(payload, d2.version());
+            byte[][] frames = {frame1, frame2};
+
+            int threads = 4;
+            CountDownLatch start = new CountDownLatch(1);
+            CountDownLatch done = new CountDownLatch(threads);
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
+            for (int t = 0; t < threads; t++) {
+                Thread worker = new Thread(() -> {
+                    try {
+                        start.await();
+                        for (int i = 0; i < 400; i++) {
+                            byte[] frame = frames[i & 1];
+                            try {
+                                assertArrayEquals(payload, compression.decode(frame).payload());
+                            } catch (IOException e) {
+                                String text = e.getMessage() == null ? "" : e.getMessage();
+                                if (!text.contains("missing dictionary version")) {
+                                    throw e;
+                                }
+                            }
+                        }
+                    } catch (Throwable ex) {
+                        unexpected.compareAndSet(null, ex);
+                    } finally {
+                        done.countDown();
+                    }
+                });
+                worker.setDaemon(true);
+                worker.start();
+            }
+            start.countDown();
+            for (int i = 0; i < 100; i++) {
+                compression.installDictionary((i & 1) == 0 ? d3 : d2);
+            }
+            done.await();
+            assertNull(unexpected.get(), () -> "unexpected decode failure: " + unexpected.get());
         } finally {
             compression.close();
         }

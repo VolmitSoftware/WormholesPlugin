@@ -27,7 +27,7 @@ class HashProbeSchedulerTest {
         long chunkKey = ViewSlice.columnKey(2, 4);
         manager.subscribe(PEER, world, chunkKey);
         byte[] payload = synthesizeBulkPayload(2, 4);
-        manager.sendBulk(PEER, chunkKey, payload);
+        manager.sendBulk(PEER, chunkKey, payload, contentHashOf(payload));
         sink.clear();
         long expected = contentHashOf(payload);
         ChunkHashProbe.ChunkHashEntry entry = new ChunkHashProbe.ChunkHashEntry(chunkKey, manager.lastBroadcastSeq(PEER, chunkKey), manager.canonicalHash(PEER, chunkKey));
@@ -60,7 +60,7 @@ class HashProbeSchedulerTest {
         long chunkKey = ViewSlice.columnKey(0, 0);
         manager.subscribe(PEER, world, chunkKey);
         byte[] payload = synthesizeBulkPayload(0, 0);
-        manager.sendBulk(PEER, chunkKey, payload);
+        manager.sendBulk(PEER, chunkKey, payload, contentHashOf(payload));
 
         RemoteChunkStore store = new RemoteChunkStore();
         try {
@@ -83,7 +83,7 @@ class HashProbeSchedulerTest {
         long chunkKey = ViewSlice.columnKey(0, 0);
         manager.subscribe(PEER, world, chunkKey);
         byte[] payload = synthesizeBulkPayload(0, 0);
-        manager.sendBulk(PEER, chunkKey, payload);
+        manager.sendBulk(PEER, chunkKey, payload, contentHashOf(payload));
 
         RemoteChunkStore store = new RemoteChunkStore();
         try {
@@ -98,6 +98,42 @@ class HashProbeSchedulerTest {
         assertEquals(chunkKey, mismatches.get(0).longValue());
     }
 
+    @Test
+    void probeCarriesZeroHashForBlockDirtyChunk(@TempDir Path dir) {
+        TestNetworkSink sink = new TestNetworkSink(dir);
+        sink.registerFakePeer(PEER);
+        ChunkReplicationManager manager = sink.getReplicationManager();
+        World world = StubWorld.create(UUID.randomUUID());
+        long chunkKey = ViewSlice.columnKey(6, 6);
+        manager.subscribe(PEER, world, chunkKey);
+        byte[] payload = synthesizeBulkPayload(6, 6);
+        manager.sendBulk(PEER, chunkKey, payload, contentHashOf(payload));
+        manager.onChunkDrain(world, chunkKey,
+            List.of(new BlockChange(BlockChange.pack(1, 62, 1), "minecraft:dirt", BlockChange.FLAG_NONE)),
+            List.of(), List.of());
+        manager.flushTick();
+        sink.clear();
+
+        HashProbeScheduler scheduler = new HashProbeScheduler(sink, manager);
+        scheduler.configure(30L, 8);
+        scheduler.probeOnce();
+        List<WireMessage> sent = sink.sentTo(PEER);
+        assertTrue(sent.size() >= 1);
+        WireMessage probeMsg = sent.get(sent.size() - 1);
+        assertTrue(probeMsg instanceof WireMessage.ChunkHashProbeMessage);
+        WireMessage.ChunkHashProbeMessage probe = (WireMessage.ChunkHashProbeMessage) probeMsg;
+        boolean foundChunk = false;
+        for (ChunkHashProbe.ChunkHashEntry probedEntry : probe.probe().entries()) {
+            if (probedEntry.chunkKey() == chunkKey) {
+                foundChunk = true;
+                assertEquals(0L, probedEntry.hash());
+                assertEquals(manager.lastBroadcastSeq(PEER, chunkKey), probedEntry.sequence());
+                assertTrue(probedEntry.sequence() >= 2L);
+            }
+        }
+        assertTrue(foundChunk);
+    }
+
     private static byte[] synthesizeBulkPayload(int chunkX, int chunkZ) {
         int sizeX = 16;
         int sizeY = 24;
@@ -108,10 +144,12 @@ class HashProbeSchedulerTest {
             indices[i] = (short) ((chunkX * 7 + chunkZ * 3 + i) % 2);
         }
         byte[] light = new byte[cells];
-        short[] biomes = new short[cells];
+        int minX = chunkX << 4;
+        int minZ = chunkZ << 4;
+        short[] biomes = new short[ViewSlice.biomeGridSpan(minX, sizeX) * ViewSlice.biomeGridSpan(60, sizeY) * ViewSlice.biomeGridSpan(minZ, sizeZ)];
         List<String> palette = List.of("minecraft:stone", "minecraft:dirt");
         List<String> biomePalette = List.of("minecraft:plains");
-        ViewSlice slice = new ViewSlice(chunkX << 4, 60, chunkZ << 4, sizeX, sizeY, sizeZ, palette, indices, light, biomePalette, biomes);
+        ViewSlice slice = new ViewSlice(minX, 60, minZ, sizeX, sizeY, sizeZ, palette, indices, light, biomePalette, biomes);
         try {
             return ChunkBulkBuilder.encodeSliceBytes(slice);
         } catch (java.io.IOException ex) {

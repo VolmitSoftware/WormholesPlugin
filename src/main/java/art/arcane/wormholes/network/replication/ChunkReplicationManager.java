@@ -2,15 +2,10 @@ package art.arcane.wormholes.network.replication;
 
 import art.arcane.wormholes.network.NetworkManager;
 import art.arcane.wormholes.network.WireMessage;
-import art.arcane.wormholes.network.view.ViewSlice;
 
 import org.bukkit.World;
 
-import java.io.ByteArrayInputStream;
-import java.io.DataInputStream;
-import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -27,15 +22,16 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
     public record Stats(long bulkSent, long diffsSent, long blocksSent, long resyncRequests, long preShipBulksDeferred) {
     }
 
+    @FunctionalInterface
+    public interface ChunkEvictionListener {
+        void onChunkEvicted(UUID worldId, long chunkKey);
+    }
+
     private static final class CanonicalHashCache {
         private volatile long hash;
-        private volatile boolean dirty;
-        private volatile byte[] lastBulkPayload;
 
         private CanonicalHashCache() {
             this.hash = 0L;
-            this.dirty = true;
-            this.lastBulkPayload = null;
         }
     }
 
@@ -49,14 +45,9 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
         }
     }
 
-    @FunctionalInterface
-    public interface CanonicalPayloadResolver {
-        byte[] resolve(String peerName, long chunkKey);
-    }
-
     private final NetworkManager network;
     private volatile ReplicationConfig config;
-    private volatile CanonicalPayloadResolver payloadResolver;
+    private volatile ChunkEvictionListener evictionListener;
     private final Map<String, Map<Long, ChunkReplicationState>> peerStates = new ConcurrentHashMap<>();
     private final Map<UUID, Map<Long, ConcurrentHashMap<String, ChunkReplicationState>>> worldSubscribers = new ConcurrentHashMap<>();
     private final Map<String, Map<Long, CanonicalHashCache>> peerHashes = new ConcurrentHashMap<>();
@@ -76,8 +67,8 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
         this.config = next == null ? ReplicationConfig.defaults() : next;
     }
 
-    public void setPayloadResolver(CanonicalPayloadResolver resolver) {
-        this.payloadResolver = resolver;
+    public void setEvictionListener(ChunkEvictionListener listener) {
+        this.evictionListener = listener;
     }
 
     public ReplicationConfig config() {
@@ -159,7 +150,8 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
         if (removed == null) {
             return;
         }
-        for (Map<Long, ConcurrentHashMap<String, ChunkReplicationState>> worldMap : worldSubscribers.values()) {
+        for (Map.Entry<UUID, Map<Long, ConcurrentHashMap<String, ChunkReplicationState>>> worldEntry : worldSubscribers.entrySet()) {
+            Map<Long, ConcurrentHashMap<String, ChunkReplicationState>> worldMap = worldEntry.getValue();
             Map<String, ChunkReplicationState> chunkPeers = worldMap.get(chunkKey);
             if (chunkPeers == null) {
                 continue;
@@ -167,6 +159,7 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
             chunkPeers.remove(peerName);
             if (chunkPeers.isEmpty()) {
                 worldMap.remove(chunkKey, chunkPeers);
+                notifyEviction(worldEntry.getKey(), chunkKey);
             }
         }
         Map<Long, CanonicalHashCache> hashMap = peerHashes.get(peerName);
@@ -178,12 +171,16 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
     public void clearPeer(String peerName) {
         Map<Long, ChunkReplicationState> chunks = peerStates.remove(peerName);
         if (chunks != null) {
-            for (Map<Long, ConcurrentHashMap<String, ChunkReplicationState>> worldMap : worldSubscribers.values()) {
+            for (Map.Entry<UUID, Map<Long, ConcurrentHashMap<String, ChunkReplicationState>>> worldEntry : worldSubscribers.entrySet()) {
+                Map<Long, ConcurrentHashMap<String, ChunkReplicationState>> worldMap = worldEntry.getValue();
                 for (Map.Entry<Long, ConcurrentHashMap<String, ChunkReplicationState>> entry : worldMap.entrySet()) {
                     ConcurrentHashMap<String, ChunkReplicationState> chunkPeers = entry.getValue();
-                    chunkPeers.remove(peerName);
+                    if (chunkPeers.remove(peerName) == null) {
+                        continue;
+                    }
                     if (chunkPeers.isEmpty()) {
                         worldMap.remove(entry.getKey(), chunkPeers);
+                        notifyEviction(worldEntry.getKey(), entry.getKey().longValue());
                     }
                 }
             }
@@ -192,29 +189,14 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
         peerPreShip.remove(peerName);
     }
 
-    public long allocateBulkSequence(String peerName, long chunkKey) {
-        ChunkReplicationState state = stateFor(peerName, chunkKey, true);
-        return state.nextBroadcastSeq();
-    }
-
-    public void recordBulkSent(String peerName, long chunkKey, long sequence) {
-        ChunkReplicationState state = stateFor(peerName, chunkKey, true);
-        state.markBulkSent();
-        bulkSent.incrementAndGet();
-    }
-
-    public void sendBulk(String peerName, long chunkKey, byte[] payload) {
+    public void sendBulk(String peerName, long chunkKey, byte[] payload, long contentHash) {
         ChunkReplicationState state = stateFor(peerName, chunkKey, true);
         long sequence = state.nextBroadcastSeq();
         state.markBulkSent();
         WireMessage.ChunkBulkBatch batch = new WireMessage.ChunkBulkBatch(List.of(new ChunkBulk(chunkKey, sequence, payload)));
         network.send(peerName, batch);
         bulkSent.incrementAndGet();
-        cacheCanonicalHash(peerName, chunkKey, payload);
-    }
-
-    public void recordCanonicalHash(String peerName, long chunkKey, byte[] payload) {
-        cacheCanonicalHash(peerName, chunkKey, payload);
+        cacheCanonicalHash(peerName, chunkKey, contentHash);
     }
 
     public long canonicalHash(String peerName, long chunkKey) {
@@ -226,20 +208,7 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
         if (cache == null) {
             return 0L;
         }
-        if (!cache.dirty) {
-            return cache.hash;
-        }
-        CanonicalPayloadResolver resolver = payloadResolver;
-        if (resolver != null) {
-            byte[] fresh = resolver.resolve(peerName, chunkKey);
-            if (fresh != null) {
-                cache.lastBulkPayload = fresh;
-                cache.hash = hashOfPayload(fresh);
-                cache.dirty = false;
-                return cache.hash;
-            }
-        }
-        return 0L;
+        return cache.hash;
     }
 
     public void requestResync(String peerName, long chunkKey) {
@@ -253,41 +222,35 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
     }
 
     @Override
-    public void onBlockChange(World world, long chunkKey, BlockChange change) {
+    public void onChunkDrain(World world, long chunkKey, List<BlockChange> blocks, List<LightDiff> lights, List<BlockEntityDiff> entities) {
         ConcurrentHashMap<String, ChunkReplicationState> subscribers = subscribersFor(world, chunkKey);
         if (subscribers == null || subscribers.isEmpty()) {
             return;
         }
         long capacity = config.maxQueuedDiffsPerPeer();
-        for (ChunkReplicationState state : subscribers.values()) {
-            state.appendBlock(change, capacity);
-            markHashDirty(state.peerName(), chunkKey);
-        }
-    }
-
-    @Override
-    public void onLightChange(World world, long chunkKey, LightDiff diff) {
-        ConcurrentHashMap<String, ChunkReplicationState> subscribers = subscribersFor(world, chunkKey);
-        if (subscribers == null || subscribers.isEmpty()) {
+        boolean hasBlocks = blocks != null && !blocks.isEmpty();
+        boolean hasLights = lights != null && !lights.isEmpty();
+        boolean hasEntities = entities != null && !entities.isEmpty();
+        if (!hasBlocks && !hasLights && !hasEntities) {
             return;
         }
-        long capacity = config.maxQueuedDiffsPerPeer();
         for (ChunkReplicationState state : subscribers.values()) {
-            state.appendLight(diff, capacity);
-            markHashDirty(state.peerName(), chunkKey);
-        }
-    }
-
-    @Override
-    public void onBlockEntityChange(World world, long chunkKey, BlockEntityDiff diff) {
-        ConcurrentHashMap<String, ChunkReplicationState> subscribers = subscribersFor(world, chunkKey);
-        if (subscribers == null || subscribers.isEmpty()) {
-            return;
-        }
-        long capacity = config.maxQueuedDiffsPerPeer();
-        for (ChunkReplicationState state : subscribers.values()) {
-            state.appendBlockEntity(diff, capacity);
-            markHashDirty(state.peerName(), chunkKey);
+            if (hasBlocks) {
+                for (int i = 0; i < blocks.size(); i++) {
+                    state.appendBlock(blocks.get(i), capacity);
+                }
+                markHashDirty(state.peerName(), chunkKey);
+            }
+            if (hasLights) {
+                for (int i = 0; i < lights.size(); i++) {
+                    state.appendLight(lights.get(i), capacity);
+                }
+            }
+            if (hasEntities) {
+                for (int i = 0; i < entities.size(); i++) {
+                    state.appendBlockEntity(entities.get(i), capacity);
+                }
+            }
         }
     }
 
@@ -335,6 +298,20 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
         return new ArrayList<>(chunks.keySet());
     }
 
+    public List<Long> subscribedChunkKeys(UUID worldId) {
+        Map<Long, ConcurrentHashMap<String, ChunkReplicationState>> worldMap = worldSubscribers.get(worldId);
+        if (worldMap == null || worldMap.isEmpty()) {
+            return List.of();
+        }
+        List<Long> keys = new ArrayList<>(worldMap.size());
+        for (Map.Entry<Long, ConcurrentHashMap<String, ChunkReplicationState>> entry : worldMap.entrySet()) {
+            if (!entry.getValue().isEmpty()) {
+                keys.add(entry.getKey());
+            }
+        }
+        return keys;
+    }
+
     public long lastBroadcastSeq(String peerName, long chunkKey) {
         ChunkReplicationState state = stateFor(peerName, chunkKey, false);
         return state == null ? 0L : state.lastBroadcastSeq();
@@ -378,6 +355,13 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
         return chunkPeers != null && !chunkPeers.isEmpty();
     }
 
+    private void notifyEviction(UUID worldId, long chunkKey) {
+        ChunkEvictionListener listener = evictionListener;
+        if (listener != null) {
+            listener.onChunkEvicted(worldId, chunkKey);
+        }
+    }
+
     private ChunkReplicationState stateFor(String peerName, long chunkKey, boolean create) {
         if (create) {
             Map<Long, ChunkReplicationState> chunks = peerStates.computeIfAbsent(peerName, ignored -> new ConcurrentHashMap<>());
@@ -410,26 +394,10 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
         return worldMap.get(chunkKey);
     }
 
-    private void cacheCanonicalHash(String peerName, long chunkKey, byte[] payload) {
-        if (payload == null) {
-            return;
-        }
+    private void cacheCanonicalHash(String peerName, long chunkKey, long hash) {
         Map<Long, CanonicalHashCache> hashMap = peerHashes.computeIfAbsent(peerName, ignored -> new ConcurrentHashMap<>());
         CanonicalHashCache cache = hashMap.computeIfAbsent(chunkKey, ignored -> new CanonicalHashCache());
-        cache.lastBulkPayload = payload;
-        cache.hash = hashOfPayload(payload);
-        cache.dirty = false;
-    }
-
-    private static long hashOfPayload(byte[] payload) {
-        if (payload == null) {
-            return 0L;
-        }
-        try {
-            return ViewSlice.read(new DataInputStream(new ByteArrayInputStream(payload))).contentHash();
-        } catch (IOException e) {
-            return 0L;
-        }
+        cache.hash = hash;
     }
 
     private void markHashDirty(String peerName, long chunkKey) {
@@ -439,7 +407,7 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
         }
         CanonicalHashCache cache = hashMap.get(chunkKey);
         if (cache != null) {
-            cache.dirty = true;
+            cache.hash = 0L;
         }
     }
 }

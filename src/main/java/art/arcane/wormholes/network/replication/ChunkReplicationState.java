@@ -1,5 +1,7 @@
 package art.arcane.wormholes.network.replication;
 
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -14,6 +16,7 @@ public final class ChunkReplicationState {
     private final ConcurrentLinkedQueue<LightDiff> pendingLights = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<BlockEntityDiff> pendingEntities = new ConcurrentLinkedQueue<>();
     private final AtomicLong queuedDiffCount = new AtomicLong(0L);
+    private final Set<Integer> droppedLightSections = ConcurrentHashMap.newKeySet();
 
     public ChunkReplicationState(String peerName, long chunkKey) {
         this.peerName = peerName;
@@ -64,6 +67,7 @@ public final class ChunkReplicationState {
         pendingLights.clear();
         pendingEntities.clear();
         queuedDiffCount.set(0L);
+        droppedLightSections.clear();
     }
 
     public boolean isBulkSent() {
@@ -80,10 +84,16 @@ public final class ChunkReplicationState {
     }
 
     public boolean appendLight(LightDiff diff, long capacity) {
+        int sectionKey = (diff.sectionY() << 1) | (diff.lightType() & 1);
         if (queuedDiffCount.get() >= capacity) {
+            droppedLightSections.add(sectionKey);
             return false;
         }
-        pendingLights.offer(diff);
+        LightDiff queued = diff;
+        if (droppedLightSections.remove(sectionKey) && diff.sparseCells() != null) {
+            queued = LightDiff.pending(diff.sectionY(), diff.lightType(), diff.data(), null);
+        }
+        pendingLights.offer(queued);
         queuedDiffCount.incrementAndGet();
         return true;
     }

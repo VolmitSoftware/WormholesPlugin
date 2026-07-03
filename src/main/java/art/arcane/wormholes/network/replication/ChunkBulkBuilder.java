@@ -14,9 +14,11 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class ChunkBulkBuilder {
     private final Map<BlockData, String> blockDataStrings;
+    private final Map<Biome, String> biomeStrings = new ConcurrentHashMap<>();
 
     public ChunkBulkBuilder(Map<BlockData, String> blockDataStrings) {
         this.blockDataStrings = blockDataStrings;
@@ -43,7 +45,6 @@ public final class ChunkBulkBuilder {
         HashMap<String, Integer> biomePaletteLookup = new HashMap<>(16);
         short[] indices = new short[cells];
         byte[] light = new byte[cells];
-        short[] biomes = new short[cells];
 
         int cell = 0;
         for (int y = minY; y <= maxY; y++) {
@@ -60,15 +61,6 @@ public final class ChunkBulkBuilder {
                         paletteLookup.put(stateString, paletteIndex);
                     }
                     indices[cell] = (short) paletteIndex.intValue();
-                    Biome biome = snapshot.getBiome(lx, y, lz);
-                    String biomeString = biome.getKey().asString();
-                    Integer biomePaletteIndex = biomePaletteLookup.get(biomeString);
-                    if (biomePaletteIndex == null) {
-                        biomePaletteIndex = biomePalette.size();
-                        biomePalette.add(biomeString);
-                        biomePaletteLookup.put(biomeString, biomePaletteIndex);
-                    }
-                    biomes[cell] = (short) biomePaletteIndex.intValue();
                     int sky = snapshot.getBlockSkyLight(lx, y, lz);
                     int emitted = snapshot.getBlockEmittedLight(lx, y, lz);
                     light[cell] = (byte) (((sky & 0x0F) << 4) | (emitted & 0x0F));
@@ -77,11 +69,48 @@ public final class ChunkBulkBuilder {
             }
         }
 
+        short[] biomes = buildBiomeGrid(minX, minY, minZ, sizeX, sizeY, sizeZ, (localX, worldY, localZ) -> {
+            Biome biome = snapshot.getBiome(localX, worldY, localZ);
+            String biomeString = biomeStrings.computeIfAbsent(biome, b -> b.getKey().asString());
+            Integer biomePaletteIndex = biomePaletteLookup.get(biomeString);
+            if (biomePaletteIndex == null) {
+                biomePaletteIndex = biomePalette.size();
+                biomePalette.add(biomeString);
+                biomePaletteLookup.put(biomeString, biomePaletteIndex);
+            }
+            return (short) biomePaletteIndex.intValue();
+        });
+
         return new ViewSlice(minX, minY, minZ, sizeX, sizeY, sizeZ, palette, indices, light, biomePalette, biomes);
     }
 
+    @FunctionalInterface
+    interface QuartBiomeResolver {
+        short paletteIndexFor(int localX, int worldY, int localZ);
+    }
+
+    static short[] buildBiomeGrid(int minX, int minY, int minZ, int sizeX, int sizeY, int sizeZ, QuartBiomeResolver resolver) {
+        int gridSizeX = ViewSlice.biomeGridSpan(minX, sizeX);
+        int gridSizeY = ViewSlice.biomeGridSpan(minY, sizeY);
+        int gridSizeZ = ViewSlice.biomeGridSpan(minZ, sizeZ);
+        short[] biomes = new short[gridSizeX * gridSizeY * gridSizeZ];
+        int grid = 0;
+        for (int gy = 0; gy < gridSizeY; gy++) {
+            int sy = Math.max(minY, ((minY >> 2) + gy) << 2);
+            for (int gz = 0; gz < gridSizeZ; gz++) {
+                int sz = Math.max(minZ, ((minZ >> 2) + gz) << 2);
+                for (int gx = 0; gx < gridSizeX; gx++) {
+                    int sx = Math.max(minX, ((minX >> 2) + gx) << 2);
+                    biomes[grid] = resolver.paletteIndexFor(sx & 0xF, sy, sz & 0xF);
+                    grid++;
+                }
+            }
+        }
+        return biomes;
+    }
+
     public static byte[] encodeSliceBytes(ViewSlice slice) throws IOException {
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream(1024);
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream(slice.cellCount() * 3 + 2048);
         DataOutputStream out = new DataOutputStream(buffer);
         slice.write(out);
         out.flush();

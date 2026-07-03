@@ -1,5 +1,8 @@
 package art.arcane.wormholes.network;
 
+import com.github.luben.zstd.Zstd;
+import com.github.luben.zstd.ZstdCompressCtx;
+import com.github.luben.zstd.ZstdDictCompress;
 import com.github.luben.zstd.ZstdDictTrainer;
 
 import java.io.IOException;
@@ -18,20 +21,20 @@ public final class CompressionDictionary {
     private final byte[] hash;
     private final int version;
 
-    private CompressionDictionary(byte[] dictBytes, byte[] hash, int version) {
+    private CompressionDictionary(byte[] dictBytes, byte[] hash) {
         this.dictBytes = dictBytes;
         this.hash = hash;
-        this.version = version;
+        this.version = deriveVersion(hash);
     }
 
-    public static CompressionDictionary of(byte[] dictBytes, int version) {
+    public static CompressionDictionary of(byte[] dictBytes) {
         if (dictBytes == null || dictBytes.length == 0) {
             throw new IllegalArgumentException("empty dictionary bytes");
         }
-        return new CompressionDictionary(dictBytes.clone(), sha256(dictBytes), version);
+        return new CompressionDictionary(dictBytes.clone(), sha256(dictBytes));
     }
 
-    public static CompressionDictionary train(List<byte[]> samples, int targetSize, int version) {
+    public static CompressionDictionary train(List<byte[]> samples, int targetSize) {
         if (samples == null || samples.isEmpty()) {
             throw new IllegalStateException("no samples available for dictionary training");
         }
@@ -59,7 +62,47 @@ public final class CompressionDictionary {
         if (dictBytes.length == 0) {
             throw new IllegalStateException("zstd dictionary training produced empty result");
         }
-        return new CompressionDictionary(dictBytes, sha256(dictBytes), version);
+        return new CompressionDictionary(dictBytes, sha256(dictBytes));
+    }
+
+    public static CompressionDictionary load(Path file) throws IOException {
+        byte[] bytes = Files.readAllBytes(file);
+        if (bytes.length == 0) {
+            throw new IOException("empty dictionary file: " + file);
+        }
+        return new CompressionDictionary(bytes, sha256(bytes));
+    }
+
+    public static long compressedSizeSum(List<byte[]> samples, byte[] dictBytes, int level) {
+        long total = 0L;
+        ZstdCompressCtx ctx = new ZstdCompressCtx();
+        ZstdDictCompress dict = null;
+        try {
+            dict = new ZstdDictCompress(dictBytes, level);
+            ctx.setLevel(level);
+            ctx.loadDict(dict);
+            for (byte[] sample : samples) {
+                if (sample == null || sample.length == 0) {
+                    continue;
+                }
+                byte[] out = new byte[(int) Zstd.compressBound(sample.length)];
+                long written = ctx.compressByteArray(out, 0, out.length, sample, 0, sample.length);
+                total += Zstd.isError(written) ? sample.length : written;
+            }
+        } finally {
+            ctx.close();
+            if (dict != null) {
+                dict.close();
+            }
+        }
+        return total;
+    }
+
+    public static boolean sameHash(byte[] left, byte[] right) {
+        if (left == null || right == null || left.length != right.length) {
+            return false;
+        }
+        return MessageDigest.isEqual(left, right);
     }
 
     public byte[] bytes() {
@@ -76,10 +119,6 @@ public final class CompressionDictionary {
 
     public int version() {
         return version;
-    }
-
-    public CompressionDictionary withVersion(int newVersion) {
-        return new CompressionDictionary(dictBytes, hash, newVersion);
     }
 
     public Path save(Path dictDirectory) throws IOException {
@@ -99,19 +138,12 @@ public final class CompressionDictionary {
         return target;
     }
 
-    public static CompressionDictionary load(Path file, int version) throws IOException {
-        byte[] bytes = Files.readAllBytes(file);
-        if (bytes.length == 0) {
-            throw new IOException("empty dictionary file: " + file);
-        }
-        return new CompressionDictionary(bytes, sha256(bytes), version);
-    }
-
-    public static boolean sameHash(byte[] left, byte[] right) {
-        if (left == null || right == null || left.length != right.length) {
-            return false;
-        }
-        return MessageDigest.isEqual(left, right);
+    private static int deriveVersion(byte[] hash) {
+        int version = ((hash[0] & 0x7F) << 24)
+            | ((hash[1] & 0xFF) << 16)
+            | ((hash[2] & 0xFF) << 8)
+            | (hash[3] & 0xFF);
+        return version == 0 ? 1 : version;
     }
 
     private static byte[] sha256(byte[] data) {

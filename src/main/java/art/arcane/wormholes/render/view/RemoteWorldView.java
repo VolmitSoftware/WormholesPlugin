@@ -20,6 +20,7 @@ public final class RemoteWorldView implements ProjectionWorldView {
     private int cachedChunkZ = Integer.MIN_VALUE;
     private RemoteViewCache.DecodedSlice cachedSlice;
     private boolean cachedSliceValid;
+    private long cachedSliceRevision;
 
     public RemoteWorldView(RemoteViewCache.RemoteView view, BlockData fallback) {
         this.view = view;
@@ -29,7 +30,8 @@ public final class RemoteWorldView implements ProjectionWorldView {
     private RemoteViewCache.DecodedSlice decodedSliceAt(int x, int z) {
         int chunkX = x >> 4;
         int chunkZ = z >> 4;
-        if (cachedSliceValid && chunkX == cachedChunkX && chunkZ == cachedChunkZ) {
+        long revision = view.getRevision();
+        if (cachedSliceValid && chunkX == cachedChunkX && chunkZ == cachedChunkZ && cachedSliceRevision == revision) {
             return cachedSlice;
         }
         RemoteViewCache.DecodedSlice slice = view.sliceAt(x, z);
@@ -37,6 +39,7 @@ public final class RemoteWorldView implements ProjectionWorldView {
         cachedChunkZ = chunkZ;
         cachedSlice = slice;
         cachedSliceValid = true;
+        cachedSliceRevision = revision;
         return slice;
     }
 

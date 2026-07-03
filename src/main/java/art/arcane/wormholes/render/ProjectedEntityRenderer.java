@@ -12,7 +12,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -33,8 +35,10 @@ import com.github.retrooper.packetevents.protocol.entity.type.EntityTypes;
 import com.github.retrooper.packetevents.protocol.player.Equipment;
 import com.github.retrooper.packetevents.protocol.player.GameMode;
 import com.github.retrooper.packetevents.protocol.player.TextureProperty;
+import com.github.retrooper.packetevents.protocol.player.User;
 import com.github.retrooper.packetevents.protocol.player.UserProfile;
 import com.github.retrooper.packetevents.util.Vector3d;
+import com.github.retrooper.packetevents.wrapper.PacketWrapper;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityAnimation;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityAnimation.EntityAnimationType;
@@ -80,8 +84,12 @@ public final class ProjectedEntityRenderer {
     private static final byte CAPE_PART_BIT = 0x01;
     private static final double MIN_POSITION_DELTA_SQUARED = 1.0E-6D;
     private static final double MAX_RELATIVE_MOVE_DELTA = 7.75D;
-    private static final Map<UUID, EntityCandidateSnapshot> REMOTE_ENTITY_CACHE = new HashMap<UUID, EntityCandidateSnapshot>();
-    private static final Map<UUID, EntityCandidateSnapshot> LOCAL_ENTITY_CACHE = new HashMap<UUID, EntityCandidateSnapshot>();
+    private static final long ENTITY_STATE_REFRESH_MILLIS = 500L;
+    private static final long STATIC_CACHE_EVICT_MILLIS = 10_000L;
+    private static final Map<UUID, EntityCandidateSnapshot> REMOTE_ENTITY_CACHE = new ConcurrentHashMap<UUID, EntityCandidateSnapshot>();
+    private static final Map<UUID, EntityCandidateSnapshot> LOCAL_ENTITY_CACHE = new ConcurrentHashMap<UUID, EntityCandidateSnapshot>();
+    private static final Map<UUID, EntityStateSnapshot> ENTITY_STATE_CACHE = new ConcurrentHashMap<UUID, EntityStateSnapshot>();
+    private static final AtomicLong STATIC_CACHE_SWEEP_DUE = new AtomicLong(0L);
 
     private final Map<UUID, SpoofedEntity> spoofed;
     private final Map<UUID, Entity> hiddenLocalEntities;
@@ -90,9 +98,11 @@ public final class ProjectedEntityRenderer {
     private final Set<UUID> visibleLocalHides;
     private final double[] scratchVisiblePoint;
     private final double[] scratchDirection;
+    private final double[] scratchLook;
     private boolean metadataBridgeFailed;
     private boolean flipTeamSent;
     private final Set<String> flipTeamMembers;
+    private User batchUser;
 
     public ProjectedEntityRenderer() {
         this.spoofed = new HashMap<UUID, SpoofedEntity>(16);
@@ -102,14 +112,32 @@ public final class ProjectedEntityRenderer {
         this.visibleLocalHides = new HashSet<UUID>(16);
         this.scratchVisiblePoint = new double[3];
         this.scratchDirection = new double[3];
+        this.scratchLook = new double[3];
         this.metadataBridgeFailed = false;
         this.flipTeamSent = false;
         this.flipTeamMembers = new HashSet<String>(4);
+        this.batchUser = null;
     }
 
-    private static void sendCounted(Player observer, com.github.retrooper.packetevents.wrapper.PacketWrapper<?> packet) {
+    private void sendCounted(Player observer, PacketWrapper<?> packet) {
         WormholesTelemetry.countPacket();
+        if (batchUser != null) {
+            batchUser.writePacket(packet);
+            return;
+        }
         PacketEvents.getAPI().getPlayerManager().sendPacket(observer, packet);
+    }
+
+    private void beginBatch(Player observer) {
+        batchUser = observer == null ? null : PacketEvents.getAPI().getPlayerManager().getUser(observer);
+    }
+
+    private void endBatch() {
+        User user = batchUser;
+        batchUser = null;
+        if (user != null) {
+            user.flushPackets();
+        }
     }
 
     public int getSpoofedCount() {
@@ -135,31 +163,36 @@ public final class ProjectedEntityRenderer {
             return;
         }
 
-        double range = Math.min(Settings.ENTITY_SPOOF_RANGE, projectionDepth);
-        visible.clear();
-        visibleLocalHides.clear();
-        hideLocalEntities(observer, localPortal, frustum, range, projectionDepth);
-        boolean upsideDown = remotePortal == localPortal
-            ? PortalCoordMap.reflectionFlipsWorldUp(localPortal.getFrame())
-            : PortalCoordMap.transformFlipsWorldUp(remoteViewFrame, localViewFrame);
-        int count = 0;
+        beginBatch(observer);
+        try {
+            double range = Math.min(Settings.ENTITY_SPOOF_RANGE, projectionDepth);
+            visible.clear();
+            visibleLocalHides.clear();
+            hideLocalEntities(observer, localPortal, frustum, range, projectionDepth);
+            boolean upsideDown = remotePortal == localPortal
+                ? PortalCoordMap.reflectionFlipsWorldUp(localPortal.getFrame())
+                : PortalCoordMap.transformFlipsWorldUp(remoteViewFrame, localViewFrame);
+            int count = 0;
 
-        for (Entity entity : nearbyRemoteEntities(remotePortal, remoteCenter, range)) {
-            if (count >= Settings.MAX_SPOOFED_ENTITIES) {
-                break;
+            for (Entity entity : nearbyRemoteEntities(remotePortal, remoteCenter, range)) {
+                if (count >= Settings.MAX_SPOOFED_ENTITIES) {
+                    break;
+                }
+                if (!canSpoof(entity)) {
+                    continue;
+                }
+                if (!projectEntity(observer, localPortal, remotePortal, localViewFrame, remoteViewFrame, frustum, entity, upsideDown)) {
+                    continue;
+                }
+                visible.add(entity.getUniqueId());
+                count++;
             }
-            if (!canSpoof(entity)) {
-                continue;
-            }
-            if (!projectEntity(observer, localPortal, remotePortal, localViewFrame, remoteViewFrame, frustum, entity, upsideDown)) {
-                continue;
-            }
-            visible.add(entity.getUniqueId());
-            count++;
+
+            destroyHidden(observer);
+            restoreLocalEntities(observer);
+        } finally {
+            endBatch();
         }
-
-        destroyHidden(observer);
-        restoreLocalEntities(observer);
     }
 
     public void applyRemote(Player observer,
@@ -181,32 +214,40 @@ public final class ProjectedEntityRenderer {
             return;
         }
 
-        double range = Math.min(Settings.ENTITY_SPOOF_RANGE, projectionDepth);
-        visible.clear();
-        visibleLocalHides.clear();
-        hideLocalEntities(observer, localPortal, frustum, range, projectionDepth);
-        boolean upsideDown = PortalCoordMap.transformFlipsWorldUp(remoteViewFrame, localViewFrame);
-        int count = 0;
+        beginBatch(observer);
+        try {
+            double range = Math.min(Settings.ENTITY_SPOOF_RANGE, projectionDepth);
+            visible.clear();
+            visibleLocalHides.clear();
+            hideLocalEntities(observer, localPortal, frustum, range, projectionDepth);
+            boolean upsideDown = PortalCoordMap.transformFlipsWorldUp(remoteViewFrame, localViewFrame);
+            int count = 0;
 
-        for (EntityVisual visual : remoteView.getEntities()) {
-            if (count >= Settings.MAX_SPOOFED_ENTITIES) {
-                break;
+            for (EntityVisual visual : remoteView.getEntities()) {
+                if (count >= Settings.MAX_SPOOFED_ENTITIES) {
+                    break;
+                }
+                if (!projectRemoteVisual(observer, localPortal, remoteOriginX, remoteOriginY, remoteOriginZ, localViewFrame, remoteViewFrame, frustum, remoteView, visual, upsideDown)) {
+                    continue;
+                }
+                visible.add(visual.id());
+                count++;
             }
-            if (!projectRemoteVisual(observer, localPortal, remoteOriginX, remoteOriginY, remoteOriginZ, localViewFrame, remoteViewFrame, frustum, remoteView, visual, upsideDown)) {
-                continue;
-            }
-            visible.add(visual.id());
-            count++;
+
+            applyEntityRelationships(observer, remoteView.getEntities());
+            destroyHidden(observer);
+            restoreLocalEntities(observer);
+        } finally {
+            endBatch();
         }
-
-        applyEntityRelationships(observer, remoteView.getEntities());
-        destroyHidden(observer);
-        restoreLocalEntities(observer);
     }
 
     private static final int[] NO_PASSENGERS = new int[0];
 
     private void applyEntityRelationships(Player observer, List<EntityVisual> visuals) {
+        if (!hasRelationshipWork(visuals)) {
+            return;
+        }
         Map<UUID, List<Integer>> ridersByVehicle = new HashMap<UUID, List<Integer>>();
         for (EntityVisual visual : visuals) {
             UUID vehicle = visual.passengerOf();
@@ -256,6 +297,24 @@ public final class ProjectedEntityRenderer {
                 sendCounted(observer, new WrapperPlayServerAttachEntity(mob.fakeId, holderFakeId, true));
             }
         }
+    }
+
+    private boolean hasRelationshipWork(List<EntityVisual> visuals) {
+        for (EntityVisual visual : visuals) {
+            if (visual.passengerOf() != null || visual.leashHolder() != null) {
+                return true;
+            }
+        }
+        for (SpoofedEntity state : spoofed.values()) {
+            if (state.leashedToFakeId >= 0) {
+                return true;
+            }
+            int[] lastPassengers = state.lastPassengers;
+            if (lastPassengers != null && lastPassengers.length > 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean projectRemoteVisual(Player observer,
@@ -313,8 +372,9 @@ public final class ProjectedEntityRenderer {
             sendHeadLook(observer, state, yaw);
             state.remoteStateVersion = remoteView.getStateVersion(visual.id());
             sendRemoteEntityState(observer, remoteView, visual, state);
-            state.resetMetadataCooldown();
-            Wormholes.v("[spoof] SPAWN " + (visual.isPlayer() ? "player" : "entity") + " src=" + visual.id() + " type=" + visual.typeKey() + " fakeId=" + state.fakeId + " -> " + observer.getName());
+            if (Settings.DEBUG) {
+                Wormholes.v("[spoof] SPAWN " + (visual.isPlayer() ? "player" : "entity") + " src=" + visual.id() + " type=" + visual.typeKey() + " fakeId=" + state.fakeId + " -> " + observer.getName());
+            }
             return true;
         }
 
@@ -328,10 +388,9 @@ public final class ProjectedEntityRenderer {
             sendCounted(observer, new WrapperPlayServerEntityVelocity(state.fakeId, velocity));
         }
         int stateVersion = remoteView.getStateVersion(visual.id());
-        if (stateVersion != state.remoteStateVersion || state.shouldRefreshMetadata()) {
+        if (stateVersion != state.remoteStateVersion) {
             state.remoteStateVersion = stateVersion;
             sendRemoteEntityState(observer, remoteView, visual, state);
-            state.resetMetadataCooldown();
         }
         return true;
     }
@@ -427,7 +486,12 @@ public final class ProjectedEntityRenderer {
 
     public void close(Player observer) {
         if (observer != null && observer.isOnline()) {
-            destroySpoofedEntities(observer, spoofed.values());
+            beginBatch(observer);
+            try {
+                destroySpoofedEntities(observer, spoofed.values());
+            } finally {
+                endBatch();
+            }
             showAllLocalEntities(observer);
         }
         spoofed.clear();
@@ -483,14 +547,16 @@ public final class ProjectedEntityRenderer {
         PortalFrame mirrorPlaneFrame = mirror ? localPortal.getFrame() : null;
         Vector mirrorPlaneOrigin = mirror ? localPortal.getOrigin() : null;
 
-        Location remoteLocation = entity.getLocation();
-        double visibleY = remoteLocation.getY() + (entity.getHeight() * 0.5D);
+        double entityX = entity.getX();
+        double entityZ = entity.getZ();
+        double halfHeight = entity.getHeight() * 0.5D;
+        double visibleY = entity.getY() + halfHeight;
         if (mirror) {
-            PortalCoordMap.reflectPointAcrossPlaneInto(remoteLocation.getX(), visibleY, remoteLocation.getZ(),
+            PortalCoordMap.reflectPointAcrossPlaneInto(entityX, visibleY, entityZ,
                 mirrorPlaneOrigin.getX(), mirrorPlaneOrigin.getY(), mirrorPlaneOrigin.getZ(),
                 mirrorPlaneFrame, scratchVisiblePoint);
         } else {
-            PortalCoordMap.transformPointInto(remoteLocation.getX(), visibleY, remoteLocation.getZ(),
+            PortalCoordMap.transformPointInto(entityX, visibleY, entityZ,
                 remotePortal.getOrigin().getX(), remotePortal.getOrigin().getY(), remotePortal.getOrigin().getZ(),
                 localPortal.getOrigin().getX(), localPortal.getOrigin().getY(), localPortal.getOrigin().getZ(),
                 remoteViewFrame, localViewFrame, scratchVisiblePoint);
@@ -500,16 +566,16 @@ public final class ProjectedEntityRenderer {
             return false;
         }
 
-        Vector direction = lookDirection(entity, remoteLocation);
+        lookDirectionInto(entity.getYaw(), entity.getPitch(), scratchLook);
         if (mirror) {
-            PortalCoordMap.reflectVectorAcrossPlaneInto(direction.getX(), direction.getY(), direction.getZ(),
+            PortalCoordMap.reflectVectorAcrossPlaneInto(scratchLook[0], scratchLook[1], scratchLook[2],
                 mirrorPlaneFrame, scratchDirection);
         } else {
-            remoteViewFrame.transformVectorInto(direction.getX(), direction.getY(), direction.getZ(), localViewFrame, scratchDirection);
+            remoteViewFrame.transformVectorInto(scratchLook[0], scratchLook[1], scratchLook[2], localViewFrame, scratchDirection);
         }
         float yaw = yaw(scratchDirection[0], scratchDirection[2]);
         float pitch = pitch(scratchDirection[0], scratchDirection[1], scratchDirection[2]);
-        double visualBaseY = scratchVisiblePoint[1] - (entity.getHeight() * 0.5D);
+        double visualBaseY = scratchVisiblePoint[1] - halfHeight;
         Vector3d position = new Vector3d(scratchVisiblePoint[0], visualBaseY, scratchVisiblePoint[2]);
         Vector3d velocity = mirror
             ? mirroredVelocity(entity, mirrorPlaneFrame)
@@ -584,11 +650,13 @@ public final class ProjectedEntityRenderer {
         }
     }
 
-    private Vector lookDirection(Entity entity, Location fallback) {
-        if (entity instanceof LivingEntity) {
-            return ((LivingEntity) entity).getEyeLocation().getDirection();
-        }
-        return fallback.getDirection();
+    static void lookDirectionInto(float yaw, float pitch, double[] out) {
+        double pitchRadians = Math.toRadians(pitch);
+        double yawRadians = Math.toRadians(yaw);
+        double horizontal = Math.cos(pitchRadians);
+        out[0] = -horizontal * Math.sin(yawRadians);
+        out[1] = -Math.sin(pitchRadians);
+        out[2] = horizontal * Math.cos(yawRadians);
     }
 
     private void sendHeadLook(Player observer, SpoofedEntity state, float yaw) {
@@ -604,8 +672,8 @@ public final class ProjectedEntityRenderer {
             return;
         }
 
-        int[] ids = new int[spoofed.size()];
-        List<UUID> playerInfos = new ArrayList<UUID>();
+        int[] ids = null;
+        List<UUID> playerInfos = null;
         int count = 0;
         Iterator<Map.Entry<UUID, SpoofedEntity>> iterator = spoofed.entrySet().iterator();
         while (iterator.hasNext()) {
@@ -614,12 +682,18 @@ public final class ProjectedEntityRenderer {
                 continue;
             }
             SpoofedEntity state = entry.getValue();
+            if (ids == null) {
+                ids = new int[spoofed.size()];
+                playerInfos = new ArrayList<UUID>(4);
+            }
             ids[count] = state.fakeId;
             count++;
             if (state.playerEntry) {
                 playerInfos.add(state.fakeUuid);
             }
-            Wormholes.v("[spoof] CULL " + (state.playerEntry ? "player" : "entity") + " src=" + entry.getKey() + " fakeId=" + state.fakeId + " -> " + observer.getName() + " (no longer in view)");
+            if (Settings.DEBUG) {
+                Wormholes.v("[spoof] CULL " + (state.playerEntry ? "player" : "entity") + " src=" + entry.getKey() + " fakeId=" + state.fakeId + " -> " + observer.getName() + " (no longer in view)");
+            }
             iterator.remove();
         }
 
@@ -627,8 +701,7 @@ public final class ProjectedEntityRenderer {
             return;
         }
 
-        int[] trimmed = new int[count];
-        System.arraycopy(ids, 0, trimmed, 0, count);
+        int[] trimmed = count == ids.length ? ids : Arrays.copyOf(ids, count);
         sendCounted(observer, new WrapperPlayServerDestroyEntities(trimmed));
         if (!playerInfos.isEmpty()) {
             sendCounted(observer, new WrapperPlayServerPlayerInfoRemove(playerInfos));
@@ -656,33 +729,58 @@ public final class ProjectedEntityRenderer {
     }
 
     private void sendEntityState(Player observer, Entity entity, SpoofedEntity state, boolean force) {
-        sendEntityMetadata(observer, entity, state, force);
-        sendEntityEquipment(observer, entity, state, force);
+        EntityStateSnapshot snapshot = entityStateSnapshot(entity);
+        sendEntityMetadata(observer, entity, state, snapshot, force);
+        sendEntityEquipment(observer, state, snapshot, force);
     }
 
-    private void sendEntityMetadata(Player observer, Entity entity, SpoofedEntity state, boolean force) {
+    private EntityStateSnapshot entityStateSnapshot(Entity entity) {
+        long now = System.currentTimeMillis();
+        sweepStaticCaches(now);
+        UUID entityId = entity.getUniqueId();
+        EntityStateSnapshot cached = ENTITY_STATE_CACHE.get(entityId);
+        if (cached != null && now - cached.stampMillis <= ENTITY_STATE_REFRESH_MILLIS) {
+            return cached;
+        }
+        List<EntityData<?>> metadata = List.of();
+        String metadataSig = "";
+        if (!metadataBridgeFailed) {
+            try {
+                metadata = SpigotConversionUtil.getEntityMetadata(entity);
+                metadataSig = metadataSignature(metadata);
+            } catch (RuntimeException ex) {
+                metadataBridgeFailed = true;
+                metadata = List.of();
+                metadataSig = "";
+                Wormholes.w("[ProjectedEntityRenderer] disabled entity metadata bridge after failure for " + entity.getType() + " " + entity.getUniqueId());
+                ex.printStackTrace();
+            }
+        }
+        List<Equipment> equipment = PacketBlobs.collectEquipment(entity);
+        String equipmentSig = equipment.isEmpty() ? "" : equipmentSignature(equipment);
+        EntityStateSnapshot next = new EntityStateSnapshot(now, metadata, metadataSig, equipment, equipmentSig);
+        ENTITY_STATE_CACHE.put(entityId, next);
+        return next;
+    }
+
+    private void sendEntityMetadata(Player observer, Entity entity, SpoofedEntity state, EntityStateSnapshot snapshot, boolean force) {
         if (metadataBridgeFailed) {
             return;
         }
-        try {
-            List<EntityData<?>> metadata = SpigotConversionUtil.getEntityMetadata(entity);
-            if (state.upsideDown) {
-                metadata = withUpsideDownMetadata(entity, metadata);
-            }
-            if (metadata.isEmpty()) {
-                return;
-            }
-            String signature = metadataSignature(metadata);
-            if (!force && signature.equals(state.lastMetadataSignature)) {
-                return;
-            }
-            state.lastMetadataSignature = signature;
-            sendCounted(observer, new WrapperPlayServerEntityMetadata(state.fakeId, metadata));
-        } catch (RuntimeException ex) {
-            metadataBridgeFailed = true;
-            Wormholes.w("[ProjectedEntityRenderer] disabled entity metadata bridge after failure for " + entity.getType() + " " + entity.getUniqueId());
-            ex.printStackTrace();
+        List<EntityData<?>> metadata = snapshot.metadata;
+        String signature = snapshot.metadataSig;
+        if (state.upsideDown) {
+            metadata = withUpsideDownMetadata(entity, metadata);
+            signature = metadataSignature(metadata);
         }
+        if (metadata.isEmpty()) {
+            return;
+        }
+        if (!force && signature.equals(state.lastMetadataSignature)) {
+            return;
+        }
+        state.lastMetadataSignature = signature;
+        sendCounted(observer, new WrapperPlayServerEntityMetadata(state.fakeId, metadata));
     }
 
     private static String metadataSignature(List<EntityData<?>> metadata) {
@@ -728,17 +826,15 @@ public final class ProjectedEntityRenderer {
         return FLIP_NAME.equals(name) || FLIP_NAME_ALT.equals(name);
     }
 
-    private void sendEntityEquipment(Player observer, Entity entity, SpoofedEntity state, boolean force) {
-        List<Equipment> packetEquipment = PacketBlobs.collectEquipment(entity);
-        if (packetEquipment.isEmpty()) {
+    private void sendEntityEquipment(Player observer, SpoofedEntity state, EntityStateSnapshot snapshot, boolean force) {
+        if (snapshot.equipment.isEmpty()) {
             return;
         }
-        String signature = equipmentSignature(packetEquipment);
-        if (!force && signature.equals(state.lastEquipmentSignature)) {
+        if (!force && snapshot.equipmentSig.equals(state.lastEquipmentSignature)) {
             return;
         }
-        state.lastEquipmentSignature = signature;
-        sendCounted(observer, new WrapperPlayServerEntityEquipment(state.fakeId, packetEquipment));
+        state.lastEquipmentSignature = snapshot.equipmentSig;
+        sendCounted(observer, new WrapperPlayServerEntityEquipment(state.fakeId, snapshot.equipment));
     }
 
     private static String equipmentSignature(List<Equipment> equipment) {
@@ -835,8 +931,10 @@ public final class ProjectedEntityRenderer {
         }
         PortalFrame frame = localPortal.getFrame();
         Vector origin = localPortal.getOrigin();
-        Location eye = observer.getEyeLocation();
-        double eyeDot = dot(eye.getX() - origin.getX(), eye.getY() - origin.getY(), eye.getZ() - origin.getZ(), frame);
+        double eyeX = observer.getX();
+        double eyeY = observer.getY() + observer.getEyeHeight();
+        double eyeZ = observer.getZ();
+        double eyeDot = dot(eyeX - origin.getX(), eyeY - origin.getY(), eyeZ - origin.getZ(), frame);
         boolean eyeFrontSide = eyeDot >= 0.0D;
         double clearance = PortalProjector.portalPlaneClearance(localPortal.getStructure().getArea(), frame);
         double maxDepth = projectionDepth + clearance;
@@ -868,9 +966,10 @@ public final class ProjectedEntityRenderer {
         if (entity.getUniqueId().equals(observer.getUniqueId())) {
             return false;
         }
-        Location location = entity.getLocation();
-        double centerY = location.getY() + (entity.getHeight() * 0.5D);
-        double signedDistance = dot(location.getX() - origin.getX(), centerY - origin.getY(), location.getZ() - origin.getZ(), frame);
+        double entityX = entity.getX();
+        double entityZ = entity.getZ();
+        double centerY = entity.getY() + (entity.getHeight() * 0.5D);
+        double signedDistance = dot(entityX - origin.getX(), centerY - origin.getY(), entityZ - origin.getZ(), frame);
         if (Math.abs(signedDistance) <= clearance || Math.abs(signedDistance) > maxDepth) {
             return false;
         }
@@ -878,7 +977,7 @@ public final class ProjectedEntityRenderer {
         if (entityFrontSide == eyeFrontSide) {
             return false;
         }
-        return frustum.containsPrimitive(location.getX(), centerY, location.getZ());
+        return frustum.containsPrimitive(entityX, centerY, entityZ);
     }
 
     private void restoreLocalEntities(Player observer) {
@@ -934,6 +1033,7 @@ public final class ProjectedEntityRenderer {
             return List.of();
         }
         long now = System.currentTimeMillis();
+        sweepStaticCaches(now);
         EntityCandidateSnapshot snapshot = cache.get(portal.getId());
         long maxAgeMillis = Math.max(1, Settings.ENTITY_CANDIDATE_CACHE_TICKS) * 50L;
         if (snapshot != null && snapshot.matches(center, range) && now - snapshot.createdAtMillis <= maxAgeMillis) {
@@ -943,6 +1043,16 @@ public final class ProjectedEntityRenderer {
         EntityCandidateSnapshot next = new EntityCandidateSnapshot(center, range, now, new ArrayList<Entity>(entities));
         cache.put(portal.getId(), next);
         return next.entities;
+    }
+
+    private static void sweepStaticCaches(long now) {
+        long due = STATIC_CACHE_SWEEP_DUE.get();
+        if (now < due || !STATIC_CACHE_SWEEP_DUE.compareAndSet(due, now + STATIC_CACHE_EVICT_MILLIS)) {
+            return;
+        }
+        REMOTE_ENTITY_CACHE.values().removeIf(candidate -> now - candidate.createdAtMillis > STATIC_CACHE_EVICT_MILLIS);
+        LOCAL_ENTITY_CACHE.values().removeIf(candidate -> now - candidate.createdAtMillis > STATIC_CACHE_EVICT_MILLIS);
+        ENTITY_STATE_CACHE.values().removeIf(snapshot -> now - snapshot.stampMillis > STATIC_CACHE_EVICT_MILLIS);
     }
 
     private EntityType packetEntityType(Entity entity) {
@@ -1103,6 +1213,22 @@ public final class ProjectedEntityRenderer {
 
         private void resetMetadataCooldown() {
             metadataRefreshPasses = METADATA_REFRESH_PASSES;
+        }
+    }
+
+    private static final class EntityStateSnapshot {
+        private final long stampMillis;
+        private final List<EntityData<?>> metadata;
+        private final String metadataSig;
+        private final List<Equipment> equipment;
+        private final String equipmentSig;
+
+        private EntityStateSnapshot(long stampMillis, List<EntityData<?>> metadata, String metadataSig, List<Equipment> equipment, String equipmentSig) {
+            this.stampMillis = stampMillis;
+            this.metadata = metadata;
+            this.metadataSig = metadataSig;
+            this.equipment = equipment;
+            this.equipmentSig = equipmentSig;
         }
     }
 

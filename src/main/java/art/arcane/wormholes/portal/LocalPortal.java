@@ -81,7 +81,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private PortalType type;
 	private UUID owner;
 	private ITunnel tunnel;
-	private boolean open;
+	private volatile boolean open;
+	private volatile boolean ambientAttended = true;
 	private boolean progressing;
 	private String progress;
 	private Player directionChanger;
@@ -241,14 +242,22 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void update()
 	{
+		ITunnel activeTunnel = tunnel;
+		IPortal destination = activeTunnel == null ? null : activeTunnel.getDestination();
+		boolean tunnelPresent = activeTunnel != null && destination != null;
+
 		if(isOpen())
 		{
-			playEffect(PortalEffect.AMBIENT_OPEN);
-			updateCaptures();
-
-			if(hasTunnel() && !getTunnel().isValid())
+			if(isAmbientAttended())
 			{
-				if(getTunnel().getTunnelType() != TunnelType.UNIVERSAL)
+				playEffect(PortalEffect.AMBIENT_OPEN);
+			}
+
+			updateCaptures(activeTunnel, tunnelPresent);
+
+			if(tunnelPresent && !activeTunnel.isValid())
+			{
+				if(activeTunnel.getTunnelType() != TunnelType.UNIVERSAL)
 				{
 					tunnel = null;
 				}
@@ -259,9 +268,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 		else
 		{
-			playEffect(PortalEffect.AMBIENT_CLOSED);
+			if(isAmbientAttended())
+			{
+				playEffect(PortalEffect.AMBIENT_CLOSED);
+			}
 
-			if((hasTunnel() && getTunnel().isValid()) || projectionMode == ProjectionMode.MIRROR)
+			if((tunnelPresent && activeTunnel.isValid()) || projectionMode == ProjectionMode.MIRROR)
 			{
 				open();
 			}
@@ -273,9 +285,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 	}
 
-	private void updateCaptures()
+	private void updateCaptures(ITunnel activeTunnel, boolean tunnelPresent)
 	{
-		if(!isOpen() || !hasTunnel())
+		if(!isOpen() || !tunnelPresent)
 		{
 			return;
 		}
@@ -323,7 +335,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				continue;
 			}
 
-			if(!canUseTunnel(i))
+			if(!canUseTunnel(i, activeTunnel))
 			{
 				rejectTraversal(i, traversive);
 				continue;
@@ -335,8 +347,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			}
 
 			markTeleportCooldown(entityId, now);
-			Wormholes.v("[cross] " + i.getName() + " crossing portal " + getId() + " -> " + (getTunnel() instanceof UniversalTunnel ? "CROSS-SERVER handoff" : "local teleport"));
-			pushTraversive(traversive);
+			Wormholes.v("[cross] " + i.getName() + " crossing portal " + getId() + " -> " + (activeTunnel instanceof UniversalTunnel ? "CROSS-SERVER handoff" : "local teleport"));
+			pushTraversive(traversive, activeTunnel);
 		}
 	}
 
@@ -400,17 +412,17 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		return new Traversive(i, getFrame().view(frontSide), getOrigin(), inPoint, velocity, start.getDirection(), frontSide);
 	}
 
-	private boolean canUseTunnel(Entity entity)
+	private boolean canUseTunnel(Entity entity, ITunnel activeTunnel)
 	{
 		if(!canDepart(entity))
 		{
 			return false;
 		}
-		if(!hasTunnel())
+		IPortal destination = activeTunnel == null ? null : activeTunnel.getDestination();
+		if(destination == null)
 		{
 			return false;
 		}
-		IPortal destination = getTunnel().getDestination();
 		if(destination instanceof ILocalPortal localDestination)
 		{
 			return localDestination.canArrive(entity);
@@ -418,9 +430,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		return true;
 	}
 
-	private void pushTraversive(Traversive traversive)
+	private void pushTraversive(Traversive traversive, ITunnel activeTunnel)
 	{
-		if(getTunnel() instanceof UniversalTunnel universal && Wormholes.traversalService != null && traversive.getObject() instanceof Entity entity)
+		if(activeTunnel instanceof UniversalTunnel universal && Wormholes.traversalService != null && traversive.getObject() instanceof Entity entity)
 		{
 			if(entity instanceof Player player)
 			{
@@ -431,7 +443,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			return;
 		}
 
-		getTunnel().push(traversive);
+		activeTunnel.push(traversive);
 	}
 
 	private void rejectTraversal(Entity entity, Traversive traversive)
@@ -484,6 +496,18 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	public void open()
 	{
 		setOpen(true);
+	}
+
+	@Override
+	public boolean isAmbientAttended()
+	{
+		return ambientAttended;
+	}
+
+	@Override
+	public void setAmbientAttended(boolean attended)
+	{
+		ambientAttended = attended;
 	}
 
 	@Override
@@ -2559,25 +2583,26 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	public boolean isInboundDisabledByOneWay()
 	{
-		if(!hasTunnel())
+		ITunnel activeTunnel = tunnel;
+		if(activeTunnel == null)
 		{
 			return false;
 		}
-		IPortal destination = getTunnel().getDestination();
-		if(!(destination instanceof ILocalPortal))
+		IPortal destination = activeTunnel.getDestination();
+		if(!(destination instanceof ILocalPortal localDestination))
 		{
 			return false;
 		}
-		ILocalPortal localDestination = (ILocalPortal) destination;
 		if(localDestination.getProjectionMode() != ProjectionMode.ONE_WAY)
 		{
 			return false;
 		}
-		if(!localDestination.hasTunnel())
+		ITunnel destinationTunnel = localDestination.getTunnel();
+		if(destinationTunnel == null)
 		{
 			return false;
 		}
-		IPortal destinationOfDestination = localDestination.getTunnel().getDestination();
+		IPortal destinationOfDestination = destinationTunnel.getDestination();
 		if(destinationOfDestination == null)
 		{
 			return false;

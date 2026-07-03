@@ -34,11 +34,11 @@ public final class LiveWorldView implements ProjectionWorldView {
         if (y < world.getMinHeight() || y > world.getMaxHeight() - 1) {
             return null;
         }
-        Block block = world.getBlockAt(x, y, z);
-        if (ProjectionWorldView.isAir(block.getType())) {
+        Material type = world.getType(x, y, z);
+        if (ProjectionWorldView.isAir(type)) {
             return sharedAir;
         }
-        return block.getBlockData();
+        return world.getBlockData(x, y, z);
     }
 
     @Override

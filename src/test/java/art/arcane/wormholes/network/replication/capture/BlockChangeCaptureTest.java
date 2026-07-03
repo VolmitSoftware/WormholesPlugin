@@ -90,16 +90,8 @@ class BlockChangeCaptureTest {
         private final List<BlockChange> blocks = new ArrayList<>();
 
         @Override
-        public void onBlockChange(World world, long chunkKey, BlockChange change) {
-            blocks.add(change);
-        }
-
-        @Override
-        public void onLightChange(World world, long chunkKey, LightDiff diff) {
-        }
-
-        @Override
-        public void onBlockEntityChange(World world, long chunkKey, BlockEntityDiff diff) {
+        public void onChunkDrain(World world, long chunkKey, List<BlockChange> drainedBlocks, List<LightDiff> drainedLights, List<BlockEntityDiff> drainedEntities) {
+            blocks.addAll(drainedBlocks);
         }
 
         @Override
@@ -114,6 +106,9 @@ class BlockChangeCaptureTest {
             (proxy, method, args) -> {
                 if ("getAsString".equals(method.getName())) {
                     return stateString;
+                }
+                if ("clone".equals(method.getName())) {
+                    return proxy;
                 }
                 if ("equals".equals(method.getName())) {
                     return proxy == args[0];

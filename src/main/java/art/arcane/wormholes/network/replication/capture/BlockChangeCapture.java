@@ -34,6 +34,8 @@ import org.bukkit.event.world.StructureGrowEvent;
 import java.util.List;
 
 public final class BlockChangeCapture implements Listener {
+    private static final BlockData AIR = Material.AIR.createBlockData();
+
     private final RegionalDiffAccumulator accumulator;
     private final BlockEntityCapture blockEntityCapture;
 
@@ -188,16 +190,13 @@ public final class BlockChangeCapture implements Listener {
     }
 
     private void explodeBlocks(World world, List<Block> blocks) {
-        Material airType = Material.AIR;
-        BlockData air = airType.createBlockData();
         for (Block block : blocks) {
-            recordRaw(world, block.getX(), block.getY(), block.getZ(), air);
+            recordRaw(world, block.getX(), block.getY(), block.getZ(), AIR);
         }
     }
 
     private void recordAirAt(Block block) {
-        BlockData air = Material.AIR.createBlockData();
-        recordRaw(block.getWorld(), block.getX(), block.getY(), block.getZ(), air);
+        recordRaw(block.getWorld(), block.getX(), block.getY(), block.getZ(), AIR);
     }
 
     private void recordBlock(World world, Block block, BlockData data) {

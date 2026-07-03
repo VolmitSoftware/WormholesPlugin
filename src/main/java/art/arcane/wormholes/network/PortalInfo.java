@@ -31,9 +31,9 @@ public record PortalInfo(
         out.writeUTF(worldName);
         out.writeUTF(typeName);
         out.writeBoolean(open);
-        out.writeUTF(frameNormal);
-        out.writeUTF(frameRight);
-        out.writeUTF(frameUp);
+        WireCodec.writeDirection(out, frameNormal);
+        WireCodec.writeDirection(out, frameRight);
+        WireCodec.writeDirection(out, frameUp);
         out.writeDouble(originX);
         out.writeDouble(originY);
         out.writeDouble(originZ);
@@ -51,9 +51,9 @@ public record PortalInfo(
         String worldName = in.readUTF();
         String typeName = in.readUTF();
         boolean open = in.readBoolean();
-        String frameNormal = in.readUTF();
-        String frameRight = in.readUTF();
-        String frameUp = in.readUTF();
+        String frameNormal = WireCodec.readDirection(in);
+        String frameRight = WireCodec.readDirection(in);
+        String frameUp = WireCodec.readDirection(in);
         double originX = in.readDouble();
         double originY = in.readDouble();
         double originZ = in.readDouble();

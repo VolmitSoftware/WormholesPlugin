@@ -20,15 +20,18 @@ import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 
 import art.arcane.wormholes.Settings;
+import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.render.view.ProjectionWorldView;
 
 public final class ProjectorLighting {
     private static final int SECTION_NIBBLE_BYTES = 2048;
     private static final long NO_REMOTE_KEY = Long.MIN_VALUE;
+    private static final long BASELINE_MAX_AGE_MILLIS = 2000L;
 
     private final Long2ObjectOpenHashMap<IntOpenHashSet> sentChunkSections = new Long2ObjectOpenHashMap<IntOpenHashSet>(8);
     private final Long2ObjectOpenHashMap<IntOpenHashSet> chunkToSections = new Long2ObjectOpenHashMap<IntOpenHashSet>(8);
     private final Long2ObjectOpenHashMap<IntOpenHashSet> pendingChunkSections = new Long2ObjectOpenHashMap<IntOpenHashSet>(8);
+    private final Long2ObjectOpenHashMap<SectionBaseline[]> baselineCache = new Long2ObjectOpenHashMap<SectionBaseline[]>(8);
 
     public void apply(Player observer,
                       World localWorld,
@@ -125,11 +128,13 @@ public final class ProjectorLighting {
             int chunkX = (int) (key >> 32);
             int chunkZ = (int) key;
             sendLocalChunkLight(observer, localWorld, chunkX, chunkZ, entry.getValue());
+            baselineCache.remove(key);
             staleIt.remove();
         }
     }
 
     public void revert(Player observer, World localWorld) {
+        baselineCache.clear();
         if (sentChunkSections.isEmpty()) {
             pendingChunkSections.clear();
             return;
@@ -228,63 +233,12 @@ public final class ProjectorLighting {
             if (!isSectionInsideWorld(section, minSec, maxSec)) {
                 continue;
             }
-            int sectionMinY = section << 4;
             int maskIndex = (section - minSec) + 1;
 
-            byte[] skyArr = new byte[SECTION_NIBBLE_BYTES];
-            byte[] blockArr = new byte[SECTION_NIBBLE_BYTES];
-
-            for (int ly = 0; ly < 16; ly++) {
-                int y = sectionMinY + ly;
-                for (int lz = 0; lz < 16; lz++) {
-                    int z = (chunkZ << 4) + lz;
-                    for (int lx = 0; lx < 16; lx++) {
-                        int x = (chunkX << 4) + lx;
-
-                        long localKey = packKey(x, y, z);
-                        ProjectedBlockClaim claim = projectedClaims == null ? null : projectedClaims.get(localKey);
-                        long remoteKey = claim == null ? NO_REMOTE_KEY : claim.getLightRemoteKey();
-                        ProjectionWorldView sourceView = claim == null ? null : claim.getLightView();
-
-                        int sky;
-                        int block;
-                        int packedLight = ProjectionWorldView.LIGHT_UNAVAILABLE;
-                        ProjectionWorldView lightSource = null;
-                        if (remoteKey != NO_REMOTE_KEY && sourceView != null) {
-                            int rx = unpackX(remoteKey);
-                            int ry = unpackY(remoteKey);
-                            int rz = unpackZ(remoteKey);
-                            if (ry >= sourceView.getMinHeight() && ry <= sourceView.getMaxHeight() - 1) {
-                                packedLight = sourceView.getLight(rx, ry, rz);
-                                lightSource = sourceView;
-                            }
-                        }
-                        if (packedLight == ProjectionWorldView.LIGHT_UNAVAILABLE) {
-                            Block local = localWorld.getBlockAt(x, y, z);
-                            sky = local.getLightFromSky();
-                            block = local.getLightFromBlocks();
-                        } else {
-                            int rawSky = ProjectionWorldView.unpackSkyLight(packedLight);
-                            int rawBlock = ProjectionWorldView.unpackBlockLight(packedLight);
-                            int sourceDarken = lightSource.getSkyDarken();
-                            int sourceSkyBrightness = Math.max(0, rawSky - sourceDarken);
-                            sky = Math.min(15, sourceSkyBrightness + localSkyDarken);
-                            int target = Math.max(rawBlock, sourceSkyBrightness);
-                            block = target > 15 - localSkyDarken ? target : rawBlock;
-                        }
-
-                        int nibbleIdx = (ly << 8) | (lz << 4) | lx;
-                        int byteIdx = nibbleIdx >> 1;
-                        if ((nibbleIdx & 1) == 0) {
-                            skyArr[byteIdx] = (byte) ((skyArr[byteIdx] & 0xF0) | (sky & 0x0F));
-                            blockArr[byteIdx] = (byte) ((blockArr[byteIdx] & 0xF0) | (block & 0x0F));
-                        } else {
-                            skyArr[byteIdx] = (byte) ((skyArr[byteIdx] & 0x0F) | ((sky & 0x0F) << 4));
-                            blockArr[byteIdx] = (byte) ((blockArr[byteIdx] & 0x0F) | ((block & 0x0F) << 4));
-                        }
-                    }
-                }
-            }
+            SectionBaseline baseline = localBaseline(localWorld, chunkX, chunkZ, section, minSec, maxSec);
+            byte[] skyArr = baseline.sky.clone();
+            byte[] blockArr = baseline.block.clone();
+            overlayProjectedLight(projectedClaims, chunkX, chunkZ, section, localSkyDarken, skyArr, blockArr);
 
             skyArrays[arrIdx] = skyArr;
             blockArrays[arrIdx] = blockArr;
@@ -297,6 +251,103 @@ public final class ProjectorLighting {
             sectionCount, sectionCount, skyArrays, blockArrays);
         WrapperPlayServerUpdateLight pkt = new WrapperPlayServerUpdateLight(chunkX, chunkZ, data);
         PacketEvents.getAPI().getPlayerManager().sendPacket(observer, pkt);
+    }
+
+    static void overlayProjectedLight(Long2ObjectMap<ProjectedBlockClaim> projectedClaims,
+                                      int chunkX,
+                                      int chunkZ,
+                                      int section,
+                                      int localSkyDarken,
+                                      byte[] skyArr,
+                                      byte[] blockArr) {
+        if (projectedClaims == null || projectedClaims.isEmpty()) {
+            return;
+        }
+        int sectionMinY = section << 4;
+        for (Long2ObjectMap.Entry<ProjectedBlockClaim> entry : projectedClaims.long2ObjectEntrySet()) {
+            long localKey = entry.getLongKey();
+            int x = unpackX(localKey);
+            int y = unpackY(localKey);
+            int z = unpackZ(localKey);
+            if ((x >> 4) != chunkX || (z >> 4) != chunkZ || (y >> 4) != section) {
+                continue;
+            }
+            ProjectedBlockClaim claim = entry.getValue();
+            long remoteKey = claim.getLightRemoteKey();
+            ProjectionWorldView sourceView = claim.getLightView();
+            if (remoteKey == NO_REMOTE_KEY || sourceView == null) {
+                continue;
+            }
+            int rx = unpackX(remoteKey);
+            int ry = unpackY(remoteKey);
+            int rz = unpackZ(remoteKey);
+            if (ry < sourceView.getMinHeight() || ry > sourceView.getMaxHeight() - 1) {
+                continue;
+            }
+            int packedLight = sourceView.getLight(rx, ry, rz);
+            if (packedLight == ProjectionWorldView.LIGHT_UNAVAILABLE) {
+                continue;
+            }
+            int rawSky = ProjectionWorldView.unpackSkyLight(packedLight);
+            int rawBlock = ProjectionWorldView.unpackBlockLight(packedLight);
+            int sourceDarken = sourceView.getSkyDarken();
+            int sourceSkyBrightness = Math.max(0, rawSky - sourceDarken);
+            int sky = Math.min(15, sourceSkyBrightness + localSkyDarken);
+            int target = Math.max(rawBlock, sourceSkyBrightness);
+            int block = target > 15 - localSkyDarken ? target : rawBlock;
+            int nibbleIdx = ((y - sectionMinY) << 8) | ((z & 0xF) << 4) | (x & 0xF);
+            writeLightNibble(skyArr, blockArr, nibbleIdx, sky, block);
+        }
+    }
+
+    static void writeLightNibble(byte[] skyArr, byte[] blockArr, int nibbleIdx, int sky, int block) {
+        int byteIdx = nibbleIdx >> 1;
+        if ((nibbleIdx & 1) == 0) {
+            skyArr[byteIdx] = (byte) ((skyArr[byteIdx] & 0xF0) | (sky & 0x0F));
+            blockArr[byteIdx] = (byte) ((blockArr[byteIdx] & 0xF0) | (block & 0x0F));
+        } else {
+            skyArr[byteIdx] = (byte) ((skyArr[byteIdx] & 0x0F) | ((sky & 0x0F) << 4));
+            blockArr[byteIdx] = (byte) ((blockArr[byteIdx] & 0x0F) | ((block & 0x0F) << 4));
+        }
+    }
+
+    private SectionBaseline localBaseline(World localWorld, int chunkX, int chunkZ, int section, int minSection, int maxSection) {
+        long chunkKey = (((long) chunkX) << 32) | (((long) chunkZ) & 0xFFFFFFFFL);
+        int sectionCount = maxSection - minSection + 1;
+        SectionBaseline[] sections = baselineCache.get(chunkKey);
+        if (sections == null || sections.length != sectionCount) {
+            sections = new SectionBaseline[sectionCount];
+            baselineCache.put(chunkKey, sections);
+        }
+        int index = section - minSection;
+        SectionBaseline cached = sections[index];
+        long now = System.currentTimeMillis();
+        ProjectionWorldChangeTracker tracker = Wormholes.projectionChangeTracker;
+        if (cached != null
+            && tracker != null
+            && now - cached.readMillis <= BASELINE_MAX_AGE_MILLIS
+            && !tracker.dirtySince(localWorld.getUID(), chunkX - 1, chunkZ - 1, chunkX + 1, chunkZ + 1, cached.trackerVersion)) {
+            return cached;
+        }
+
+        long trackerVersion = tracker == null ? Long.MIN_VALUE : tracker.currentVersion();
+        byte[] skyArr = new byte[SECTION_NIBBLE_BYTES];
+        byte[] blockArr = new byte[SECTION_NIBBLE_BYTES];
+        int sectionMinY = section << 4;
+        for (int ly = 0; ly < 16; ly++) {
+            int y = sectionMinY + ly;
+            for (int lz = 0; lz < 16; lz++) {
+                int z = (chunkZ << 4) + lz;
+                for (int lx = 0; lx < 16; lx++) {
+                    int x = (chunkX << 4) + lx;
+                    Block local = localWorld.getBlockAt(x, y, z);
+                    writeLightNibble(skyArr, blockArr, (ly << 8) | (lz << 4) | lx, local.getLightFromSky(), local.getLightFromBlocks());
+                }
+            }
+        }
+        SectionBaseline fresh = new SectionBaseline(skyArr, blockArr, trackerVersion, now);
+        sections[index] = fresh;
+        return fresh;
     }
 
     static int countValidSections(IntSet dirtySections, int minSection, int maxSection) {
@@ -352,18 +403,7 @@ public final class ProjectorLighting {
                     for (int lx = 0; lx < 16; lx++) {
                         int x = (chunkX << 4) + lx;
                         Block local = localWorld.getBlockAt(x, y, z);
-                        int sky = local.getLightFromSky();
-                        int block = local.getLightFromBlocks();
-
-                        int nibbleIdx = (ly << 8) | (lz << 4) | lx;
-                        int byteIdx = nibbleIdx >> 1;
-                        if ((nibbleIdx & 1) == 0) {
-                            skyArr[byteIdx] = (byte) ((skyArr[byteIdx] & 0xF0) | (sky & 0x0F));
-                            blockArr[byteIdx] = (byte) ((blockArr[byteIdx] & 0xF0) | (block & 0x0F));
-                        } else {
-                            skyArr[byteIdx] = (byte) ((skyArr[byteIdx] & 0x0F) | ((sky & 0x0F) << 4));
-                            blockArr[byteIdx] = (byte) ((blockArr[byteIdx] & 0x0F) | ((block & 0x0F) << 4));
-                        }
+                        writeLightNibble(skyArr, blockArr, (ly << 8) | (lz << 4) | lx, local.getLightFromSky(), local.getLightFromBlocks());
                     }
                 }
             }
@@ -385,10 +425,6 @@ public final class ProjectorLighting {
         return y >= world.getMinHeight() && y < world.getMaxHeight();
     }
 
-    private static long packKey(int x, int y, int z) {
-        return (((long) x & 0x3FFFFFFL) << 38) | ((((long) y) & 0xFFFL) << 26) | (((long) z) & 0x3FFFFFFL);
-    }
-
     private static int unpackX(long key) {
         long raw = (key >> 38) & 0x3FFFFFFL;
         return (int) ((raw << 38) >> 38);
@@ -402,5 +438,19 @@ public final class ProjectorLighting {
     private static int unpackZ(long key) {
         long raw = key & 0x3FFFFFFL;
         return (int) ((raw << 38) >> 38);
+    }
+
+    private static final class SectionBaseline {
+        private final byte[] sky;
+        private final byte[] block;
+        private final long trackerVersion;
+        private final long readMillis;
+
+        private SectionBaseline(byte[] sky, byte[] block, long trackerVersion, long readMillis) {
+            this.sky = sky;
+            this.block = block;
+            this.trackerVersion = trackerVersion;
+            this.readMillis = readMillis;
+        }
     }
 }

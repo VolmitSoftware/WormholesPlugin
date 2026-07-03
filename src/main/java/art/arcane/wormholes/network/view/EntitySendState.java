@@ -6,17 +6,17 @@ public final class EntitySendState {
     private final UUID entityId;
     private EntityVisual lastSentSnapshot;
     private int nextSequence;
-    private int lastAckedSequence;
-    private int missCounter;
     private boolean forceFullNext;
+    private long lastFullSentTick;
+    private long nextEligibleTick;
 
     public EntitySendState(UUID entityId) {
         this.entityId = entityId;
         this.lastSentSnapshot = null;
         this.nextSequence = 0;
-        this.lastAckedSequence = -1;
-        this.missCounter = 0;
         this.forceFullNext = true;
+        this.lastFullSentTick = 0L;
+        this.nextEligibleTick = 0L;
     }
 
     public UUID getEntityId() {
@@ -31,45 +31,39 @@ public final class EntitySendState {
         return nextSequence;
     }
 
-    public int getLastAckedSequence() {
-        return lastAckedSequence;
-    }
-
-    public int getMissCounter() {
-        return missCounter;
-    }
-
     public boolean isForceFullNext() {
         return forceFullNext;
     }
 
+    public long getLastFullSentTick() {
+        return lastFullSentTick;
+    }
+
+    public long getNextEligibleTick() {
+        return nextEligibleTick;
+    }
+
+    public void setNextEligibleTick(long tick) {
+        this.nextEligibleTick = tick;
+    }
+
     public int allocateSequence() {
         int allocated = nextSequence;
-        nextSequence = (nextSequence + 1) & 0x7FFFFFFF;
+        nextSequence = (nextSequence + 1) & 0xFFFF;
         return allocated;
     }
 
-    public void recordSent(EntityVisual fullSnapshot, boolean wasFullMode) {
+    public void recordSent(EntityVisual fullSnapshot, boolean wasFullMode, long entityTick) {
         this.lastSentSnapshot = fullSnapshot;
         if (wasFullMode) {
             this.forceFullNext = false;
-            this.missCounter = 0;
+            this.lastFullSentTick = entityTick;
         }
     }
 
-    public void recordAck(int acknowledgedSequence) {
-        if (acknowledgedSequence > lastAckedSequence) {
-            lastAckedSequence = acknowledgedSequence;
-        }
-        this.missCounter = 0;
-    }
-
-    public void recordMiss(int missesBeforeResync) {
-        missCounter++;
-        if (missCounter >= Math.max(1, missesBeforeResync)) {
-            forceFullNext = true;
-            missCounter = 0;
-        }
+    public boolean isSidebandFullDue(long entityTick, long baseIntervalTicks, long jitterTicks) {
+        long jitter = Math.floorMod(entityId.hashCode(), Math.max(1L, jitterTicks));
+        return entityTick - lastFullSentTick >= baseIntervalTicks + jitter;
     }
 
     public void requestFull() {
@@ -79,8 +73,8 @@ public final class EntitySendState {
     public void reset() {
         this.lastSentSnapshot = null;
         this.nextSequence = 0;
-        this.lastAckedSequence = -1;
-        this.missCounter = 0;
         this.forceFullNext = true;
+        this.lastFullSentTick = 0L;
+        this.nextEligibleTick = 0L;
     }
 }

@@ -18,8 +18,6 @@ public class ProjectionConfig {
     public transient boolean foveatedUnrendering = false;
     public transient double observerInterestDot = -0.2;
     public transient double sideGraceDot = 0.12;
-    public transient double stationaryReuseDistanceBlocks = 0.0;
-    public transient double stationaryReuseAngleDegrees = 1.5;
     public transient int maxProjectorsPerTick = 24;
     public transient int maxPortalsPerObserverTick = 4;
     public transient int interestGraceTicks = 5;

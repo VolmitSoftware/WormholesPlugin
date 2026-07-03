@@ -33,7 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class MinecraftStatusBridge extends PacketListenerAbstract {
     private static final String HOST_PREFIX = "whs.";
     private static final String JSON_FIELD = "wormholes";
-    private static final int FORMAT_VERSION = 2;
+    private static final int FORMAT_VERSION = 3;
     private static final int CONNECT_TIMEOUT_MS = 4000;
     private static final int READ_TIMEOUT_MS = 5000;
     private static final int MAX_HOST_LENGTH = 32000;
@@ -41,7 +41,8 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
     static final int MAX_ENCODED_CHARS = 30000;
     static final int MAX_PACKET_BYTES = 24000;
     static final int MAX_FRAME_BYTES = 5000;
-    static final int MAX_MESSAGES = 16;
+    static final int MAX_MESSAGES = 64;
+    static final int SIDEBAND_ZSTD_LEVEL = 12;
     private static final long PENDING_TTL_MS = 10_000L;
     private static final int MAX_PENDING_REQUESTS = 1024;
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -127,11 +128,12 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
         }
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
+            socket.setTcpNoDelay(true);
             socket.setSoTimeout(READ_TIMEOUT_MS);
             OutputStream output = socket.getOutputStream();
             InputStream input = socket.getInputStream();
-            writePacket(output, handshakePacket(handshakeHost, port));
-            writePacket(output, statusRequestPacket());
+            output.write(requestBytes(handshakeHost, port));
+            output.flush();
             String responseJson = readStatusResponse(input);
             JsonObject root = JsonParser.parseString(responseJson).getAsJsonObject();
             if (!root.has(JSON_FIELD)) {
@@ -151,6 +153,17 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
         StatusPacket unsigned = new StatusPacket(sourceServer, targetServer, mcVersion, pluginVersion, replyHost, replyPort, publicKey, RANDOM.nextLong(), List.copyOf(wireMessages), List.copyOf(frames), null);
         byte[] payload = unsigned.unsignedBytes();
         return unsigned.withSignature(Handshake.sign(privateKey, payload));
+    }
+
+    static byte[] requestBytes(String handshakeHost, int port) throws IOException {
+        byte[] handshake = handshakePacket(handshakeHost, port);
+        byte[] statusRequest = statusRequestPacket();
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream(handshake.length + statusRequest.length + 8);
+        writeVarInt(buffer, handshake.length);
+        buffer.write(handshake);
+        writeVarInt(buffer, statusRequest.length);
+        buffer.write(statusRequest);
+        return buffer.toByteArray();
     }
 
     private static byte[] handshakePacket(String host, int port) throws IOException {
@@ -188,12 +201,6 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
             throw new IOException("unexpected status response packet id: " + packetId);
         }
         return readString(in, MAX_STATUS_RESPONSE_CHARS);
-    }
-
-    private static void writePacket(OutputStream output, byte[] packet) throws IOException {
-        writeVarInt(output, packet.length);
-        output.write(packet);
-        output.flush();
     }
 
     private static void writeString(DataOutputStream out, String value) throws IOException {
@@ -256,6 +263,7 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
         private final List<WireMessage> messages;
         private final List<byte[]> encodedFrames;
         private final byte[] signature;
+        private volatile byte[] unsignedBytesCache;
 
         private StatusPacket(String sourceServer, String targetServer, String mcVersion, String pluginVersion, String replyHost, int replyPort, byte[] publicKey, long nonce, List<WireMessage> messages, List<byte[]> encodedFrames, byte[] signature) {
             this.sourceServer = sourceServer;
@@ -310,7 +318,7 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
         public String encode(WireCompression compression) {
             try {
                 byte[] unsigned = unsignedBytes();
-                byte[] transport = compression.encode(unsigned, false);
+                byte[] transport = compression.encode(unsigned, false, SIDEBAND_ZSTD_LEVEL);
                 ByteArrayOutputStream buffer = new ByteArrayOutputStream(transport.length + signature.length + 16);
                 DataOutputStream out = new DataOutputStream(buffer);
                 WireCodec.writeByteArray(out, transport, MAX_PACKET_BYTES);
@@ -323,10 +331,21 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
         }
 
         private StatusPacket withSignature(byte[] nextSignature) {
-            return new StatusPacket(sourceServer, targetServer, mcVersion, pluginVersion, replyHost, replyPort, publicKey, nonce, messages, encodedFrames, nextSignature);
+            StatusPacket signed = new StatusPacket(sourceServer, targetServer, mcVersion, pluginVersion, replyHost, replyPort, publicKey, nonce, messages, encodedFrames, nextSignature);
+            signed.unsignedBytesCache = unsignedBytesCache;
+            return signed;
         }
 
         private byte[] unsignedBytes() {
+            byte[] cached = unsignedBytesCache;
+            if (cached == null) {
+                cached = buildUnsignedBytes();
+                unsignedBytesCache = cached;
+            }
+            return cached;
+        }
+
+        private byte[] buildUnsignedBytes() {
             try {
                 ByteArrayOutputStream buffer = new ByteArrayOutputStream(512);
                 DataOutputStream out = new DataOutputStream(buffer);

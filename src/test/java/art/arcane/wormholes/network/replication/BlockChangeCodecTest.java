@@ -64,8 +64,8 @@ class BlockChangeCodecTest {
             lightData[i] = (byte) (i & 0xFF);
         }
         List<LightDiff> lights = List.of(
-            new LightDiff(-4, LightDiff.TYPE_BLOCKLIGHT, lightData),
-            new LightDiff(19, LightDiff.TYPE_SKYLIGHT, lightData.clone())
+            LightDiff.full(-4, LightDiff.TYPE_BLOCKLIGHT, lightData),
+            LightDiff.full(19, LightDiff.TYPE_SKYLIGHT, lightData.clone())
         );
 
         byte[] nbtA = "sample-nbt-a".getBytes();

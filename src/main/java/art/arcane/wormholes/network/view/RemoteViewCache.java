@@ -31,6 +31,11 @@ public final class RemoteViewCache {
         private final int sizeX;
         private final int sizeY;
         private final int sizeZ;
+        private final int gridMinX;
+        private final int gridMinY;
+        private final int gridMinZ;
+        private final int gridSizeX;
+        private final int gridSizeZ;
         private final BlockData[] palette;
         private final short[] indices;
         private final byte[] light;
@@ -44,6 +49,11 @@ public final class RemoteViewCache {
             this.sizeX = slice.sizeX();
             this.sizeY = slice.sizeY();
             this.sizeZ = slice.sizeZ();
+            this.gridMinX = slice.minX() >> 2;
+            this.gridMinY = slice.minY() >> 2;
+            this.gridMinZ = slice.minZ() >> 2;
+            this.gridSizeX = slice.biomeGridSizeX();
+            this.gridSizeZ = slice.biomeGridSizeZ();
             this.palette = palette;
             this.indices = slice.indices();
             this.light = slice.light();
@@ -61,7 +71,10 @@ public final class RemoteViewCache {
         }
 
         public String biomeAt(int x, int y, int z) {
-            int index = (((y - minY) * sizeZ + (z - minZ)) * sizeX) + (x - minX);
+            int gx = (x >> 2) - gridMinX;
+            int gy = (y >> 2) - gridMinY;
+            int gz = (z >> 2) - gridMinZ;
+            int index = ((gy * gridSizeZ) + gz) * gridSizeX + gx;
             if (index < 0 || index >= biomes.length) {
                 return null;
             }
@@ -93,6 +106,8 @@ public final class RemoteViewCache {
         private final Map<UUID, RemoteProfile> profiles = new ConcurrentHashMap<>();
         private final Map<UUID, List<EntityData<?>>> entityMetadata = new ConcurrentHashMap<>();
         private final Map<UUID, List<Equipment>> entityEquipment = new ConcurrentHashMap<>();
+        private final Map<UUID, byte[]> lastMetadataBlobs = new ConcurrentHashMap<>();
+        private final Map<UUID, byte[]> lastEquipmentBlobs = new ConcurrentHashMap<>();
 
         private RemoteView(String peerName, UUID portalId) {
             this.peerName = peerName;
@@ -173,9 +188,22 @@ public final class RemoteViewCache {
         }
     }
 
+    private static final class CachedDecodedSlice {
+        private final ViewSlice source;
+        private final int paletteSize;
+        private final DecodedSlice decoded;
+
+        private CachedDecodedSlice(ViewSlice source, int paletteSize, DecodedSlice decoded) {
+            this.source = source;
+            this.paletteSize = paletteSize;
+            this.decoded = decoded;
+        }
+    }
+
     private final Map<String, RemoteView> views = new ConcurrentHashMap<>();
     private final Map<String, BlockData> parsedBlockData = new ConcurrentHashMap<>();
     private final Map<String, RemoteChunkStore> chunkStores = new ConcurrentHashMap<>();
+    private final Map<String, Map<Long, CachedDecodedSlice>> decodedSlices = new ConcurrentHashMap<>();
     private final Set<String> bulkDecodeErrorPeers = ConcurrentHashMap.newKeySet();
     private final Set<String> noViewPeers = ConcurrentHashMap.newKeySet();
     private final Set<String> publishedPeers = ConcurrentHashMap.newKeySet();
@@ -191,6 +219,7 @@ public final class RemoteViewCache {
 
     public void clearChunkStore(String peerName) {
         chunkStores.remove(peerName);
+        decodedSlices.remove(peerName);
     }
 
     public void applyChunkBulk(String peerName, List<ChunkBulk> bulks) {
@@ -238,7 +267,7 @@ public final class RemoteViewCache {
             return;
         }
         long columnKey = chunk.chunkKey();
-        DecodedSlice decoded = decode(slice);
+        DecodedSlice decoded = decodedSliceFor(peerName, columnKey, slice);
         boolean matched = false;
         for (RemoteView view : views.values()) {
             if (!view.peerName.equals(peerName)) {
@@ -357,16 +386,20 @@ public final class RemoteViewCache {
             int presentMask = incoming.presentMask();
             boolean metadataIncluded = incoming.isFull() || (presentMask & EntityVisual.FIELD_METADATA) != 0;
             boolean equipmentIncluded = incoming.isFull() || (presentMask & EntityVisual.FIELD_EQUIPMENT) != 0;
-            if (metadataIncluded && full.metadata() != null && full.metadata().length > 0) {
+            if (metadataIncluded && full.metadata() != null && full.metadata().length > 0
+                && blobChanged(view.lastMetadataBlobs.get(full.id()), full.metadata())) {
                 try {
-                    view.entityMetadata.put(full.id(), List.copyOf(PacketBlobs.readMetadata(full.metadata())));
+                    view.entityMetadata.put(full.id(), PacketBlobs.readMetadata(full.metadata()));
+                    view.lastMetadataBlobs.put(full.id(), full.metadata());
                     stateChanged = true;
                 } catch (Throwable ignored) {
                 }
             }
-            if (equipmentIncluded && full.equipment() != null && full.equipment().length > 0) {
+            if (equipmentIncluded && full.equipment() != null && full.equipment().length > 0
+                && blobChanged(view.lastEquipmentBlobs.get(full.id()), full.equipment())) {
                 try {
-                    view.entityEquipment.put(full.id(), List.copyOf(PacketBlobs.readEquipment(full.equipment())));
+                    view.entityEquipment.put(full.id(), PacketBlobs.readEquipment(full.equipment()));
+                    view.lastEquipmentBlobs.put(full.id(), full.equipment());
                     stateChanged = true;
                 } catch (Throwable ignored) {
                 }
@@ -382,6 +415,8 @@ public final class RemoteViewCache {
             view.entityEquipment.keySet().retainAll(present);
             view.stateVersions.keySet().retainAll(present);
             view.lastEntityState.keySet().retainAll(present);
+            view.lastMetadataBlobs.keySet().retainAll(present);
+            view.lastEquipmentBlobs.keySet().retainAll(present);
         }
         view.entities = List.copyOf(view.lastEntityState.values());
         view.lastUpdateMillis = System.currentTimeMillis();
@@ -390,6 +425,19 @@ public final class RemoteViewCache {
     public void clear() {
         views.clear();
         chunkStores.clear();
+        decodedSlices.clear();
+    }
+
+    private DecodedSlice decodedSliceFor(String peerName, long columnKey, ViewSlice slice) {
+        Map<Long, CachedDecodedSlice> byChunk = decodedSlices.computeIfAbsent(peerName, ignored -> new ConcurrentHashMap<>());
+        CachedDecodedSlice cached = byChunk.get(columnKey);
+        int paletteSize = slice.palette().size();
+        if (cached != null && cached.source == slice && cached.paletteSize == paletteSize) {
+            return cached.decoded;
+        }
+        DecodedSlice decoded = decode(slice);
+        byChunk.put(columnKey, new CachedDecodedSlice(slice, paletteSize, decoded));
+        return decoded;
     }
 
     private DecodedSlice decode(ViewSlice slice) {
@@ -419,6 +467,10 @@ public final class RemoteViewCache {
             parsedBlockData.put(stateString, parsed);
         }
         return parsed;
+    }
+
+    static boolean blobChanged(byte[] previousBlob, byte[] incomingBlob) {
+        return previousBlob == null || !java.util.Arrays.equals(previousBlob, incomingBlob);
     }
 
     private static String key(String peerName, UUID portalId) {

@@ -48,13 +48,32 @@ import art.arcane.wormholes.util.W;
 public class BlockManager implements Listener
 {
 	private final KMap<GChunk, KSet<PortalBlock>> blocks;
+	private final ItemStack wandTemplate;
+	private final ItemStack portalRuneTemplate;
+	private final ItemStack wormholeRuneTemplate;
+	private final ItemStack gatewayRuneTemplate;
 
 	public BlockManager()
 	{
 		Wormholes.v("Starting Block Manager");
+		wandTemplate = buildTemplate(Material.BLAZE_ROD, ChatColor.GOLD + "" + ChatColor.BOLD + "Portal Wand");
+		portalRuneTemplate = buildTemplate(Material.PRISMARINE, ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Portal Rune");
+		wormholeRuneTemplate = buildTemplate(Material.DARK_PRISMARINE, ChatColor.GOLD + "" + ChatColor.BOLD + "Wormhole Rune");
+		gatewayRuneTemplate = buildTemplate(Material.BLACK_STAINED_GLASS, ChatColor.RED + "" + ChatColor.BOLD + "Gateway Rune");
 		registerRecipes();
 		blocks = new KMap<>();
 		J.ar(() -> updatePlacedBlocks(), 9);
+	}
+
+	private static ItemStack buildTemplate(Material material, String displayName)
+	{
+		ItemStack is = new ItemStack(material);
+		ItemMeta meta = is.getItemMeta();
+		meta.addEnchant(Enchantment.INFINITY, 1, true);
+		meta.setDisplayName(displayName);
+		is.setItemMeta(meta);
+
+		return is;
 	}
 
 	public void destroyAll()
@@ -148,7 +167,7 @@ public class BlockManager implements Listener
 	@EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
 	public void on(PlayerInteractEvent e)
 	{
-		if(!isSame(getWand(), e.getPlayer().getInventory().getItemInMainHand()))
+		if(!isWand(e.getPlayer().getInventory().getItemInMainHand()))
 		{
 			return;
 		}
@@ -233,15 +252,15 @@ public class BlockManager implements Listener
 		ItemStack inHand = e.getItemInHand();
 		PortalType placedType = null;
 
-		if(isSame(inHand, getPortalRune(1)))
+		if(isTemplateMatch(inHand, portalRuneTemplate))
 		{
 			placedType = PortalType.PORTAL;
 		}
-		else if(isSame(inHand, getWormholeRune(1)))
+		else if(isTemplateMatch(inHand, wormholeRuneTemplate))
 		{
 			placedType = PortalType.WORMHOLE;
 		}
-		else if(isSame(inHand, getGatewayRune(1)))
+		else if(isTemplateMatch(inHand, gatewayRuneTemplate))
 		{
 			placedType = PortalType.GATEWAY;
 		}
@@ -432,42 +451,37 @@ public class BlockManager implements Listener
 			return false;
 		}
 
-		ItemStack a = is.clone();
-		ItemStack b = ib.clone();
-		a.setAmount(1);
-		b.setAmount(1);
+		if(is.getType() != ib.getType())
+		{
+			return false;
+		}
 
-		return a.equals(b);
+		return is.isSimilar(ib);
 	}
 
 	public boolean isPortalTool(ItemStack item)
 	{
-		return isSame(item, getWand()) || isPortalRune(item);
+		return isWand(item) || isPortalRune(item);
+	}
+
+	public boolean isWand(ItemStack item)
+	{
+		return isTemplateMatch(item, wandTemplate);
 	}
 
 	public boolean isPortalRune(ItemStack item)
 	{
-		return isSame(item, getPortalRune(1)) || isSame(item, getWormholeRune(1)) || isSame(item, getGatewayRune(1));
+		return isTemplateMatch(item, portalRuneTemplate) || isTemplateMatch(item, wormholeRuneTemplate) || isTemplateMatch(item, gatewayRuneTemplate);
 	}
 
 	public ItemStack getWand()
 	{
-		ItemStack is = new ItemStack(Material.BLAZE_ROD);
-		ItemMeta meta = is.getItemMeta();
-		meta.addEnchant(Enchantment.INFINITY, 1, true);
-		meta.setDisplayName(ChatColor.GOLD + "" + ChatColor.BOLD + "Portal Wand");
-		is.setItemMeta(meta);
-
-		return is;
+		return wandTemplate.clone();
 	}
 
 	public ItemStack getPortalRune(int c)
 	{
-		ItemStack is = new ItemStack(Material.PRISMARINE);
-		ItemMeta meta = is.getItemMeta();
-		meta.addEnchant(Enchantment.INFINITY, 1, true);
-		meta.setDisplayName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Portal Rune");
-		is.setItemMeta(meta);
+		ItemStack is = portalRuneTemplate.clone();
 		is.setAmount(c);
 
 		return is;
@@ -475,11 +489,7 @@ public class BlockManager implements Listener
 
 	public ItemStack getWormholeRune(int c)
 	{
-		ItemStack is = new ItemStack(Material.DARK_PRISMARINE);
-		ItemMeta meta = is.getItemMeta();
-		meta.addEnchant(Enchantment.INFINITY, 1, true);
-		meta.setDisplayName(ChatColor.GOLD + "" + ChatColor.BOLD + "Wormhole Rune");
-		is.setItemMeta(meta);
+		ItemStack is = wormholeRuneTemplate.clone();
 		is.setAmount(c);
 
 		return is;
@@ -487,14 +497,15 @@ public class BlockManager implements Listener
 
 	public ItemStack getGatewayRune(int c)
 	{
-		ItemStack is = new ItemStack(Material.BLACK_STAINED_GLASS);
-		ItemMeta meta = is.getItemMeta();
-		meta.addEnchant(Enchantment.INFINITY, 1, true);
-		meta.setDisplayName(ChatColor.RED + "" + ChatColor.BOLD + "Gateway Rune");
-		is.setItemMeta(meta);
+		ItemStack is = gatewayRuneTemplate.clone();
 		is.setAmount(c);
 
 		return is;
+	}
+
+	private boolean isTemplateMatch(ItemStack item, ItemStack template)
+	{
+		return item != null && item.getType() == template.getType() && item.isSimilar(template);
 	}
 
 	public void refund(Set<Block> blocks, PortalType type)

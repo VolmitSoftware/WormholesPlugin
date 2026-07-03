@@ -464,11 +464,11 @@ public sealed interface WireMessage {
         @Override
         public void write(DataOutputStream out) throws IOException {
             writeUuid(out, portalId);
-            out.writeInt(entities.size());
+            out.writeByte(entities.size());
             for (EntityVisual entity : entities) {
                 entity.write(out);
             }
-            out.writeInt(presentIds.size());
+            out.writeShort(presentIds.size());
             for (UUID id : presentIds) {
                 writeUuid(out, id);
             }
@@ -476,16 +476,16 @@ public sealed interface WireMessage {
 
         public static ViewEntities read(DataInputStream in) throws IOException {
             UUID portalId = readUuid(in);
-            int count = in.readInt();
-            if (count < 0 || count > MAX_ENTITIES) {
+            int count = in.readUnsignedByte();
+            if (count > MAX_ENTITIES) {
                 throw new IOException("Invalid view entity count: " + count);
             }
             List<EntityVisual> entities = new ArrayList<>(count);
             for (int i = 0; i < count; i++) {
                 entities.add(EntityVisual.read(in));
             }
-            int presentCount = in.readInt();
-            if (presentCount < 0 || presentCount > MAX_PRESENT) {
+            int presentCount = in.readUnsignedShort();
+            if (presentCount > MAX_PRESENT) {
                 throw new IOException("Invalid present-id count: " + presentCount);
             }
             List<UUID> presentIds = new ArrayList<>(presentCount);

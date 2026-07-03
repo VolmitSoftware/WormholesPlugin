@@ -79,14 +79,35 @@ public final class PortalProjectorPlaneTest {
 	}
 
 	@Test
-	public void stationaryCameraAllowsTinyMotionButRejectsMeaningfulMovement() {
-		assertTrue(PortalProjector.isStationaryCamera(0.01D, 64.0D, 0.01D, 359.5F, 0.5F,
-			0.0D, 64.0D, 0.0D, 0.0F, 0.0F, 0.04D, 1.5D));
+	public void reuseRequiresExactEyePositionAndLocalDestination() {
+		assertTrue(PortalProjector.canReuseProjection(true, true, true, true, 0, false, false, false,
+			12.5D, 64.62D, -3.25D, 12.5D, 64.62D, -3.25D));
 
-		assertFalse(PortalProjector.isStationaryCamera(0.2D, 64.0D, 0.0D, 0.0F, 0.0F,
-			0.0D, 64.0D, 0.0D, 0.0F, 0.0F, 0.04D, 1.5D));
+		assertFalse(PortalProjector.canReuseProjection(true, true, true, true, 0, false, false, false,
+			12.5D + 1.0E-9D, 64.62D, -3.25D, 12.5D, 64.62D, -3.25D));
+		assertFalse(PortalProjector.canReuseProjection(true, true, true, true, 0, false, false, false,
+			12.5D, 64.62D + 1.0E-9D, -3.25D, 12.5D, 64.62D, -3.25D));
+		assertFalse(PortalProjector.canReuseProjection(true, true, true, true, 0, false, false, false,
+			12.5D, 64.62D, -3.25D + 1.0E-9D, 12.5D, 64.62D, -3.25D));
+	}
 
-		assertFalse(PortalProjector.isStationaryCamera(0.0D, 64.0D, 0.0D, 5.0F, 0.0F,
-			0.0D, 64.0D, 0.0D, 0.0F, 0.0F, 0.04D, 1.5D));
+	@Test
+	public void reuseDefeatedByResampleTriggers() {
+		assertFalse(PortalProjector.canReuseProjection(true, true, true, true, 0, true, false, false,
+			0.0D, 64.0D, 0.0D, 0.0D, 64.0D, 0.0D));
+		assertFalse(PortalProjector.canReuseProjection(true, true, true, true, 0, false, true, false,
+			0.0D, 64.0D, 0.0D, 0.0D, 64.0D, 0.0D));
+		assertFalse(PortalProjector.canReuseProjection(true, true, true, false, 0, false, false, false,
+			0.0D, 64.0D, 0.0D, 0.0D, 64.0D, 0.0D));
+		assertFalse(PortalProjector.canReuseProjection(true, true, true, true, 1, false, false, false,
+			0.0D, 64.0D, 0.0D, 0.0D, 64.0D, 0.0D));
+		assertFalse(PortalProjector.canReuseProjection(true, true, true, true, 0, false, false, true,
+			0.0D, 64.0D, 0.0D, 0.0D, 64.0D, 0.0D));
+		assertFalse(PortalProjector.canReuseProjection(false, true, true, true, 0, false, false, false,
+			0.0D, 64.0D, 0.0D, 0.0D, 64.0D, 0.0D));
+		assertFalse(PortalProjector.canReuseProjection(true, false, true, true, 0, false, false, false,
+			0.0D, 64.0D, 0.0D, 0.0D, 64.0D, 0.0D));
+		assertFalse(PortalProjector.canReuseProjection(true, true, false, true, 0, false, false, false,
+			0.0D, 64.0D, 0.0D, 0.0D, 64.0D, 0.0D));
 	}
 }

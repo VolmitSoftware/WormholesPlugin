@@ -18,8 +18,11 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -105,9 +108,55 @@ class RegionalDiffAccumulatorTest {
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
         accumulator.recordBlockChange(world, 3, 64, 4, fakeBlockData("minecraft:stone"), BlockChange.FLAG_NONE);
-        accumulator.resetChunk(world, chunkKey);
+        accumulator.resetChunk(world.getUID(), chunkKey);
         drainAllSafely(accumulator, world);
         assertTrue(feed.blocks.isEmpty());
+    }
+
+    @Test
+    void preDrainHookFiresWithEmptyBlockSetForPreviouslyDirtyChunk(@TempDir Path dir) {
+        TestNetworkSink sink = new TestNetworkSink(dir);
+        ChunkReplicationManager replication = sink.getReplicationManager();
+        World world = StubWorld.create(UUID.randomUUID());
+        long chunkKey = ViewSlice.columnKey(0, 0);
+        replication.subscribe(PEER, world, chunkKey);
+
+        CapturingFeed feed = new CapturingFeed();
+        RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
+        accumulator.recordBlockChange(world, 3, 64, 5, fakeBlockData("minecraft:stone"), BlockChange.FLAG_NONE);
+
+        List<Set<Integer>> hookCalls = new ArrayList<>();
+        RegionalDiffAccumulator.PreDrainHook hook = (w, key, packed) -> hookCalls.add(new HashSet<>(packed));
+        accumulator.drainChunk(world, chunkKey, hook);
+        assertEquals(1, hookCalls.size());
+        assertEquals(1, hookCalls.get(0).size());
+
+        accumulator.drainChunk(world, chunkKey, hook);
+        assertEquals(2, hookCalls.size());
+        assertTrue(hookCalls.get(1).isEmpty());
+    }
+
+    @Test
+    void stateStringCacheComputesOncePerCanonicalState(@TempDir Path dir) {
+        TestNetworkSink sink = new TestNetworkSink(dir);
+        ChunkReplicationManager replication = sink.getReplicationManager();
+        World world = StubWorld.create(UUID.randomUUID());
+        long chunkKey = ViewSlice.columnKey(0, 0);
+        replication.subscribe(PEER, world, chunkKey);
+
+        CapturingFeed feed = new CapturingFeed();
+        RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
+        AtomicInteger asStringCalls = new AtomicInteger();
+        BlockData stone = countingBlockData("minecraft:stone", asStringCalls);
+        accumulator.recordBlockChange(world, 1, 64, 1, stone, BlockChange.FLAG_NONE);
+        accumulator.recordBlockChange(world, 2, 64, 1, stone, BlockChange.FLAG_NONE);
+        drainAllSafely(accumulator, world);
+
+        assertEquals(2, feed.blocks.size());
+        for (BlockChange change : feed.blocks) {
+            assertEquals("minecraft:stone", change.state());
+        }
+        assertEquals(1, asStringCalls.get());
     }
 
     private static void drainAllSafely(RegionalDiffAccumulator accumulator, World world) {
@@ -126,23 +175,50 @@ class RegionalDiffAccumulatorTest {
         private final List<BlockEntityDiff> entities = new ArrayList<>();
 
         @Override
-        public void onBlockChange(World world, long chunkKey, BlockChange change) {
-            blocks.add(change);
-        }
-
-        @Override
-        public void onLightChange(World world, long chunkKey, LightDiff diff) {
-            lights.add(diff);
-        }
-
-        @Override
-        public void onBlockEntityChange(World world, long chunkKey, BlockEntityDiff diff) {
-            entities.add(diff);
+        public void onChunkDrain(World world, long chunkKey, List<BlockChange> drainedBlocks, List<LightDiff> drainedLights, List<BlockEntityDiff> drainedEntities) {
+            blocks.addAll(drainedBlocks);
+            lights.addAll(drainedLights);
+            entities.addAll(drainedEntities);
         }
 
         @Override
         public void onTickEnd() {
         }
+    }
+
+    private static BlockData countingBlockData(String stateString, AtomicInteger asStringCalls) {
+        return (BlockData) Proxy.newProxyInstance(
+            BlockData.class.getClassLoader(),
+            new Class<?>[]{BlockData.class},
+            (proxy, method, args) -> {
+                if ("getAsString".equals(method.getName())) {
+                    asStringCalls.incrementAndGet();
+                    return stateString;
+                }
+                if ("clone".equals(method.getName())) {
+                    return proxy;
+                }
+                if ("equals".equals(method.getName())) {
+                    return proxy == args[0];
+                }
+                if ("hashCode".equals(method.getName())) {
+                    return stateString.hashCode();
+                }
+                if ("toString".equals(method.getName())) {
+                    return "CountingBlockData[" + stateString + "]";
+                }
+                Class<?> rt = method.getReturnType();
+                if (rt == boolean.class) {
+                    return Boolean.FALSE;
+                }
+                if (rt == int.class || rt == long.class || rt == byte.class || rt == short.class) {
+                    return 0;
+                }
+                if (rt == float.class || rt == double.class) {
+                    return 0.0D;
+                }
+                return null;
+            });
     }
 
     private static BlockData fakeBlockData(String stateString) {
@@ -152,6 +228,9 @@ class RegionalDiffAccumulatorTest {
             (proxy, method, args) -> {
                 if ("getAsString".equals(method.getName())) {
                     return stateString;
+                }
+                if ("clone".equals(method.getName())) {
+                    return proxy;
                 }
                 if ("equals".equals(method.getName())) {
                     return proxy == args[0];

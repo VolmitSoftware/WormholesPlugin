@@ -22,6 +22,7 @@ import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -482,6 +483,102 @@ class NetworkManagerTest {
     }
 
     @Test
+    void statusSidebandDrainAlwaysTakesFirstOverBudgetFrame() throws IOException {
+        NetworkConfig alphaConfig = config(freePort(), ALPHA_NAME);
+        alphaConfig.listenEnabled = false;
+        NetworkConfig.PeerEntry betaRoute = route(BETA_NAME, freePort());
+        betaRoute.publicHost = "127.0.0.1";
+        betaRoute.publicPort = BETA_GAME_PORT;
+
+        NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "drain-first-alpha");
+        alpha.savePeer(betaRoute);
+
+        byte[] snapshot = new byte[70_000];
+        new Random(42L).nextBytes(snapshot);
+        WireMessage.EntityTransfer transfer = new WireMessage.EntityTransfer(UUID.randomUUID(), UUID.randomUUID(), snapshot, traversive());
+        assertTrue(WireCodec.encodeFrame(transfer).length > MinecraftStatusBridge.MAX_FRAME_BYTES);
+        assertTrue(alpha.send(BETA_NAME, transfer));
+
+        List<MinecraftStatusBridge.EncodedMessage> drained = alpha.drainStatusOutbox(BETA_NAME, 1);
+        assertEquals(1, drained.size());
+        assertTrue(drained.get(0).frame().length > 1);
+    }
+
+    @Test
+    void statusSidebandRequestDrainShipsJumboFragmentsAtFloorBudget() throws IOException {
+        NetworkConfig alphaConfig = config(freePort(), ALPHA_NAME);
+        alphaConfig.listenEnabled = false;
+        NetworkConfig.PeerEntry betaRoute = route(BETA_NAME, freePort());
+        betaRoute.publicHost = "127.0.0.1";
+        betaRoute.publicPort = BETA_GAME_PORT;
+
+        NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "drain-floor-alpha");
+        alpha.savePeer(betaRoute);
+
+        byte[] snapshot = new byte[70_000];
+        new Random(42L).nextBytes(snapshot);
+        WireMessage.EntityTransfer transfer = new WireMessage.EntityTransfer(UUID.randomUUID(), UUID.randomUUID(), snapshot, traversive());
+        assertTrue(WireCodec.encodeFrame(transfer).length > MinecraftStatusBridge.MAX_FRAME_BYTES);
+        assertTrue(alpha.send(BETA_NAME, transfer));
+
+        int drains = 0;
+        List<MinecraftStatusBridge.EncodedMessage> drained = alpha.drainStatusOutbox(BETA_NAME, NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MIN_BYTES);
+        while (!drained.isEmpty()) {
+            drains++;
+            assertTrue(drained.size() >= 1, "every non-terminal drain must ship at least one fragment");
+            assertTrue(drains <= 40, "jumbo fragments must fully ship within 40 floor-budget drains");
+            drained = alpha.drainStatusOutbox(BETA_NAME, NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MIN_BYTES);
+        }
+        assertTrue(drains > 1, "a jumbo frame must fragment across multiple floor-budget drains");
+    }
+
+    @Test
+    void statusSidebandRequestBudgetRampDoublesOnSuccessAndHalvesOnFailure() {
+        NetworkManager alpha = manager(config(8907, ALPHA_NAME), ALPHA_GAME_PORT, "budget-ramp");
+        assertEquals(4000, NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MIN_BYTES);
+        assertEquals(20_000, NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MAX_BYTES);
+        assertEquals(NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MIN_BYTES, alpha.statusRequestBudgetFor(BETA_NAME));
+        alpha.recordStatusRequestSuccess(BETA_NAME);
+        alpha.recordStatusRequestSuccess(BETA_NAME);
+        assertEquals(NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MIN_BYTES * 4, alpha.statusRequestBudgetFor(BETA_NAME));
+        alpha.recordStatusRequestSuccess(BETA_NAME);
+        assertEquals(NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MAX_BYTES, alpha.statusRequestBudgetFor(BETA_NAME));
+        alpha.recordStatusRequestSuccess(BETA_NAME);
+        assertEquals(NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MAX_BYTES, alpha.statusRequestBudgetFor(BETA_NAME));
+        alpha.recordStatusRequestFailure(BETA_NAME);
+        assertEquals(NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MAX_BYTES / 2, alpha.statusRequestBudgetFor(BETA_NAME));
+        alpha.recordStatusRequestFailure(BETA_NAME);
+        assertEquals(NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MAX_BYTES / 4, alpha.statusRequestBudgetFor(BETA_NAME));
+        alpha.recordStatusRequestFailure(BETA_NAME);
+        assertEquals(NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MIN_BYTES, alpha.statusRequestBudgetFor(BETA_NAME));
+        alpha.recordStatusRequestFailure(BETA_NAME);
+        assertEquals(NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MIN_BYTES, alpha.statusRequestBudgetFor(BETA_NAME));
+    }
+
+    @Test
+    void statusSidebandNudgeRespectsSingleFlight() throws IOException {
+        NetworkConfig alphaConfig = config(freePort(), ALPHA_NAME);
+        alphaConfig.listenEnabled = false;
+        NetworkConfig.PeerEntry betaRoute = route(BETA_NAME, freePort());
+        betaRoute.publicHost = "127.0.0.1";
+        betaRoute.publicPort = freePort();
+
+        NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "nudge-alpha");
+        alpha.savePeer(betaRoute);
+        alpha.statusPollInFlight.add(BETA_NAME);
+        alpha.start();
+
+        WireMessage.HandoffRequest handoff = new WireMessage.HandoffRequest(UUID.randomUUID(), UUID.randomUUID(), "Steve", UUID.randomUUID(), traversive());
+        assertTrue(alpha.send(BETA_NAME, handoff));
+
+        assertEquals(0L, alpha.nextStatusAttempt.get(BETA_NAME));
+        List<MinecraftStatusBridge.EncodedMessage> drained = alpha.drainStatusOutbox(BETA_NAME, NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MAX_BYTES);
+        assertEquals(1, drained.size());
+        assertInstanceOf(WireMessage.HandoffRequest.class, drained.get(0).message());
+        assertTrue(alpha.drainStatusOutbox(BETA_NAME, NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MAX_BYTES).isEmpty());
+    }
+
+    @Test
     void statusReportsUndialableRoutesAsWaiting() throws IOException {
         int portA = freePort();
         NetworkConfig alphaConfig = config(portA, ALPHA_NAME);
@@ -595,6 +692,129 @@ class NetworkManagerTest {
         NetworkManager manager = manager(config, 25565, "disabled");
         manager.start();
         assertFalse(manager.isRunning());
+    }
+
+    @Test
+    void sendToPeersDeliversToAllRawPeers() throws IOException, InterruptedException {
+        int portA = freePort();
+        int portB = freePort();
+        int portG = freePort();
+        NetworkManager alpha = manager(config(portA, ALPHA_NAME), ALPHA_GAME_PORT, "fanout-alpha");
+        NetworkManager beta = manager(config(portB, BETA_NAME), BETA_GAME_PORT, "fanout-beta");
+        NetworkManager gamma = manager(config(portG, "gamma"), 25567, "fanout-gamma");
+        alpha.savePeer(route(BETA_NAME, portB));
+        alpha.savePeer(route("gamma", portG));
+        LinkedBlockingQueue<String> received = new LinkedBlockingQueue<>();
+        beta.setMessageSink((peerName, message) -> {
+            if (message instanceof WireMessage.PortalDirectory) {
+                received.offer("beta");
+            }
+        });
+        gamma.setMessageSink((peerName, message) -> {
+            if (message instanceof WireMessage.PortalDirectory) {
+                received.offer("gamma");
+            }
+        });
+        alpha.start();
+        beta.start();
+        gamma.start();
+        awaitTrue("alpha raw-connected to both", () -> alpha.isPeerReady(BETA_NAME) && alpha.isPeerReady("gamma"), 10_000L);
+
+        alpha.sendToPeers(List.of(BETA_NAME, "gamma"), new WireMessage.PortalDirectory(List.of()));
+
+        java.util.Set<String> receivers = new java.util.HashSet<>();
+        for (int i = 0; i < 2; i++) {
+            String receiver = received.poll(10L, TimeUnit.SECONDS);
+            assertTrue(receiver != null, "expected both peers to receive the shared frame");
+            receivers.add(receiver);
+        }
+        assertTrue(receivers.contains("beta") && receivers.contains("gamma"), "both raw peers must receive the multicast, got " + receivers);
+    }
+
+    @Test
+    void sendToPeersFallsBackToSidebandOnlyPeer() throws IOException, InterruptedException {
+        int portA = freePort();
+        int portB = freePort();
+        int portG = freePort();
+        NetworkConfig alphaConfig = config(portA, ALPHA_NAME);
+        NetworkConfig betaConfig = config(portB, BETA_NAME);
+        NetworkConfig gammaConfig = config(portG, "gamma");
+        gammaConfig.listenEnabled = false;
+
+        NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "mixed-alpha");
+        NetworkManager beta = manager(betaConfig, BETA_GAME_PORT, "mixed-beta");
+        NetworkManager gamma = manager(gammaConfig, 25567, "mixed-gamma");
+        alpha.savePeer(route(BETA_NAME, portB));
+        NetworkConfig.PeerEntry gammaRoute = route("gamma", portG);
+        gammaRoute.publicHost = "127.0.0.1";
+        gammaRoute.publicPort = 25567;
+        alpha.savePeer(gammaRoute);
+        NetworkConfig.PeerEntry alphaRoute = new NetworkConfig.PeerEntry();
+        alphaRoute.name = ALPHA_NAME;
+        alphaRoute.host = "";
+        alphaRoute.port = 0;
+        alphaRoute.publicHost = "127.0.0.1";
+        alphaRoute.publicPort = ALPHA_GAME_PORT;
+        gamma.savePeer(alphaRoute);
+
+        LinkedBlockingQueue<String> received = new LinkedBlockingQueue<>();
+        beta.setMessageSink((peerName, message) -> {
+            if (message instanceof WireMessage.PortalDirectory) {
+                received.offer("beta");
+            }
+        });
+        gamma.setMessageSink((peerName, message) -> {
+            if (message instanceof WireMessage.PortalDirectory) {
+                received.offer("gamma");
+            }
+        });
+        alpha.start();
+        beta.start();
+        gamma.start();
+        awaitTrue("alpha raw-connected to beta", () -> alpha.isPeerReady(BETA_NAME), 10_000L);
+
+        alpha.sendToPeers(List.of(BETA_NAME, "gamma"), new WireMessage.PortalDirectory(List.of()));
+
+        java.util.Set<String> receivers = new java.util.HashSet<>();
+        for (int i = 0; i < 16 && !receivers.contains("gamma"); i++) {
+            MinecraftStatusBridge.StatusPacket request = gamma.createStatusBridgePacket(ALPHA_NAME, List.of());
+            MinecraftStatusBridge.StatusPacket response = alpha.handleStatusBridgeRequest(request);
+            assertTrue(response != null);
+            assertTrue(gamma.handleStatusBridgeResponse(ALPHA_NAME, response, 12L));
+            String receiver = received.poll(500L, TimeUnit.MILLISECONDS);
+            while (receiver != null) {
+                receivers.add(receiver);
+                receiver = received.poll(100L, TimeUnit.MILLISECONDS);
+            }
+        }
+        assertTrue(receivers.contains("beta"), "raw peer must receive the multicast");
+        assertTrue(receivers.contains("gamma"), "sideband-only peer must receive the multicast via the per-peer fallback");
+    }
+
+    @Test
+    void recordDictionarySampleSkipsExcludedTypes() {
+        NetworkManager manager = manager(config(8905, ALPHA_NAME), ALPHA_GAME_PORT, "sample-types");
+        byte[] bulky = new byte[4096];
+        manager.recordDictionarySample(WireMessageType.DICT_DATA, bulky);
+        manager.recordDictionarySample(WireMessageType.PING, new byte[40]);
+        assertEquals(0L, manager.dictionarySampleCollector().accumulatedBytes());
+        manager.recordDictionarySample(WireMessageType.CHUNK_DIFF, bulky);
+        assertEquals(4096L, manager.dictionarySampleCollector().accumulatedBytes());
+    }
+
+    @Test
+    void recordDictionarySampleIsNoOpWhenCollectorFull() {
+        NetworkManager manager = manager(config(8906, ALPHA_NAME), ALPHA_GAME_PORT, "sample-full");
+        DictionarySampleCollector collector = manager.dictionarySampleCollector();
+        byte[] chunk = new byte[32 * 1024];
+        int guard = 0;
+        while (!collector.isFull() && guard++ < 4096) {
+            collector.record(chunk);
+        }
+        assertTrue(collector.isFull());
+        int countWhenFull = collector.sampleCount();
+        manager.recordDictionarySample(WireMessageType.CHUNK_DIFF, new byte[4096]);
+        assertEquals(countWhenFull, collector.sampleCount());
     }
 
     @Test

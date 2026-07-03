@@ -88,6 +88,9 @@ public final class CaptureRegionScheduler {
             }
             for (Map.Entry<Long, ChunkDirtySet> chunkEntry : worldEntry.getValue().entrySet()) {
                 long chunkKey = chunkEntry.getKey();
+                if (chunkEntry.getValue().isEmpty() && !accumulator.hasPendingLight(worldEntry.getKey(), chunkKey)) {
+                    continue;
+                }
                 int chunkX = (int) (chunkKey >> 32);
                 int chunkZ = (int) chunkKey;
                 FoliaScheduler.runRegion(plugin, world, chunkX, chunkZ, () -> accumulator.drainChunk(world, chunkKey, hook));

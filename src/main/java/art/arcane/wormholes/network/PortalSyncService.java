@@ -66,10 +66,7 @@ public final class PortalSyncService {
             return;
         }
         if (isShareable(portal)) {
-            WireMessage.PortalUpsert upsert = new WireMessage.PortalUpsert(toInfo(portal));
-            for (NetworkManager.PeerStatus peer : network.status()) {
-                network.send(peer.name(), upsert);
-            }
+            network.sendToPeers(peerNames(), new WireMessage.PortalUpsert(toInfo(portal)));
         } else {
             broadcastRemove(portal.getId());
         }
@@ -79,10 +76,7 @@ public final class PortalSyncService {
         if (!network.isRunning()) {
             return;
         }
-        WireMessage.PortalRemove remove = new WireMessage.PortalRemove(portalId);
-        for (NetworkManager.PeerStatus peer : network.status()) {
-            network.send(peer.name(), remove);
-        }
+        network.sendToPeers(peerNames(), new WireMessage.PortalRemove(portalId));
     }
 
     public static boolean isApplyingRemote() {
@@ -117,9 +111,16 @@ public final class PortalSyncService {
             network.send(linkedPeer, update);
             return;
         }
-        for (NetworkManager.PeerStatus peer : network.status()) {
-            network.send(peer.name(), update);
+        network.sendToPeers(peerNames(), update);
+    }
+
+    private List<String> peerNames() {
+        List<NetworkManager.PeerStatus> statuses = network.status();
+        List<String> names = new ArrayList<>(statuses.size());
+        for (NetworkManager.PeerStatus peer : statuses) {
+            names.add(peer.name());
         }
+        return names;
     }
 
     public void applySettingsUpdate(String peerName, WireMessage.PortalSettingsUpdate update) {

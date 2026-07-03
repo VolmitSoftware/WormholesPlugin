@@ -102,4 +102,16 @@ class DictionarySampleCollectorTest {
         collector.record(filledArray(256, (byte) 2));
         assertTrue(collector.isFull());
     }
+
+    @Test
+    void isFullReflectsStateWithoutReset() throws InterruptedException {
+        DictionarySampleCollector collector = new DictionarySampleCollector(512);
+        collector.record(filledArray(256, (byte) 1));
+        collector.record(filledArray(256, (byte) 2));
+        boolean[] observed = new boolean[1];
+        Thread observer = new Thread(() -> observed[0] = collector.isFull());
+        observer.start();
+        observer.join();
+        assertTrue(observed[0]);
+    }
 }

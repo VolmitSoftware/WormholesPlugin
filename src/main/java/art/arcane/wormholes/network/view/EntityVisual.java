@@ -123,9 +123,9 @@ public record EntityVisual(
     }
 
     public void write(DataOutputStream out) throws IOException {
-        out.writeByte(mode);
-        out.writeInt(sequence);
-        out.writeInt(presentMask);
+        int header = ((mode == MODE_DELTA ? 1 : 0) << 15) | (presentMask & 0x7FFF);
+        out.writeShort(header);
+        out.writeShort(sequence & 0xFFFF);
         out.writeLong(id.getMostSignificantBits());
         out.writeLong(id.getLeastSignificantBits());
         if ((presentMask & FIELD_TYPE) != 0) {
@@ -186,9 +186,10 @@ public record EntityVisual(
     }
 
     public static EntityVisual read(DataInputStream in) throws IOException {
-        byte mode = in.readByte();
-        int sequence = in.readInt();
-        int presentMask = in.readInt();
+        int header = in.readUnsignedShort();
+        byte mode = (header & 0x8000) != 0 ? MODE_DELTA : MODE_FULL;
+        int presentMask = header & 0x7FFF;
+        int sequence = in.readUnsignedShort();
         UUID id = new UUID(in.readLong(), in.readLong());
         String typeKey = (presentMask & FIELD_TYPE) != 0 ? in.readUTF() : "";
         double x = 0.0D;
