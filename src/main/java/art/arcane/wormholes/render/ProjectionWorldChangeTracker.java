@@ -21,15 +21,10 @@ public final class ProjectionWorldChangeTracker {
             return;
         }
         ConcurrentHashMap<Long, Long> chunks = worldChunks.computeIfAbsent(worldId, ignored -> new ConcurrentHashMap<Long, Long>(256));
-        Long key = Long.valueOf(chunkKey(blockX >> 4, blockZ >> 4));
-        Long existing = chunks.get(key);
-        if (existing != null && existing.longValue() == version.get()) {
-            return;
-        }
         long stamp = version.incrementAndGet();
         Long boxed = Long.valueOf(stamp);
-        chunks.put(key, boxed);
         worldMaxStamp.computeIfAbsent(worldId, ignored -> new AtomicLong()).accumulateAndGet(stamp, Math::max);
+        chunks.put(Long.valueOf(chunkKey(blockX >> 4, blockZ >> 4)), boxed);
         if (chunks.size() > MAX_TRACKED_CHUNKS_PER_WORLD) {
             chunks.clear();
             clearFloor.put(worldId, boxed);

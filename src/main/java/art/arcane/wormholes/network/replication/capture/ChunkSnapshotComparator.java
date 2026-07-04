@@ -176,6 +176,9 @@ public final class ChunkSnapshotComparator {
         if (!world.isChunkLoaded(chunkX, chunkZ)) {
             return;
         }
+        if (!replication.hasSubscribers(world, chunkKey)) {
+            return;
+        }
         Chunk chunk;
         try {
             chunk = world.getChunkAt(chunkX, chunkZ);
@@ -198,6 +201,10 @@ public final class ChunkSnapshotComparator {
     }
 
     private void compareSnapshot(World world, long chunkKey, int chunkX, int chunkZ, ChunkSnapshot snapshot, int minHeight, int maxHeight) {
+        if (!replication.hasSubscribers(world, chunkKey)) {
+            evict(world.getUID(), chunkKey);
+            return;
+        }
         Map<Long, ChunkSnapshot> worldMap = worldShadows.computeIfAbsent(world.getUID(), ignored -> new ConcurrentHashMap<>());
         ChunkSnapshot previous = worldMap.put(chunkKey, snapshot);
         if (previous == null) {

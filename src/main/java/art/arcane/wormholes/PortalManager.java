@@ -14,6 +14,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -21,6 +22,9 @@ import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.world.WorldLoadEvent;
 
 import art.arcane.wormholes.portal.ILocalPortal;
@@ -46,6 +50,7 @@ public class PortalManager implements Listener
 
 	private KMap<UUID, ILocalPortal> portals;
 	private volatile List<ILocalPortal> portalSnapshot = List.of();
+	private final Map<UUID, PlayerPosition> playerPositions = new ConcurrentHashMap<UUID, PlayerPosition>();
 	private final List<File> pendingPortalFiles;
 	private final boolean foliaRuntime;
 	private boolean initialLoadComplete;
@@ -77,6 +82,33 @@ public class PortalManager implements Listener
 	public void on(WorldLoadEvent e)
 	{
 		loadPendingPortals();
+	}
+
+	@EventHandler
+	public void on(PlayerJoinEvent e)
+	{
+		recordPlayerPosition(e.getPlayer(), e.getPlayer().getLocation());
+	}
+
+	@EventHandler
+	public void on(PlayerMoveEvent e)
+	{
+		recordPlayerPosition(e.getPlayer(), e.getTo());
+	}
+
+	@EventHandler
+	public void on(PlayerQuitEvent e)
+	{
+		playerPositions.remove(e.getPlayer().getUniqueId());
+	}
+
+	private void recordPlayerPosition(Player player, Location location)
+	{
+		if(location == null || location.getWorld() == null)
+		{
+			return;
+		}
+		playerPositions.put(player.getUniqueId(), new PlayerPosition(location.getWorld().getUID(), location.getX(), location.getY(), location.getZ()));
 	}
 
 	private void loadExistingPortals()
@@ -330,18 +362,7 @@ public class PortalManager implements Listener
 
 	private void refreshAttendance(List<ILocalPortal> snapshot)
 	{
-		Collection<? extends Player> online = Bukkit.getOnlinePlayers();
-		List<PlayerPosition> positions = new ArrayList<PlayerPosition>(online.size());
-		for(Player player : online)
-		{
-			Location location = player.getLocation();
-			World world = location.getWorld();
-			if(world == null)
-			{
-				continue;
-			}
-			positions.add(new PlayerPosition(world, location.getX(), location.getY(), location.getZ()));
-		}
+		Collection<PlayerPosition> positions = playerPositions.values();
 
 		for(ILocalPortal portal : snapshot)
 		{
@@ -359,11 +380,11 @@ public class PortalManager implements Listener
 				threshold += 0.5D * Math.sqrt((area.sizeX() * area.sizeX()) + (area.sizeY() * area.sizeY()) + (area.sizeZ() * area.sizeZ()));
 			}
 			double thresholdSquared = threshold * threshold;
-			World world = center.getWorld();
+			UUID worldId = center.getWorld().getUID();
 			boolean attended = false;
 			for(PlayerPosition position : positions)
 			{
-				if(!world.equals(position.world()))
+				if(!worldId.equals(position.worldId()))
 				{
 					continue;
 				}
@@ -667,7 +688,7 @@ public class PortalManager implements Listener
 		FAILED
 	}
 
-	private record PlayerPosition(World world, double x, double y, double z)
+	private record PlayerPosition(UUID worldId, double x, double y, double z)
 	{
 	}
 

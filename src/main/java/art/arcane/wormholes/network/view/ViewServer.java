@@ -18,7 +18,6 @@ import art.arcane.wormholes.util.AxisAlignedBB;
 
 import org.bukkit.ChunkSnapshot;
 import org.bukkit.Location;
-import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Entity;
@@ -26,6 +25,8 @@ import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Pose;
 import org.bukkit.event.Listener;
+import org.bukkit.inventory.EntityEquipment;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.BoundingBox;
 import org.bukkit.util.Vector;
 
@@ -50,8 +51,8 @@ public final class ViewServer implements Listener {
     private static final int MAX_BULK_SNAPSHOTS_PER_TICK = 8;
     private static final int SIDEBAND_MAX_ENTITIES = 24;
     private static final long SIDEBAND_ENTITY_INTERVAL_TICKS = 2L;
-    private static final long SIDEBAND_FULL_RESYNC_TICKS = 200L;
-    private static final long SIDEBAND_FULL_RESYNC_JITTER_TICKS = 80L;
+    private static final long SIDEBAND_FULL_RESYNC_TICKS = 80L;
+    private static final long SIDEBAND_FULL_RESYNC_JITTER_TICKS = 40L;
     private static final long BLOB_RECAPTURE_INTERVAL_TICKS = 40L;
 
     private final NetworkManager network;
@@ -113,7 +114,7 @@ public final class ViewServer implements Listener {
         }
     }
 
-    record BlobCaptureState(long lastCaptureTick, Pose pose, boolean onFire, Material mainHand, Material offHand) {
+    record BlobCaptureState(long lastCaptureTick, Pose pose, boolean onFire, int equipmentSignature) {
     }
 
     private record ChunkTicketKey(UUID worldId, int chunkX, int chunkZ) {
@@ -599,8 +600,6 @@ public final class ViewServer implements Listener {
         String playerName = "";
         String textureValue = "";
         String textureSignature = "";
-        Material mainHand = Material.AIR;
-        Material offHand = Material.AIR;
         if (entity instanceof Player player) {
             playerName = player.getName();
             if (session.sentProfiles.add(player.getUniqueId())) {
@@ -608,8 +607,6 @@ public final class ViewServer implements Listener {
                 textureValue = textures[0];
                 textureSignature = textures[1];
             }
-            mainHand = player.getInventory().getItemInMainHand().getType();
-            offHand = player.getInventory().getItemInOffHand().getType();
         }
         UUID passengerOf = entity.getVehicle() == null ? null : entity.getVehicle().getUniqueId();
         UUID leashHolder = null;
@@ -626,12 +623,13 @@ public final class ViewServer implements Listener {
         BlobCaptureState previousBlobState = session.blobCaptureStates.get(entity.getUniqueId());
         Pose pose = entity.getPose();
         boolean onFire = entity.getFireTicks() > 0;
+        int equipmentSignature = equipmentSignature(entity);
         byte[] metadata;
         byte[] equipment;
-        if (shouldRecaptureBlobs(previousVisual, previousBlobState, entityTick, BLOB_RECAPTURE_INTERVAL_TICKS, pose, onFire, mainHand, offHand)) {
+        if (shouldRecaptureBlobs(previousVisual, previousBlobState, entityTick, BLOB_RECAPTURE_INTERVAL_TICKS, pose, onFire, equipmentSignature)) {
             metadata = PacketBlobs.captureMetadata(entity);
             equipment = PacketBlobs.captureEquipment(entity);
-            session.blobCaptureStates.put(entity.getUniqueId(), new BlobCaptureState(entityTick, pose, onFire, mainHand, offHand));
+            session.blobCaptureStates.put(entity.getUniqueId(), new BlobCaptureState(entityTick, pose, onFire, equipmentSignature));
         } else {
             metadata = previousVisual.metadata();
             equipment = previousVisual.equipment();
@@ -657,14 +655,38 @@ public final class ViewServer implements Listener {
     }
 
     static boolean shouldRecaptureBlobs(EntityVisual previousVisual, BlobCaptureState previousBlobState, long entityTick, long intervalTicks,
-                                        Pose pose, boolean onFire, Material mainHand, Material offHand) {
+                                        Pose pose, boolean onFire, int equipmentSignature) {
         return previousVisual == null
             || previousBlobState == null
             || entityTick - previousBlobState.lastCaptureTick() >= intervalTicks
             || previousBlobState.pose() != pose
             || previousBlobState.onFire() != onFire
-            || previousBlobState.mainHand() != mainHand
-            || previousBlobState.offHand() != offHand;
+            || previousBlobState.equipmentSignature() != equipmentSignature;
+    }
+
+    private static int equipmentSignature(Entity entity) {
+        if (!(entity instanceof LivingEntity living)) {
+            return 0;
+        }
+        EntityEquipment equipment = living.getEquipment();
+        if (equipment == null) {
+            return 0;
+        }
+        int signature = 1;
+        signature = 31 * signature + itemSignature(equipment.getHelmet());
+        signature = 31 * signature + itemSignature(equipment.getChestplate());
+        signature = 31 * signature + itemSignature(equipment.getLeggings());
+        signature = 31 * signature + itemSignature(equipment.getBoots());
+        signature = 31 * signature + itemSignature(equipment.getItemInMainHand());
+        signature = 31 * signature + itemSignature(equipment.getItemInOffHand());
+        return signature;
+    }
+
+    private static int itemSignature(ItemStack stack) {
+        if (stack == null) {
+            return 0;
+        }
+        return (stack.getType().ordinal() * 31) + stack.getAmount();
     }
 
     private static EntityVisual withSequenceAndMode(EntityVisual source, int sequence, byte mode) {

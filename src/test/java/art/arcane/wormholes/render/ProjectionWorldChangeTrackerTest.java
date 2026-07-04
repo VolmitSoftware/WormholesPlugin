@@ -34,13 +34,14 @@ public final class ProjectionWorldChangeTrackerTest {
     }
 
     @Test
-    public void repeatedSameChunkMarksDoNotAdvanceVersion() {
+    public void repeatedSameChunkMarksStayDetectableAfterResample() {
         ProjectionWorldChangeTracker tracker = new ProjectionWorldChangeTracker();
         tracker.markChanged(WORLD, 35, -18);
+        long afterFirst = tracker.currentVersion();
         tracker.markChanged(WORLD, 36, -17);
 
-        assertEquals(1L, tracker.currentVersion());
-        assertTrue(tracker.dirtySince(WORLD, 0, -4, 4, 0, 0L));
+        assertEquals(2L, tracker.currentVersion());
+        assertTrue(tracker.dirtySince(WORLD, 0, -4, 4, 0, afterFirst));
     }
 
     @Test
