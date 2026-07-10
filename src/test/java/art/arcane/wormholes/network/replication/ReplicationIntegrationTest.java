@@ -28,9 +28,9 @@ class ReplicationIntegrationTest {
         ChunkReplicationManager manager = source.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        manager.subscribe(PEER, world, chunkKey);
+        manager.subscribe(PEER, world.getUID(), world, chunkKey);
         byte[] bulkPayload = synthesizeBulkPayload(0, 0, 17L);
-        manager.sendBulk(PEER, chunkKey, bulkPayload, contentHashOf(bulkPayload));
+        manager.sendBulk(PEER, world.getUID(), chunkKey, bulkPayload, contentHashOf(bulkPayload));
 
         RemoteChunkStore sink = new RemoteChunkStore();
         WireMessage bulkMessage = source.sentTo(PEER).get(0);
@@ -67,9 +67,9 @@ class ReplicationIntegrationTest {
         ChunkReplicationManager manager = source.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        manager.subscribe(PEER, world, chunkKey);
+        manager.subscribe(PEER, world.getUID(), world, chunkKey);
         byte[] bulkPayload = synthesizeBulkPayload(0, 0, 17L);
-        manager.sendBulk(PEER, chunkKey, bulkPayload, contentHashOf(bulkPayload));
+        manager.sendBulk(PEER, world.getUID(), chunkKey, bulkPayload, contentHashOf(bulkPayload));
 
         RemoteChunkStore sink = new RemoteChunkStore();
         byte[] tamperedPayload = synthesizeBulkPayload(0, 0, 99L);
@@ -110,16 +110,16 @@ class ReplicationIntegrationTest {
         ChunkReplicationManager manager = source.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(1, 1);
-        manager.subscribe(PEER, world, chunkKey);
+        manager.subscribe(PEER, world.getUID(), world, chunkKey);
         byte[] bulkPayload = synthesizeBulkPayload(1, 1, 5L);
-        manager.sendBulk(PEER, chunkKey, bulkPayload, contentHashOf(bulkPayload));
+        manager.sendBulk(PEER, world.getUID(), chunkKey, bulkPayload, contentHashOf(bulkPayload));
         assertTrue(manager.isBulked(PEER, chunkKey));
 
         manager.requestResync(PEER, chunkKey);
         assertFalse(manager.isBulked(PEER, chunkKey));
 
         byte[] refreshed = synthesizeBulkPayload(1, 1, 5L);
-        manager.sendBulk(PEER, chunkKey, refreshed, contentHashOf(refreshed));
+        manager.sendBulk(PEER, world.getUID(), chunkKey, refreshed, contentHashOf(refreshed));
         assertTrue(manager.isBulked(PEER, chunkKey));
         assertEquals(2L, manager.statsSnapshot().bulkSent());
     }

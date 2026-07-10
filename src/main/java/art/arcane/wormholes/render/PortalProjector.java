@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -29,8 +30,9 @@ import art.arcane.wormholes.portal.PortalStructure;
 import art.arcane.wormholes.portal.ProjectionMode;
 import art.arcane.wormholes.portal.RemotePortal;
 import art.arcane.wormholes.portal.UniversalTunnel;
-import art.arcane.wormholes.render.view.LiveWorldView;
+import art.arcane.wormholes.render.view.ProjectionEntityView;
 import art.arcane.wormholes.render.view.ProjectionWorldView;
+import art.arcane.wormholes.render.view.ProjectionWorldViewProvider;
 import art.arcane.wormholes.render.view.RemoteWorldView;
 import art.arcane.wormholes.util.AxisAlignedBB;
 import art.arcane.wormholes.util.Direction;
@@ -43,13 +45,16 @@ public final class PortalProjector {
 
     private final ILocalPortal portal;
     private final Player observer;
+    private final UUID observerId;
     private final ProjectionClaimArbiter claimArbiter;
+    private final ProjectionWorldViewProvider viewProvider;
+    private final BooleanSupplier activeGuard;
     private Long2ObjectOpenHashMap<ProjectedBlockClaim> projected;
     private Long2ObjectOpenHashMap<ProjectedBlockClaim> nextProjected;
     private final HashMap<BlockData, BlockData> transformedBlockCache;
     private final HashMap<World, List<ILocalPortal>> recursivePortalCandidates;
     private final HashMap<ProjectionWorldView, Long2ObjectOpenHashMap<ProjectedSample>> remoteSampleCache;
-    private final HashMap<World, LiveWorldView> liveViews;
+    private final HashMap<World, ProjectionWorldView> liveViews;
     private final ArrayList<RecursivePortalIndex> recursivePortalIndexes;
     private final BlockData airBlockData;
     private final double[] scratchRot = new double[3];
@@ -61,6 +66,7 @@ public final class PortalProjector {
 
     private boolean firstProjectionDone;
     private boolean closed;
+    private volatile boolean discardRequested;
     private long projectCallCount;
     private long lastDiagLogCall;
     private long lastProjectNanos;
@@ -69,7 +75,7 @@ public final class PortalProjector {
     private int lastFrustumRejected;
     private int lastRemoteSamples;
     private int lastBlockChanges;
-    private int lastRenderedCells;
+    private volatile int lastRenderedCells;
     private int lastReuseSkips;
     private int lastClaimConflicts;
     private int lastWinnerChanges;
@@ -94,21 +100,27 @@ public final class PortalProjector {
     private boolean pendingRemoteResample;
     private int remoteResendStage;
     private long lastResampleVersion = -1L;
+    private long lastSourceViewRevision = -1L;
 
-    public PortalProjector(ILocalPortal portal, Player observer, ProjectionClaimArbiter claimArbiter) {
+    public PortalProjector(ILocalPortal portal, Player observer, ProjectionClaimArbiter claimArbiter,
+                           ProjectionWorldViewProvider viewProvider, BooleanSupplier activeGuard) {
         this.portal = portal;
         this.observer = observer;
+        this.observerId = observer.getUniqueId();
         this.claimArbiter = claimArbiter;
+        this.viewProvider = viewProvider;
+        this.activeGuard = activeGuard;
         this.projected = new Long2ObjectOpenHashMap<ProjectedBlockClaim>(256);
         this.nextProjected = new Long2ObjectOpenHashMap<ProjectedBlockClaim>(256);
         this.transformedBlockCache = new HashMap<BlockData, BlockData>(128);
         this.recursivePortalCandidates = new HashMap<World, List<ILocalPortal>>(4);
         this.remoteSampleCache = new HashMap<ProjectionWorldView, Long2ObjectOpenHashMap<ProjectedSample>>(4);
-        this.liveViews = new HashMap<World, LiveWorldView>(4);
+        this.liveViews = new HashMap<World, ProjectionWorldView>(4);
         this.recursivePortalIndexes = new ArrayList<RecursivePortalIndex>(4);
         this.airBlockData = Material.AIR.createBlockData();
         this.firstProjectionDone = false;
         this.closed = false;
+        this.discardRequested = false;
         this.projectCallCount = 0L;
         this.lastDiagLogCall = 0L;
         this.lastProjectNanos = 0L;
@@ -149,7 +161,7 @@ public final class PortalProjector {
     }
 
     public int getProjectedCount() {
-        return projected.size();
+        return lastRenderedCells;
     }
 
     public int getSpoofedEntityCount() {
@@ -194,6 +206,14 @@ public final class PortalProjector {
     }
 
     public void project(boolean updateBlocks, boolean updateEntities) {
+        if (!activeGuard.getAsBoolean()) {
+            close();
+            return;
+        }
+        if (discardRequested) {
+            discard();
+            return;
+        }
         if (closed) {
             return;
         }
@@ -256,6 +276,10 @@ public final class PortalProjector {
         }
 
         ProjectionWorldView destView = remoteView != null ? remoteView : liveView(destWorld);
+        ProjectionWorldView localView = liveView(localWorld);
+        if (destView == null || localView == null) {
+            return;
+        }
 
         if (observer == null || !observer.isOnline()) {
             close();
@@ -267,9 +291,24 @@ public final class PortalProjector {
             return;
         }
 
+        int localOriginBlockX = (int) Math.floor(portal.getOrigin().getX());
+        int localOriginBlockZ = (int) Math.floor(portal.getOrigin().getZ());
+        if (!localView.isChunkReady(localOriginBlockX, localOriginBlockZ)) {
+            localView.requestChunk(localOriginBlockX, localOriginBlockZ);
+            return;
+        }
+        if (destAnchor != null && destView.getWorld() != null) {
+            int remoteOriginBlockX = (int) Math.floor(destAnchor.getOrigin().getX());
+            int remoteOriginBlockZ = (int) Math.floor(destAnchor.getOrigin().getZ());
+            if (!destView.isChunkReady(remoteOriginBlockX, remoteOriginBlockZ)) {
+                destView.requestChunk(remoteOriginBlockX, remoteOriginBlockZ);
+                return;
+            }
+        }
+
         Location eye = observer.getEyeLocation();
         if (!updateBlocks) {
-            updateEntitiesOnly(startNanos, dest, mirrorMode, eye);
+            updateEntitiesOnly(startNanos, dest, destAnchor, destView, mirrorMode, eye);
             return;
         }
 
@@ -277,14 +316,14 @@ public final class PortalProjector {
         if (remoteView instanceof RemoteWorldView remoteResendView) {
             maybeForceRemoteResend(remoteResendView);
         }
-        boolean stableResample = computeStableResample(destWorld, destAnchor, remoteView);
+        boolean stableResample = computeStableResample(destWorld, destAnchor, destView);
         if (canReuseProjection(eye, stableResample, remoteView == null)) {
             lastReuseSkips++;
             lastBlockChanges = 0;
             lastProjectNanos = System.nanoTime() - startNanos;
             WormholesTelemetry.addRenderNanos(lastProjectNanos);
             if (updateEntities) {
-                updateEntitiesOnly(startNanos, dest, mirrorMode, eye);
+                updateEntitiesOnly(startNanos, dest, destAnchor, destView, mirrorMode, eye);
             }
             return;
         }
@@ -319,8 +358,8 @@ public final class PortalProjector {
         int exitCount = 0;
         int keptCount = 0;
 
-        int localMinY = localWorld.getMinHeight();
-        int localMaxY = localWorld.getMaxHeight() - 1;
+        int localMinY = localView.getMinHeight();
+        int localMaxY = localView.getMaxHeight() - 1;
         AxisAlignedBB area = next.getRegion();
         int xa = (int) Math.floor(area.getXa());
         int ya = Math.max((int) Math.floor(area.getYa()), localMinY);
@@ -473,6 +512,14 @@ public final class PortalProjector {
                     ProjectedBlockClaim previousCell = projected.get(key);
                     BlockData previousData = previousCell == null ? null : previousCell.getData();
                     long previousRemoteKey = previousCell == null ? NO_REMOTE_KEY : previousCell.getLightRemoteKey();
+                    if (!localView.isChunkReady(x, z)) {
+                        localView.requestChunk(x, z);
+                        if (previousCell != null) {
+                            nextProjected.put(key, previousCell);
+                            keptCount++;
+                        }
+                        continue;
+                    }
                     if (previousCell != null && previousRemoteKey == remoteKey) {
                         if (!forceStableCellResample && !forceFullSend) {
                             nextProjected.put(key, previousCell);
@@ -487,6 +534,10 @@ public final class PortalProjector {
                         dest,
                         Settings.PROJECTION_RECURSIVE_PORTAL_DEPTH);
                     if (sample.kind == ProjectedSampleKind.NO_SAMPLE) {
+                        if (!destView.isChunkReady(rx, rz) && previousCell != null && previousRemoteKey == remoteKey) {
+                            nextProjected.put(key, previousCell);
+                            keptCount++;
+                        }
                         continue;
                     }
 
@@ -494,7 +545,7 @@ public final class PortalProjector {
                     boolean maskAir = sample.kind == ProjectedSampleKind.MASK_AIR;
                     boolean remoteAir = sample.kind == ProjectedSampleKind.REMOTE_AIR;
                     if (maskAir || remoteAir) {
-                        boolean localAir = remoteAir && isLocalAir(localWorld, x, y, z);
+                        boolean localAir = remoteAir && isLocalAir(localView, x, y, z);
                         if (!shouldProjectAirSample(sample.kind, localAir)) {
                             continue;
                         }
@@ -511,15 +562,9 @@ public final class PortalProjector {
                     } else {
                         keptCount++;
                     }
-                    ProjectedBlockClaim candidateClaim = sample.asClaim(projectedHit);
-                    ProjectedBlockClaim nextCell = previousCell;
-                    if (nextCell == null
-                        || nextCell.getLightRemoteKey() != sample.remoteKey
-                        || !nextCell.sameLightSource(candidateClaim)
-                        || !nextCell.getData().equals(projectedHit)
-                        || nextCell.isMaskAir() != maskAir) {
-                        nextCell = candidateClaim;
-                    }
+                    ProjectedBlockClaim nextCell = sample.matchesClaim(previousCell, projectedHit, maskAir)
+                        ? previousCell
+                        : sample.asClaim(projectedHit);
                     nextProjected.put(key, nextCell);
                 }
             }
@@ -531,6 +576,15 @@ public final class PortalProjector {
                 continue;
             }
             exitCount++;
+        }
+
+        if (!activeGuard.getAsBoolean()) {
+            close();
+            return;
+        }
+        if (discardRequested) {
+            discard();
+            return;
         }
 
         ProjectionClaimArbiter.ClaimUpdateResult claimResult = claimArbiter.submit(observer, portal, localWorld,
@@ -545,14 +599,11 @@ public final class PortalProjector {
             initialFullSendPassesRemaining--;
         }
 
-        if (updateEntities && dest != null) {
-            updateProjectedEntities(dest, next, depthBlocks, !nextProjected.isEmpty(), projectionLocalFrame, projectionRemoteFrame);
-        } else if (updateEntities && remoteView instanceof RemoteWorldView remoteWorldView) {
-            entityRenderer.applyRemote(observer, portal,
-                remoteOriginX, remoteOriginY, remoteOriginZ,
-                remoteWorldView, next, depthBlocks,
-                projectionLocalFrame, projectionRemoteFrame);
+        if (updateEntities) {
+            updateProjectedEntities(dest, destAnchor, destView, mirrorMode, next, depthBlocks,
+                !nextProjected.isEmpty(), projectionLocalFrame, projectionRemoteFrame);
         }
+        lastSourceViewRevision = destView.getRevision();
         lastProjectNanos = System.nanoTime() - startNanos;
         WormholesTelemetry.addRenderNanos(lastProjectNanos);
 
@@ -574,9 +625,11 @@ public final class PortalProjector {
 
     private void updateEntitiesOnly(long startNanos,
                                     ILocalPortal dest,
+                                    IPortal destAnchor,
+                                    ProjectionWorldView destView,
                                     boolean mirrorMode,
                                     Location eye) {
-        if (dest == null || !firstProjectionDone || projected.isEmpty()) {
+        if (destAnchor == null || !firstProjectionDone || projected.isEmpty()) {
             lastProjectNanos = System.nanoTime() - startNanos;
             WormholesTelemetry.addRenderNanos(lastProjectNanos);
             return;
@@ -595,7 +648,7 @@ public final class PortalProjector {
         }
 
         PortalFrame localFrame = portal.getFrame();
-        PortalFrame remoteFrame = mirrorMode ? localFrame.flipNormal() : dest.getFrame();
+        PortalFrame remoteFrame = mirrorMode ? localFrame.flipNormal() : destAnchor.getFrame();
         double localOriginX = portal.getOrigin().getX();
         double localOriginY = portal.getOrigin().getY();
         double localOriginZ = portal.getOrigin().getZ();
@@ -608,7 +661,8 @@ public final class PortalProjector {
         boolean eyeFrontSide = (eyeRelX * facingX + eyeRelY * facingY + eyeRelZ * facingZ) >= 0.0D;
         PortalFrame projectionLocalFrame = viewFrame(localFrame, eyeFrontSide);
         PortalFrame projectionRemoteFrame = viewFrame(remoteFrame, eyeFrontSide);
-        updateProjectedEntities(dest, frustum, depthBlocks, true, projectionLocalFrame, projectionRemoteFrame);
+        updateProjectedEntities(dest, destAnchor, destView, mirrorMode, frustum, depthBlocks, true,
+            projectionLocalFrame, projectionRemoteFrame);
         lastProjectNanos = System.nanoTime() - startNanos;
         WormholesTelemetry.addRenderNanos(lastProjectNanos);
     }
@@ -673,10 +727,10 @@ public final class PortalProjector {
         return sample;
     }
 
-    private LiveWorldView liveView(World world) {
-        LiveWorldView view = liveViews.get(world);
+    private ProjectionWorldView liveView(World world) {
+        ProjectionWorldView view = liveViews.get(world);
         if (view == null) {
-            view = new LiveWorldView(world);
+            view = viewProvider.view(world);
             liveViews.put(world, view);
         }
         return view;
@@ -708,7 +762,7 @@ public final class PortalProjector {
         hasCameraSnapshot = false;
         initialFullSendPassesRemaining = Math.max(initialFullSendPassesRemaining, Math.max(1, Settings.PROJECTION_INITIAL_RESEND_PASSES));
         if (observer != null && portal.getId() != null) {
-            claimArbiter.releaseSilently(observer.getUniqueId(), portal.getId());
+            claimArbiter.releaseSilently(observerId, portal.getId());
         }
     }
 
@@ -841,8 +895,9 @@ public final class PortalProjector {
         return ProjectionWorldView.isAir(material);
     }
 
-    private static boolean isLocalAir(World world, int x, int y, int z) {
-        return isAir(world.getType(x, y, z));
+    private static boolean isLocalAir(ProjectionWorldView view, int x, int y, int z) {
+        BlockData data = view.sampleBlockData(x, y, z);
+        return data != null && isAir(data.getMaterial());
     }
 
     static boolean shouldMaskRecursivePortalAperture(boolean traversable, boolean cycle, int remainingDepth) {
@@ -878,6 +933,9 @@ public final class PortalProjector {
     }
 
     private void updateProjectedEntities(ILocalPortal dest,
+                                         IPortal destAnchor,
+                                         ProjectionWorldView destView,
+                                         boolean mirrorMode,
                                          Frustum4D frustum,
                                          double depthBlocks,
                                          boolean hasVisibleProjection,
@@ -887,7 +945,22 @@ public final class PortalProjector {
             entityRenderer.close(observer);
             return;
         }
-        entityRenderer.apply(observer, portal, dest, frustum, depthBlocks, projectionLocalFrame, projectionRemoteFrame);
+        if (viewProvider.usesRegionSnapshots() && destView instanceof ProjectionEntityView entityView) {
+            entityRenderer.applySnapshot(observer, portal, destAnchor, mirrorMode, entityView, frustum, depthBlocks,
+                projectionLocalFrame, projectionRemoteFrame);
+            return;
+        }
+        if (dest != null) {
+            entityRenderer.apply(observer, portal, dest, frustum, depthBlocks, projectionLocalFrame, projectionRemoteFrame);
+            return;
+        }
+        if (destView instanceof RemoteWorldView remoteWorldView) {
+            double remoteOriginX = destAnchor.getOrigin().getX();
+            double remoteOriginY = destAnchor.getOrigin().getY();
+            double remoteOriginZ = destAnchor.getOrigin().getZ();
+            entityRenderer.applyRemote(observer, portal, remoteOriginX, remoteOriginY, remoteOriginZ,
+                remoteWorldView, frustum, depthBlocks, projectionLocalFrame, projectionRemoteFrame);
+        }
     }
 
     private boolean isLightingUpdatePass() {
@@ -938,13 +1011,16 @@ public final class PortalProjector {
         hasCameraSnapshot = true;
     }
 
-    private boolean computeStableResample(World destWorld, IPortal destAnchor, ProjectionWorldView remoteView) {
+    private boolean computeStableResample(World destWorld, IPortal destAnchor, ProjectionWorldView sourceView) {
         if (!firstProjectionDone) {
             return true;
         }
         int cadence = stablePassInterval(Settings.PROJECTION_STABLE_CELL_RESAMPLE_INTERVAL_TICKS);
-        if (remoteView instanceof RemoteWorldView) {
+        if (sourceView instanceof RemoteWorldView) {
             return (projectCallCount % cadence) == 0L;
+        }
+        if (sourceView.getRevision() != lastSourceViewRevision) {
+            return true;
         }
         int backstop = stablePassInterval(STABLE_RESAMPLE_BACKSTOP_TICKS);
         if ((projectCallCount % backstop) == 0L) {
@@ -1019,11 +1095,13 @@ public final class PortalProjector {
         closed = true;
 
         if (observer == null || !observer.isOnline()) {
-            if (observer != null && portal.getId() != null) {
-                claimArbiter.releaseSilently(observer.getUniqueId(), portal.getId());
+            if (portal.getId() != null) {
+                claimArbiter.releaseSilently(observerId, portal.getId());
             }
             projected.clear();
-            entityRenderer.close(observer);
+            nextProjected.clear();
+            lastRenderedCells = 0;
+            entityRenderer.discard();
             return;
         }
 
@@ -1034,6 +1112,7 @@ public final class PortalProjector {
             }
             projected.clear();
             entityRenderer.close(observer);
+            lastRenderedCells = 0;
             return;
         }
 
@@ -1045,6 +1124,26 @@ public final class PortalProjector {
         entityRenderer.close(observer);
 
         projected.clear();
+        nextProjected.clear();
+        lastRenderedCells = 0;
+    }
+
+    public void discard() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        if (observer != null && portal.getId() != null) {
+            claimArbiter.releaseSilently(observer.getUniqueId(), portal.getId());
+        }
+        projected.clear();
+        nextProjected.clear();
+        lastRenderedCells = 0;
+        entityRenderer.discard();
+    }
+
+    public void requestDiscard() {
+        discardRequested = true;
     }
 
     private static double capProjectionDistance(Player observer, double requestedBlocks) {
@@ -1153,6 +1252,17 @@ public final class PortalProjector {
                 return new ProjectedBlockClaim(projectedData, null, ProjectedBlockClaim.NO_REMOTE_KEY, true);
             }
             return new ProjectedBlockClaim(projectedData, lightView, remoteKey, false);
+        }
+
+        private boolean matchesClaim(ProjectedBlockClaim claim, BlockData projectedData, boolean maskAir) {
+            if (claim == null
+                || claim.getLightRemoteKey() != remoteKey
+                || claim.isMaskAir() != maskAir
+                || !claim.getData().equals(projectedData)) {
+                return false;
+            }
+            ProjectionWorldView previousLightView = claim.getLightView();
+            return previousLightView == null ? lightView == null : previousLightView.equals(lightView);
         }
     }
 

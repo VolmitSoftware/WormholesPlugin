@@ -13,6 +13,7 @@ import java.util.logging.Logger;
 
 public final class TestNetworkSink extends NetworkManager {
     private final Map<String, List<WireMessage>> outbound = new ConcurrentHashMap<>();
+    private volatile boolean accepting = true;
 
     public TestNetworkSink(Path dataDirectory) {
         super(Logger.getLogger("Wormholes-test"), new NetworkConfig(), "26.2", "test", 25565, dataDirectory);
@@ -22,6 +23,9 @@ public final class TestNetworkSink extends NetworkManager {
 
     @Override
     public boolean send(String peerName, WireMessage message) {
+        if (!accepting) {
+            return false;
+        }
         outbound.computeIfAbsent(peerName, ignored -> new ArrayList<>()).add(message);
         return true;
     }
@@ -47,5 +51,9 @@ public final class TestNetworkSink extends NetworkManager {
 
     public void clear() {
         outbound.clear();
+    }
+
+    public void setAccepting(boolean accepting) {
+        this.accepting = accepting;
     }
 }

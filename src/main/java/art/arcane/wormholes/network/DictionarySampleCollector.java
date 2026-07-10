@@ -9,7 +9,7 @@ public final class DictionarySampleCollector {
     private static final int MIN_SAMPLE_BYTES = 32;
     private static final int MAX_SAMPLE_BYTES = 32 * 1024;
 
-    private final int budgetBytes;
+    private volatile int budgetBytes;
     private final Deque<byte[]> samples = new ArrayDeque<>();
     private long accumulatedBytes;
     private volatile boolean full;
@@ -68,5 +68,20 @@ public final class DictionarySampleCollector {
 
     public int budgetBytes() {
         return budgetBytes;
+    }
+
+    public synchronized void setBudgetBytes(int budgetBytes) {
+        if (budgetBytes <= 0) {
+            throw new IllegalArgumentException("budgetBytes must be positive, got " + budgetBytes);
+        }
+        this.budgetBytes = budgetBytes;
+        while (accumulatedBytes > budgetBytes && samples.size() > 1) {
+            byte[] removed = samples.pollFirst();
+            if (removed == null) {
+                break;
+            }
+            accumulatedBytes -= removed.length;
+        }
+        full = accumulatedBytes >= budgetBytes;
     }
 }

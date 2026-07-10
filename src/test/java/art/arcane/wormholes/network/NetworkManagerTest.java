@@ -20,10 +20,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.logging.Logger;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -90,6 +93,24 @@ class NetworkManagerTest {
         peer.host = host;
         peer.port = peerPort;
         return peer;
+    }
+
+    private static NetworkConfig.PeerEntry sidebandRoute(String peerName, int rawPort, int gamePort) {
+        NetworkConfig.PeerEntry peer = route(peerName, rawPort);
+        peer.publicHost = "127.0.0.1";
+        peer.publicPort = gamePort;
+        return peer;
+    }
+
+    private static void exchangeSideband(NetworkManager requester, String responderName, NetworkManager responder) {
+        List<MinecraftStatusBridge.EncodedMessage> outbound = requester.drainStatusOutbox(
+            responderName,
+            NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MAX_BYTES
+        );
+        MinecraftStatusBridge.StatusPacket request = requester.createStatusBridgePacket(responderName, outbound);
+        MinecraftStatusBridge.StatusPacket response = responder.handleStatusBridgeRequest(request);
+        assertNotNull(response);
+        assertTrue(requester.handleStatusBridgeResponse(responderName, response, 1L));
     }
 
     private NetworkManager manager(NetworkConfig config, int gamePort, String identityName) {
@@ -265,6 +286,149 @@ class NetworkManagerTest {
         UUID portalId = UUID.randomUUID();
         assertTrue(boatB.send("boat-a", new WireMessage.ViewSubscribe(portalId)));
         assertEquals("boat-b:" + portalId, boatAMessages.poll(10L, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void sidebandOnlyAnchorForwardsRoutedTrafficBetweenPeers() throws IOException, InterruptedException {
+        int rawAlpha = freePort();
+        int rawBeta = freePort();
+        int rawGamma = freePort();
+        int gameAlpha = freePort();
+        int gameBeta = freePort();
+        int gameGamma = freePort();
+
+        NetworkConfig alphaConfig = config(rawAlpha, ALPHA_NAME);
+        alphaConfig.listenEnabled = false;
+        NetworkConfig betaConfig = config(rawBeta, BETA_NAME);
+        betaConfig.listenEnabled = false;
+        NetworkConfig gammaConfig = config(rawGamma, "gamma");
+        gammaConfig.listenEnabled = false;
+
+        NetworkManager alpha = manager(alphaConfig, gameAlpha, "sideband-relay-alpha");
+        NetworkManager beta = manager(betaConfig, gameBeta, "sideband-relay-beta");
+        NetworkManager gamma = manager(gammaConfig, gameGamma, "sideband-relay-gamma");
+        alpha.savePeer(sidebandRoute(BETA_NAME, rawBeta, gameBeta));
+        beta.savePeer(sidebandRoute(ALPHA_NAME, rawAlpha, gameAlpha));
+        beta.savePeer(sidebandRoute("gamma", rawGamma, gameGamma));
+        gamma.savePeer(sidebandRoute(BETA_NAME, rawBeta, gameBeta));
+
+        alpha.nextStatusAttempt.put(BETA_NAME, Long.MAX_VALUE);
+        beta.nextStatusAttempt.put(ALPHA_NAME, Long.MAX_VALUE);
+        beta.nextStatusAttempt.put("gamma", Long.MAX_VALUE);
+        gamma.nextStatusAttempt.put(BETA_NAME, Long.MAX_VALUE);
+
+        LinkedBlockingQueue<String> received = new LinkedBlockingQueue<>();
+        gamma.setMessageSink((peerName, message) -> {
+            if (message instanceof WireMessage.ViewTime time) {
+                received.offer(peerName + ":" + time.portalId() + ":" + time.skyDarken());
+            }
+        });
+
+        alpha.start();
+        beta.start();
+        gamma.start();
+
+        assertTrue(gamma.send(BETA_NAME, new WireMessage.PortalDirectory(List.of())));
+        exchangeSideband(gamma, BETA_NAME, beta);
+        exchangeSideband(alpha, BETA_NAME, beta);
+
+        alpha.statusPollInFlight.add(BETA_NAME);
+        alpha.nextStatusAttempt.put(BETA_NAME, Long.MAX_VALUE);
+        assertTrue(alpha.send("gamma", new WireMessage.ViewSubscribe(UUID.randomUUID())));
+        assertEquals(0L, alpha.nextStatusAttempt.get(BETA_NAME));
+
+        UUID portalId = UUID.randomUUID();
+        assertTrue(alpha.send("gamma", new WireMessage.ViewTime(portalId, 7)),
+            "alpha must learn gamma's route through beta from the relayed directory");
+        exchangeSideband(alpha, BETA_NAME, beta);
+        exchangeSideband(gamma, BETA_NAME, beta);
+
+        assertEquals(ALPHA_NAME + ":" + portalId + ":7", received.poll(10L, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void sidebandRelayRejectionRejectsTheInboundPollBatch() throws IOException {
+        NetworkConfig betaConfig = config(freePort(), BETA_NAME);
+        betaConfig.listenEnabled = false;
+        NetworkManager alpha = manager(config(freePort(), ALPHA_NAME), ALPHA_GAME_PORT, "relay-reject-alpha");
+        NetworkManager beta = manager(betaConfig, BETA_GAME_PORT, "relay-reject-beta");
+        beta.start();
+        UUID portalId = UUID.randomUUID();
+        WireMessage.ViewTime inner = new WireMessage.ViewTime(portalId, 9);
+        WireMessage.Routed routed = new WireMessage.Routed(
+            ALPHA_NAME,
+            "missing-target",
+            4,
+            inner.type(),
+            WireCodec.encodePayload(inner)
+        );
+        MinecraftStatusBridge.EncodedMessage encoded = new MinecraftStatusBridge.EncodedMessage(
+            routed,
+            WireCodec.encodeFrame(routed)
+        );
+        MinecraftStatusBridge.StatusPacket request = alpha.createStatusBridgePacket(BETA_NAME, List.of(encoded));
+
+        assertNull(beta.handleStatusBridgeRequest(request));
+    }
+
+    @Test
+    void sidebandRelayRejectionRejectsTheResponseBatch() throws IOException {
+        NetworkManager alpha = manager(config(freePort(), ALPHA_NAME), ALPHA_GAME_PORT, "relay-response-alpha");
+        NetworkManager beta = manager(config(freePort(), BETA_NAME), BETA_GAME_PORT, "relay-response-beta");
+        WireMessage.ViewTime inner = new WireMessage.ViewTime(UUID.randomUUID(), 11);
+        WireMessage.Routed routed = new WireMessage.Routed(
+            BETA_NAME,
+            "missing-target",
+            4,
+            inner.type(),
+            WireCodec.encodePayload(inner)
+        );
+        MinecraftStatusBridge.EncodedMessage encoded = new MinecraftStatusBridge.EncodedMessage(
+            routed,
+            WireCodec.encodeFrame(routed)
+        );
+        MinecraftStatusBridge.StatusPacket response = beta.createStatusBridgePacket(ALPHA_NAME, List.of(encoded));
+
+        assertFalse(alpha.handleStatusBridgeResponse(BETA_NAME, response, 1L));
+    }
+
+    @Test
+    void sidebandFragmentAssemblySaturationRejectsTheNewBatch() throws IOException {
+        NetworkManager alpha = manager(config(freePort(), ALPHA_NAME), ALPHA_GAME_PORT, "fragment-cap-alpha");
+        NetworkManager beta = manager(config(freePort(), BETA_NAME), BETA_GAME_PORT, "fragment-cap-beta");
+        beta.start();
+        for (long messageId = 0L; messageId < 128L; messageId++) {
+            WireMessage.SidebandFragment fragment = new WireMessage.SidebandFragment(
+                messageId,
+                0,
+                2,
+                2,
+                new byte[] {1}
+            );
+            MinecraftStatusBridge.EncodedMessage encoded = new MinecraftStatusBridge.EncodedMessage(
+                fragment,
+                WireCodec.encodeFrame(fragment)
+            );
+            MinecraftStatusBridge.StatusPacket request = alpha.createStatusBridgePacket(BETA_NAME, List.of(encoded));
+            assertNotNull(beta.handleStatusBridgeRequest(request));
+        }
+        WireMessage.SidebandFragment overflow = new WireMessage.SidebandFragment(
+            128L,
+            0,
+            2,
+            2,
+            new byte[] {1}
+        );
+        MinecraftStatusBridge.EncodedMessage overflowEncoded = new MinecraftStatusBridge.EncodedMessage(
+            overflow,
+            WireCodec.encodeFrame(overflow)
+        );
+        MinecraftStatusBridge.StatusPacket overflowRequest = alpha.createStatusBridgePacket(
+            BETA_NAME,
+            List.of(overflowEncoded)
+        );
+
+        assertNull(beta.handleStatusBridgeRequest(overflowRequest));
     }
 
     @Test
@@ -483,6 +647,52 @@ class NetworkManagerTest {
     }
 
     @Test
+    void statusSidebandJumboUsesConfiguredCompressionLevel() throws IOException {
+        NetworkConfig alphaConfig = config(freePort(), ALPHA_NAME);
+        alphaConfig.listenEnabled = false;
+        alphaConfig.transport.compressionLevel = 1;
+        NetworkConfig.PeerEntry betaRoute = sidebandRoute(BETA_NAME, freePort(), BETA_GAME_PORT);
+
+        NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "jumbo-level-alpha");
+        alpha.savePeer(betaRoute);
+
+        byte[] seed = new byte[12_000];
+        new Random(42L).nextBytes(seed);
+        byte[] snapshot = new byte[seed.length * 10];
+        for (int offset = 0; offset < snapshot.length; offset += seed.length) {
+            System.arraycopy(seed, 0, snapshot, offset, seed.length);
+        }
+        WireMessage.EntityTransfer transfer = new WireMessage.EntityTransfer(UUID.randomUUID(), UUID.randomUUID(), snapshot, traversive());
+        byte[] plainFrame = WireCodec.encodeFrame(transfer);
+        assertTrue(plainFrame.length > MinecraftStatusBridge.MAX_FRAME_BYTES);
+        assertTrue(alpha.send(BETA_NAME, transfer));
+
+        List<WireMessage.SidebandFragment> fragments = new ArrayList<>();
+        List<MinecraftStatusBridge.EncodedMessage> drained = alpha.drainStatusOutbox(
+            BETA_NAME,
+            NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MAX_BYTES
+        );
+        while (!drained.isEmpty()) {
+            for (MinecraftStatusBridge.EncodedMessage encoded : drained) {
+                fragments.add(assertInstanceOf(WireMessage.SidebandFragment.class, encoded.message()));
+            }
+            drained = alpha.drainStatusOutbox(BETA_NAME, NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MAX_BYTES);
+        }
+        assertFalse(fragments.isEmpty());
+
+        byte[] actualCompressedFrame = new byte[fragments.get(0).frameLength()];
+        for (WireMessage.SidebandFragment fragment : fragments) {
+            System.arraycopy(fragment.chunk(), 0, actualCompressedFrame, fragment.index() * 4 * 1024, fragment.chunk().length);
+        }
+        byte[] expectedCompressedFrame = alpha.compression().encode(plainFrame, false);
+        byte[] formerHardCodedFrame = alpha.compression().encode(plainFrame, false, 12);
+        assertFalse(java.util.Arrays.equals(expectedCompressedFrame, formerHardCodedFrame),
+            "test fixture must distinguish configured level 1 from the former hard-coded level 12");
+        assertArrayEquals(expectedCompressedFrame, actualCompressedFrame,
+            "jumbo sideband compression must use the NetworkManager's configured transport level");
+    }
+
+    @Test
     void statusSidebandDrainAlwaysTakesFirstOverBudgetFrame() throws IOException {
         NetworkConfig alphaConfig = config(freePort(), ALPHA_NAME);
         alphaConfig.listenEnabled = false;
@@ -556,6 +766,28 @@ class NetworkManagerTest {
     }
 
     @Test
+    void statusSidebandOutboxExposesQueuedAndDropCounters() throws IOException {
+        NetworkConfig alphaConfig = config(freePort(), ALPHA_NAME);
+        alphaConfig.listenEnabled = false;
+        NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "outbox-counters-alpha");
+        alpha.savePeer(sidebandRoute(BETA_NAME, freePort(), BETA_GAME_PORT));
+
+        assertEquals(0L, alpha.statusOutboxQueuedBytes(BETA_NAME));
+        assertEquals(0L, alpha.statusOutboxQueuedCount(BETA_NAME));
+        assertEquals(0L, alpha.statusOutboxDroppedBytes(BETA_NAME));
+        assertEquals(0L, alpha.statusOutboxDroppedCount(BETA_NAME));
+
+        assertTrue(alpha.send(BETA_NAME, new WireMessage.PortalDirectory(List.of())));
+        assertEquals(1L, alpha.statusOutboxQueuedCount(BETA_NAME));
+        assertTrue(alpha.statusOutboxQueuedBytes(BETA_NAME) > 0L);
+        assertEquals(0L, alpha.statusOutboxDroppedCount(BETA_NAME));
+
+        assertEquals(1, alpha.drainStatusOutbox(BETA_NAME, NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MAX_BYTES).size());
+        assertEquals(0L, alpha.statusOutboxQueuedBytes(BETA_NAME));
+        assertEquals(0L, alpha.statusOutboxQueuedCount(BETA_NAME));
+    }
+
+    @Test
     void statusSidebandNudgeRespectsSingleFlight() throws IOException {
         NetworkConfig alphaConfig = config(freePort(), ALPHA_NAME);
         alphaConfig.listenEnabled = false;
@@ -576,6 +808,22 @@ class NetworkManagerTest {
         assertEquals(1, drained.size());
         assertInstanceOf(WireMessage.HandoffRequest.class, drained.get(0).message());
         assertTrue(alpha.drainStatusOutbox(BETA_NAME, NetworkManager.STATUS_BRIDGE_REQUEST_BUDGET_MAX_BYTES).isEmpty());
+    }
+
+    @Test
+    void compressionSettingsApplyWithoutRebuildingTheManager() throws IOException {
+        NetworkConfig initial = config(freePort(), ALPHA_NAME);
+        initial.transport.compressionLevel = 3;
+        initial.transport.compressionDictTrainBytes = 128 * 1024;
+        NetworkManager manager = manager(initial, ALPHA_GAME_PORT, "compression-hotload");
+        NetworkConfig reloaded = config(initial.listenPort, ALPHA_NAME);
+        reloaded.transport.compressionLevel = 9;
+        reloaded.transport.compressionDictTrainBytes = 256 * 1024;
+
+        manager.applyConfig(reloaded);
+
+        assertEquals(9, manager.wireCompressionMetrics().compressionLevel());
+        assertEquals(256 * 1024, manager.dictionarySampleCollector().budgetBytes());
     }
 
     @Test

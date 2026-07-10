@@ -35,7 +35,7 @@ class BlockEntityCaptureTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
 
@@ -55,7 +55,7 @@ class BlockEntityCaptureTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
         CapturingFeed feed = new CapturingFeed();
         CaptureSettings disabled = new CaptureSettings(100, 256, true, false);
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, disabled);
@@ -71,7 +71,7 @@ class BlockEntityCaptureTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
         accumulator.recordBlockEntityChange(world, 1, -40, 1, new byte[]{7});
@@ -103,7 +103,7 @@ class BlockEntityCaptureTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
         BlockEntityCapture capture = new BlockEntityCapture(accumulator, null);
@@ -121,7 +121,7 @@ class BlockEntityCaptureTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
         CapturingFeed feed = new CapturingFeed();
         CaptureSettings disabled = new CaptureSettings(100, 256, true, false);
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, disabled);

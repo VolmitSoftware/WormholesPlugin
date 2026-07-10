@@ -19,15 +19,12 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -59,8 +56,8 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     private static final long STATUS_BRIDGE_READY_TTL_MS = 12_000L;
     private static final long STATUS_FRAGMENT_TTL_MS = 15L * 60_000L;
     private static final int STATUS_FRAGMENT_ASSEMBLY_CAPACITY = 128;
-    private static final int STATUS_BRIDGE_QUEUE_CAPACITY = 1024;
-    private static final int STATUS_BRIDGE_BESTEFFORT_SHED_THRESHOLD = STATUS_BRIDGE_QUEUE_CAPACITY / 2;
+    private static final long STATUS_BRIDGE_OUTBOX_MAX_BYTES = 5L * 1024L * 1024L;
+    private static final long STATUS_BRIDGE_CONTROL_RESERVE_BYTES = 512L * 1024L;
     private static final int STATUS_BRIDGE_FRAME_BUDGET_BYTES = 20_000;
     static final int STATUS_BRIDGE_REQUEST_BUDGET_MIN_BYTES = 4_000;
     static final int STATUS_BRIDGE_REQUEST_BUDGET_MAX_BYTES = 20_000;
@@ -94,7 +91,7 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     private final Map<String, NetworkConfig.PeerEntry> learnedPeers = new ConcurrentHashMap<>();
     private final Map<String, Integer> dialCandidateIndex = new ConcurrentHashMap<>();
     private final Map<String, String> lastDialError = new ConcurrentHashMap<>();
-    private final Map<String, BlockingQueue<MinecraftStatusBridge.EncodedMessage>> statusOutbox = new ConcurrentHashMap<>();
+    private final Map<String, SidebandOutbox> statusOutbox = new ConcurrentHashMap<>();
     private final Map<String, Long> statusLastSeen = new ConcurrentHashMap<>();
     private final Map<String, Long> statusRttMillis = new ConcurrentHashMap<>();
     final Map<String, Long> nextStatusAttempt = new ConcurrentHashMap<>();
@@ -471,6 +468,8 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     public void applyConfig(NetworkConfig next) {
         NetworkConfig previous = config;
         config = next;
+        wireCompression.setCompressionLevel(next.transport.compressionLevel);
+        sampleCollector.setBudgetBytes(Math.max(64 * 1024, next.transport.compressionDictTrainBytes));
         if (next.replication != null) {
             replicationManager.applyConfig(new ChunkReplicationManager.ReplicationConfig(next.replication.maxQueuedDiffsPerPeer));
             hashProbeScheduler.configure(next.replication.hashProbeIntervalSec, next.replication.hashProbeChunksPerTick);
@@ -721,8 +720,18 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         String sourceServer = request.sourceServer();
         if (acceptStatusBridgePacket(request, null)) {
             markStatusBridgeReady(sourceServer, -1L);
-            receiveStatusBridgeMessages(sourceServer, request.messages());
-            return createStatusBridgePacket(sourceServer, drainStatusOutbox(sourceServer, STATUS_BRIDGE_FRAME_BUDGET_BYTES));
+            if (!receiveStatusBridgeMessages(sourceServer, request.messages())) {
+                return null;
+            }
+            SidebandOutbox.DrainBatch batch = drainStatusBatch(sourceServer, STATUS_BRIDGE_FRAME_BUDGET_BYTES);
+            try {
+                MinecraftStatusBridge.StatusPacket response = createStatusBridgePacket(sourceServer, batch.messages());
+                batch.commit();
+                return response;
+            } catch (RuntimeException e) {
+                batch.requeue();
+                throw e;
+            }
         }
         return null;
     }
@@ -736,8 +745,7 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
             return false;
         }
         markStatusBridgeReady(response.sourceServer(), rttMillis);
-        receiveStatusBridgeMessages(response.sourceServer(), response.messages());
-        return true;
+        return receiveStatusBridgeMessages(response.sourceServer(), response.messages());
     }
 
     MinecraftStatusBridge.StatusPacket createStatusBridgePacket(String targetServer, List<MinecraftStatusBridge.EncodedMessage> messages) {
@@ -1256,66 +1264,80 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         }
     }
 
-    private void receiveStatusBridgeMessages(String peerName, List<WireMessage> messages) {
+    private boolean receiveStatusBridgeMessages(String peerName, List<WireMessage> messages) {
         for (WireMessage message : messages) {
-            receiveStatusBridgeMessage(peerName, message);
-        }
-    }
-
-    private void receiveStatusBridgeMessage(String peerName, WireMessage message) {
-        if (message instanceof WireMessage.SidebandFragment fragment) {
-            WireMessage reassembled = receiveStatusFragment(peerName, fragment);
-            if (reassembled == null) {
-                return;
+            if (!receiveStatusBridgeMessage(peerName, message)) {
+                return false;
             }
-            message = reassembled;
         }
-        if (message instanceof WireMessage.Routed routed) {
-            handleRouted(peerName, routed);
-            return;
-        }
-        cacheRelayAnnouncement(peerName, message);
-        relayPortalAnnouncement(peerName, peerName, ROUTE_TTL, message);
-        deliverMessage(peerName, message);
+        return true;
     }
 
-    private WireMessage receiveStatusFragment(String peerName, WireMessage.SidebandFragment fragment) {
+    private boolean receiveStatusBridgeMessage(String peerName, WireMessage message) {
+        ReassembledStatusMessage reassembledMessage = null;
+        if (message instanceof WireMessage.SidebandFragment fragment) {
+            StatusFragmentResult fragmentResult = receiveStatusFragment(peerName, fragment);
+            if (!fragmentResult.accepted()) {
+                return false;
+            }
+            reassembledMessage = fragmentResult.completed();
+            if (reassembledMessage == null) {
+                return true;
+            }
+            message = reassembledMessage.message();
+        }
+        boolean accepted;
+        if (message instanceof WireMessage.Routed routed) {
+            accepted = handleRouted(peerName, routed);
+        } else {
+            cacheRelayAnnouncement(peerName, message);
+            relayPortalAnnouncement(peerName, peerName, ROUTE_TTL, message);
+            deliverMessage(peerName, message);
+            accepted = true;
+        }
+        if (accepted && reassembledMessage != null) {
+            statusFragments.remove(reassembledMessage.key(), reassembledMessage.assembly());
+        }
+        return accepted;
+    }
+
+    private StatusFragmentResult receiveStatusFragment(String peerName, WireMessage.SidebandFragment fragment) {
         long now = System.currentTimeMillis();
         if (now >= nextStatusFragmentExpiry) {
             nextStatusFragmentExpiry = now + STATUS_FRAGMENT_EXPIRY_GATE_MS;
             expireStatusFragments(now);
         }
         if (!isValidStatusFragment(fragment)) {
-            return null;
+            return StatusFragmentResult.acceptedIncomplete();
         }
         String key = statusFragmentKey(peerName, fragment.messageId());
         if (!statusFragments.containsKey(key) && statusFragments.size() >= STATUS_FRAGMENT_ASSEMBLY_CAPACITY) {
-            return null;
+            return StatusFragmentResult.rejected();
         }
-        byte[][] completedFrame = new byte[1][];
+        StatusFragmentAssembly[] completedAssembly = new StatusFragmentAssembly[1];
         statusFragments.compute(key, (ignored, previous) -> {
             StatusFragmentAssembly assembly = previous;
             if (assembly == null || !assembly.accepts(fragment)) {
                 assembly = new StatusFragmentAssembly(fragment, now);
             }
-            if (!assembly.add(fragment)) {
-                return assembly;
+            assembly.add(fragment);
+            if (assembly.isComplete()) {
+                completedAssembly[0] = assembly;
             }
-            if (!assembly.isComplete()) {
-                return assembly;
-            }
-            completedFrame[0] = assembly.assemble();
-            return null;
+            return assembly;
         });
-        if (completedFrame[0] == null) {
-            return null;
+        StatusFragmentAssembly assembly = completedAssembly[0];
+        if (assembly == null) {
+            return StatusFragmentResult.acceptedIncomplete();
         }
         try {
-            byte[] plainFrame = wireCompression.decode(completedFrame[0]).payload();
-            return WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(plainFrame)));
+            byte[] plainFrame = wireCompression.decode(assembly.assemble()).payload();
+            WireMessage message = WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(plainFrame)));
+            return StatusFragmentResult.completed(new ReassembledStatusMessage(message, key, assembly));
         } catch (IOException e) {
+            statusFragments.remove(key, assembly);
             logger.warning("net: dropped corrupt status sideband jumbo frame from " + peerName + ": " + e.getMessage());
-            return null;
+            return StatusFragmentResult.acceptedIncomplete();
         }
     }
 
@@ -1351,12 +1373,12 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         }
     }
 
-    private void handleRouted(String inboundPeer, WireMessage.Routed routed) {
+    private boolean handleRouted(String inboundPeer, WireMessage.Routed routed) {
         if (routed.sourceServer() == null || routed.sourceServer().isBlank() || routed.targetServer() == null || routed.targetServer().isBlank()) {
-            return;
+            return true;
         }
         if (routed.sourceServer().equals(getLocalName())) {
-            return;
+            return true;
         }
         learnRoute(routed.sourceServer(), inboundPeer);
         if (routed.targetServer().equals(getLocalName())) {
@@ -1368,12 +1390,12 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
             } catch (IOException e) {
                 logger.warning("net: dropped routed message from " + routed.sourceServer() + ": " + e.getMessage());
             }
-            return;
+            return true;
         }
         if (routed.ttl() <= 0) {
-            return;
+            return true;
         }
-        forwardRouted(inboundPeer, routed.sourceServer(), routed.targetServer(), routed.ttl() - 1, routed.innerType(), routed.payload());
+        return forwardRouted(inboundPeer, routed.sourceServer(), routed.targetServer(), routed.ttl() - 1, routed.innerType(), routed.payload());
     }
 
     private void deliverMessage(String peerName, WireMessage message) {
@@ -1504,7 +1526,7 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         WireMessageType type = message instanceof WireMessage.Routed routed ? routed.innerType() : message.type();
         return switch (type) {
             case HANDOFF_REQUEST, HANDOFF_ACK, HANDOFF_DENY, HANDOFF_CANCEL,
-                 ENTITY_TRANSFER, ENTITY_TRANSFER_ACK, VIEW_SUBSCRIBE, VIEW_UNSUBSCRIBE -> true;
+                 ENTITY_TRANSFER, ENTITY_TRANSFER_ACK, VIEW_SUBSCRIBE, VIEW_UNSUBSCRIBE, VIEW_BULK_COMPLETE -> true;
             default -> false;
         };
     }
@@ -1616,16 +1638,21 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     private boolean pollStatusBridgeOnce(NetworkConfig.PeerEntry peer) {
         long started = System.currentTimeMillis();
         nextStatusAttempt.put(peer.name, started + STATUS_BRIDGE_FAST_INTERVAL_MS);
-        List<MinecraftStatusBridge.EncodedMessage> messages = drainStatusOutbox(peer.name, statusRequestBudgetFor(peer.name));
+        SidebandOutbox.DrainBatch batch = drainStatusBatch(peer.name, statusRequestBudgetFor(peer.name));
+        List<MinecraftStatusBridge.EncodedMessage> messages = batch.messages();
+        boolean batchFinished = false;
         try {
             MinecraftStatusBridge.StatusPacket response = statusBridge.poll(peer, createStatusBridgePacket(peer.name, messages));
-            if (handleStatusBridgeResponse(peer.name, response, System.currentTimeMillis() - started)) {
-                recordStatusRequestSuccess(peer.name);
-                lastDialError.remove(peer.name);
-                if (statusPollFailing.remove(peer.name)) {
-                    logger.info("net: status sideband to " + peer.name + " recovered");
-                }
+            if (!handleStatusBridgeResponse(peer.name, response, System.currentTimeMillis() - started)) {
+                throw new IOException("status sideband response was rejected");
             }
+            recordStatusRequestSuccess(peer.name);
+            lastDialError.remove(peer.name);
+            if (statusPollFailing.remove(peer.name)) {
+                logger.info("net: status sideband to " + peer.name + " recovered");
+            }
+            batch.commit();
+            batchFinished = true;
             boolean dataFlowing = !messages.isEmpty()
                 || (response != null && !response.messages().isEmpty())
                 || statusOutboxPending(peer.name);
@@ -1635,7 +1662,9 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
             }
             return statusOutboxPending(peer.name);
         } catch (IOException | RuntimeException e) {
-            requeueStatusMessages(peer.name, messages);
+            if (!batchFinished) {
+                batch.requeue();
+            }
             recordStatusRequestFailure(peer.name);
             nextStatusAttempt.put(peer.name, System.currentTimeMillis() + STATUS_BRIDGE_FAIL_BACKOFF_MS);
             String failure = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
@@ -1700,7 +1729,8 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
             return false;
         }
         try {
-            return enqueueStatusMessage(nextHop, new OutboundFrame(new WireMessage.Routed(sourceServer, targetServer, ttl, message.type(), WireCodec.encodePayload(message))));
+            WireMessage.Routed routed = new WireMessage.Routed(sourceServer, targetServer, ttl, message.type(), WireCodec.encodePayload(message));
+            return enqueueForwardedStatusMessage(nextHop, routed);
         } catch (IOException e) {
             logger.warning("net: could not queue routed status sideband " + message.type() + " from " + sourceServer + " to " + targetServer + ": " + e.getMessage());
             return false;
@@ -1712,54 +1742,14 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         if (queuedMessages.isEmpty()) {
             return false;
         }
-        BlockingQueue<MinecraftStatusBridge.EncodedMessage> queue = statusOutbox.computeIfAbsent(peerName, ignored -> new LinkedBlockingQueue<>(STATUS_BRIDGE_QUEUE_CAPACITY));
-        boolean bestEffort = isBestEffortStatusMessage(frame.message());
-        if (bestEffort && queue.size() >= STATUS_BRIDGE_BESTEFFORT_SHED_THRESHOLD) {
-            return false;
+        SidebandOutbox outbox = statusOutboxFor(peerName);
+        if (outbox.offer(queuedMessages)) {
+            return true;
         }
-        if (queue.remainingCapacity() < queuedMessages.size()) {
-            if (bestEffort || !purgeBestEffortStatusMessages(queue, queuedMessages.size())) {
-                if (!bestEffort) {
-                    lastDialError.put(peerName, "game-port status sideband queue is full");
-                }
-                return false;
-            }
+        if (SidebandOutbox.tierOf(queuedMessages.get(0)) != SidebandOutbox.TIER_BEST_EFFORT) {
+            lastDialError.put(peerName, "game-port status sideband outbox is full");
         }
-        for (MinecraftStatusBridge.EncodedMessage queuedMessage : queuedMessages) {
-            queue.offer(queuedMessage);
-        }
-        return true;
-    }
-
-    private static boolean purgeBestEffortStatusMessages(BlockingQueue<MinecraftStatusBridge.EncodedMessage> queue, int needed) {
-        queue.removeIf(entry -> isQueuedBestEffortStatusMessage(entry.message()));
-        return queue.remainingCapacity() >= needed;
-    }
-
-    private static boolean isQueuedBestEffortStatusMessage(WireMessage message) {
-        if (message instanceof WireMessage.SidebandFragment) {
-            return false;
-        }
-        return isBestEffortStatusMessage(message);
-    }
-
-    private static boolean isBestEffortStatusMessage(WireMessage message) {
-        WireMessageType type = message instanceof WireMessage.Routed routed ? routed.innerType() : message.type();
-        return type == WireMessageType.VIEW_ENTITIES
-            || type == WireMessageType.VIEW_ENTITY_ANIMATION
-            || type == WireMessageType.CHUNK_HASH_PROBE;
-    }
-
-    private static int statusTier(WireMessage message) {
-        if (message instanceof WireMessage.SidebandFragment) {
-            return 1;
-        }
-        WireMessageType type = message instanceof WireMessage.Routed routed ? routed.innerType() : message.type();
-        return switch (type) {
-            case VIEW_ENTITIES, VIEW_ENTITY_ANIMATION, CHUNK_HASH_PROBE -> 2;
-            case CHUNK_BULK, CHUNK_DIFF -> 1;
-            default -> 0;
-        };
+        return false;
     }
 
     private List<MinecraftStatusBridge.EncodedMessage> statusMessagesFor(String peerName, OutboundFrame frame) {
@@ -1778,7 +1768,7 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     private List<MinecraftStatusBridge.EncodedMessage> fragmentStatusMessage(String peerName, WireMessage message, byte[] plainFrame) throws IOException {
         byte[] frame;
         try {
-            frame = wireCompression.encode(plainFrame, false, MinecraftStatusBridge.SIDEBAND_ZSTD_LEVEL);
+            frame = wireCompression.encode(plainFrame, false);
         } catch (IOException e) {
             logger.warning("net: could not compress " + message.type() + " for status sideband to " + peerName + ": " + e.getMessage());
             return List.of();
@@ -1794,6 +1784,7 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         }
         warnFragmentedStatusMessage(peerName, message, frame.length, total);
         long messageId = statusFragmentIds.incrementAndGet();
+        int sidebandTier = SidebandOutbox.tierOf(message);
         List<MinecraftStatusBridge.EncodedMessage> fragments = new ArrayList<>(total);
         for (int index = 0; index < total; index++) {
             int offset = index * STATUS_FRAGMENT_CHUNK_BYTES;
@@ -1801,7 +1792,7 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
             byte[] chunk = new byte[length];
             System.arraycopy(frame, offset, chunk, 0, length);
             WireMessage.SidebandFragment fragment = new WireMessage.SidebandFragment(messageId, index, total, frame.length, chunk);
-            fragments.add(new MinecraftStatusBridge.EncodedMessage(fragment, WireCodec.encodeFrame(fragment)));
+            fragments.add(new MinecraftStatusBridge.EncodedMessage(fragment, WireCodec.encodeFrame(fragment), sidebandTier));
         }
         return fragments;
     }
@@ -1821,47 +1812,44 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     }
 
     private boolean statusOutboxPending(String peerName) {
-        BlockingQueue<MinecraftStatusBridge.EncodedMessage> queue = statusOutbox.get(peerName);
-        return queue != null && !queue.isEmpty();
+        SidebandOutbox outbox = statusOutbox.get(peerName);
+        return outbox != null && !outbox.isEmpty();
     }
 
     List<MinecraftStatusBridge.EncodedMessage> drainStatusOutbox(String peerName, int budgetBytes) {
-        BlockingQueue<MinecraftStatusBridge.EncodedMessage> queue = statusOutbox.get(peerName);
-        if (queue == null) {
-            return List.of();
-        }
-        List<MinecraftStatusBridge.EncodedMessage> messages = new ArrayList<>(Math.min(MinecraftStatusBridge.MAX_MESSAGES, queue.size()));
-        int[] remainingBytes = {budgetBytes};
-        drainStatusPass(queue, messages, remainingBytes, 0);
-        drainStatusPass(queue, messages, remainingBytes, 1);
-        drainStatusPass(queue, messages, remainingBytes, 2);
-        return messages.isEmpty() ? List.of() : messages;
+        SidebandOutbox.DrainBatch batch = drainStatusBatch(peerName, budgetBytes);
+        List<MinecraftStatusBridge.EncodedMessage> messages = batch.messages();
+        batch.commit();
+        return messages;
     }
 
-    private static void drainStatusPass(BlockingQueue<MinecraftStatusBridge.EncodedMessage> queue, List<MinecraftStatusBridge.EncodedMessage> messages, int[] remainingBytes, int tier) {
-        Iterator<MinecraftStatusBridge.EncodedMessage> iterator = queue.iterator();
-        while (messages.size() < MinecraftStatusBridge.MAX_MESSAGES && iterator.hasNext()) {
-            MinecraftStatusBridge.EncodedMessage entry = iterator.next();
-            if (statusTier(entry.message()) != tier) {
-                continue;
-            }
-            if (!messages.isEmpty() && entry.frame().length > remainingBytes[0]) {
-                continue;
-            }
-            iterator.remove();
-            messages.add(entry);
-            remainingBytes[0] -= entry.frame().length;
-        }
+    long statusOutboxQueuedBytes(String peerName) {
+        SidebandOutbox outbox = statusOutbox.get(peerName);
+        return outbox == null ? 0L : outbox.queuedBytes();
     }
 
-    private void requeueStatusMessages(String peerName, List<MinecraftStatusBridge.EncodedMessage> messages) {
-        if (messages.isEmpty()) {
-            return;
-        }
-        BlockingQueue<MinecraftStatusBridge.EncodedMessage> queue = statusOutbox.computeIfAbsent(peerName, ignored -> new LinkedBlockingQueue<>(STATUS_BRIDGE_QUEUE_CAPACITY));
-        for (MinecraftStatusBridge.EncodedMessage message : messages) {
-            queue.offer(message);
-        }
+    long statusOutboxQueuedCount(String peerName) {
+        SidebandOutbox outbox = statusOutbox.get(peerName);
+        return outbox == null ? 0L : outbox.queuedCount();
+    }
+
+    long statusOutboxDroppedBytes(String peerName) {
+        SidebandOutbox outbox = statusOutbox.get(peerName);
+        return outbox == null ? 0L : outbox.droppedBytes();
+    }
+
+    long statusOutboxDroppedCount(String peerName) {
+        SidebandOutbox outbox = statusOutbox.get(peerName);
+        return outbox == null ? 0L : outbox.droppedCount();
+    }
+
+    private SidebandOutbox.DrainBatch drainStatusBatch(String peerName, int budgetBytes) {
+        return statusOutboxFor(peerName).drain(budgetBytes, MinecraftStatusBridge.MAX_MESSAGES);
+    }
+
+    private SidebandOutbox statusOutboxFor(String peerName) {
+        return statusOutbox.computeIfAbsent(peerName, ignored ->
+            new SidebandOutbox(STATUS_BRIDGE_OUTBOX_MAX_BYTES, STATUS_BRIDGE_CONTROL_RESERVE_BYTES));
     }
 
     private void expireStatusBridgePeers(long now) {
@@ -2001,16 +1989,40 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     }
 
     private boolean forwardRouted(String inboundPeer, String sourceServer, String targetServer, int ttl, WireMessageType innerType, byte[] payload) {
-        PeerConnection direct = readyPeers.get(targetServer);
-        if (direct != null && !targetServer.equals(inboundPeer)) {
-            return direct.send(new WireMessage.Routed(sourceServer, targetServer, ttl, innerType, payload));
+        WireMessage.Routed forwarded = new WireMessage.Routed(sourceServer, targetServer, ttl, innerType, payload);
+        NetworkConfig.PeerEntry directPeer = null;
+        if (!targetServer.equals(inboundPeer)) {
+            PeerConnection direct = readyPeers.get(targetServer);
+            if (direct != null) {
+                return direct.send(forwarded);
+            }
+            directPeer = findKnownPeer(targetServer);
+            if (isStatusPeerReady(targetServer) && canQueueStatusBridge(directPeer) && enqueueForwardedStatusMessage(targetServer, forwarded)) {
+                return true;
+            }
         }
         String nextHop = routes.get(targetServer);
-        if (nextHop == null || nextHop.equals(inboundPeer)) {
+        if (nextHop != null && !nextHop.equals(inboundPeer)) {
+            PeerConnection route = readyPeers.get(nextHop);
+            if (route != null && route.send(forwarded)) {
+                return true;
+            }
+            NetworkConfig.PeerEntry routedPeer = findKnownPeer(nextHop);
+            if (canQueueStatusBridge(routedPeer) && enqueueForwardedStatusMessage(nextHop, forwarded)) {
+                return true;
+            }
+        }
+        return directPeer != null && canQueueStatusBridge(directPeer) && enqueueForwardedStatusMessage(targetServer, forwarded);
+    }
+
+    private boolean enqueueForwardedStatusMessage(String peerName, WireMessage.Routed message) {
+        if (!enqueueStatusMessage(peerName, new OutboundFrame(message))) {
             return false;
         }
-        PeerConnection route = readyPeers.get(nextHop);
-        return route != null && route.send(new WireMessage.Routed(sourceServer, targetServer, ttl, innerType, payload));
+        if (isLatencyCriticalStatusMessage(message)) {
+            nudgeStatusPoll(peerName);
+        }
+        return true;
     }
 
     private void cacheRelayAnnouncement(String sourceServer, WireMessage message) {
@@ -2083,6 +2095,23 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         return message instanceof WireMessage.PortalDirectory
             || message instanceof WireMessage.PortalUpsert
             || message instanceof WireMessage.PortalRemove;
+    }
+
+    private record ReassembledStatusMessage(WireMessage message, String key, StatusFragmentAssembly assembly) {
+    }
+
+    private record StatusFragmentResult(boolean accepted, ReassembledStatusMessage completed) {
+        private static StatusFragmentResult rejected() {
+            return new StatusFragmentResult(false, null);
+        }
+
+        private static StatusFragmentResult acceptedIncomplete() {
+            return new StatusFragmentResult(true, null);
+        }
+
+        private static StatusFragmentResult completed(ReassembledStatusMessage message) {
+            return new StatusFragmentResult(true, message);
+        }
     }
 
     private static final class StatusFragmentAssembly {

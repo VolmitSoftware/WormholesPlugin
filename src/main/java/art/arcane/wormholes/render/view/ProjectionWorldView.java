@@ -21,6 +21,17 @@ public interface ProjectionWorldView {
 
     int getSkyDarken();
 
+    default long getRevision() {
+        return 0L;
+    }
+
+    default boolean isChunkReady(int x, int z) {
+        return true;
+    }
+
+    default void requestChunk(int x, int z) {
+    }
+
     static int computeSkyDarken(long dayTime) {
         double d = (dayTime / 24000.0D) - 0.25D;
         d = d - Math.floor(d);

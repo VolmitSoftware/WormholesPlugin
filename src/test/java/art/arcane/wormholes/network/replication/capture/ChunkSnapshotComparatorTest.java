@@ -35,7 +35,7 @@ class ChunkSnapshotComparatorTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
         accumulator.recordBlockChange(world, 3, 70, 3, fakeBlockData("minecraft:stone"), BlockChange.FLAG_NONE);
@@ -50,7 +50,7 @@ class ChunkSnapshotComparatorTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
         accumulator.recordBlockChange(world, 1, -64, 1, fakeBlockData("minecraft:deepslate"), BlockChange.FLAG_NONE);
@@ -75,7 +75,7 @@ class ChunkSnapshotComparatorTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
         ChunkSnapshotComparator comparator = new ChunkSnapshotComparator(null, replication, accumulator, CaptureSettings.defaults(), null);
@@ -97,7 +97,7 @@ class ChunkSnapshotComparatorTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
         ChunkSnapshotComparator comparator = new ChunkSnapshotComparator(null, replication, accumulator, CaptureSettings.defaults(), null);

@@ -1,25 +1,42 @@
 package art.arcane.wormholes.config.toml;
 
+import art.arcane.wormholes.util.project.config.ConfigAdvanced;
 import art.arcane.wormholes.util.project.config.ConfigDoc;
 
 @ConfigDoc({
-    "Wormholes projection cone parameters (fixed)."
+    "Advanced projection compatibility overrides."
 })
 public class ProjectionConfig {
-    public transient double range = 48.0;
-    public transient int refreshIntervalTicks = 1;
-    public transient double nearPlanePadding = 2.0;
-    public transient double aperturePaddingBlocks = 0.5;
-    public transient double frustumCullingRatio = 0.2;
-    public transient int depthBlocks = 64;
-    public transient int recursivePortalDepth = 3;
-    public transient int stableCellResampleIntervalTicks = 4;
-    public transient boolean clientViewDistanceCap = true;
-    public transient boolean foveatedUnrendering = false;
-    public transient double observerInterestDot = -0.2;
-    public transient double sideGraceDot = 0.12;
-    public transient int maxProjectorsPerTick = 24;
-    public transient int maxPortalsPerObserverTick = 4;
-    public transient int interestGraceTicks = 5;
-    public transient int initialResendPasses = 4;
+    @ConfigAdvanced
+    public double range = 48.0;
+    @ConfigAdvanced
+    public int refreshIntervalTicks = 1;
+    @ConfigAdvanced
+    public double nearPlanePadding = 2.0;
+    @ConfigAdvanced
+    public double aperturePaddingBlocks = 0.5;
+    @ConfigAdvanced
+    public double frustumCullingRatio = 0.2;
+    @ConfigAdvanced
+    public int depthBlocks = 64;
+    @ConfigAdvanced
+    public int recursivePortalDepth = 3;
+    @ConfigAdvanced
+    public int stableCellResampleIntervalTicks = 4;
+    @ConfigAdvanced
+    public boolean clientViewDistanceCap = true;
+    @ConfigAdvanced
+    public boolean foveatedUnrendering = false;
+    @ConfigAdvanced
+    public double observerInterestDot = -0.2;
+    @ConfigAdvanced
+    public double sideGraceDot = 0.12;
+    @ConfigAdvanced
+    public int maxProjectorsPerTick = 24;
+    @ConfigAdvanced
+    public int maxPortalsPerObserverTick = 4;
+    @ConfigAdvanced
+    public int interestGraceTicks = 5;
+    @ConfigAdvanced
+    public int initialResendPasses = 4;
 }

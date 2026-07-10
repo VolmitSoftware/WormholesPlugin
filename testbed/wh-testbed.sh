@@ -4,13 +4,13 @@
 #
 # Drives the Multiplexor server manager to stand up a pair of isolated Purpur
 # instances (ALPHA + BETA) on this machine, deploys the freshly-built Wormholes
-# jar into both, writes a loopback-paired network.toml into each, and starts
+# jar into both, writes a concise loopback-paired wormholes.toml into each, and starts
 # them. Everything stays clear of the live PURPUR-MAIN instance.
 #
 # After `up`, the only remaining step is in-game (portals need rune blocks):
 #   1. join ALPHA (localhost:25566), /wormholes wand, build a GATEWAY portal
-#   2. open it, Export -> copy the portal code
-#   3. /wh import <code> on BETA console (or in-game), then build a GATEWAY on
+#   2. open Pair & Destination, then Create Invite and copy the portal code
+#   3. use Use Invite on BETA (or /wh network import <code>), then build a GATEWAY on
 #      BETA and link it to ALPHA's gateway
 #
 # Usage:
@@ -61,8 +61,12 @@ write_network_toml() { # configdir servername listenport
   local listen_enabled="false"; [ "${WH_SIDEBAND:-true}" = "false" ] && listen_enabled="true"
   mkdir -p "$dir"
   cat > "${dir}/wormholes.toml" <<EOF
+schema = 2
+quality = "auto"
+
 [network]
 enabled = true
+server-name = "${name}"
 listen-enabled = ${listen_enabled}
 listen-port = ${port}
 advertise-host-override = "127.0.0.1"
@@ -88,7 +92,7 @@ deploy_to() { # instance-name servername wh-port
   cp -f "$WH_JAR" "${path}/plugins/Wormholes.jar"
   [ -f "${DROPINS}/BileTools.jar" ] && cp -f "${DROPINS}/BileTools.jar" "${path}/plugins/BileTools.jar"
   write_network_toml "${path}/plugins/Wormholes/config" "$sname" "$whport"
-  say "deployed jar + network.toml (${sname}, wh-port ${whport}) -> ${name}"
+  say "deployed jar + wormholes.toml (${sname}, wh-port ${whport}) -> ${name}"
 }
 
 configure_props() { # instance-name game-port motd
@@ -146,8 +150,8 @@ $(say "pair is up:")
 
 Cross-server GATEWAY link:
   1. Join ALPHA (localhost:${agp}). Run: /wormholes wand rune=gateway
-     Build a GATEWAY portal, open its GUI, click Export, copy the code.
-  2. On BETA run: /wh import <code>   (console or in-game)
+     Build a GATEWAY portal, open Pair & Destination, click Create Invite, and copy the code.
+  2. On BETA use Use Invite or run: /wh network import <code>
      Then build a GATEWAY on BETA and link it to ALPHA. Check with /wh status.
 EOF
 }

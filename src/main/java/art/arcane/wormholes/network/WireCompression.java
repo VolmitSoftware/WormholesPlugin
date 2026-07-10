@@ -35,7 +35,7 @@ public final class WireCompression {
     private static final ThreadLocal<byte[]> COMPRESS_SCRATCH = new ThreadLocal<>();
     private static volatile Boolean zstdUsable;
 
-    private final int compressionLevel;
+    private volatile int compressionLevel;
     private final AtomicReference<DictionaryState> dictionaryState = new AtomicReference<>(DictionaryState.EMPTY);
     private final ReentrantReadWriteLock dictLock = new ReentrantReadWriteLock();
     private final ArrayDeque<RetiredDictionary> retired = new ArrayDeque<>();
@@ -84,6 +84,30 @@ public final class WireCompression {
 
     public int compressionLevel() {
         return compressionLevel;
+    }
+
+    public void setCompressionLevel(int level) {
+        int nextLevel = clampLevel(level);
+        dictLock.writeLock().lock();
+        try {
+            if (compressionLevel == nextLevel) {
+                return;
+            }
+            compressionLevel = nextLevel;
+            DictionaryState previous = dictionaryState.get();
+            if (previous.dictionary != null) {
+                DictionaryState replacement = new DictionaryState(
+                    previous.dictionary,
+                    new ZstdDictCompress(previous.dictionary.bytes(), nextLevel),
+                    new ZstdDictDecompress(previous.dictionary.bytes())
+                );
+                dictionaryState.set(replacement);
+                previous.release();
+            }
+            clearPools();
+        } finally {
+            dictLock.writeLock().unlock();
+        }
     }
 
     public void installDictionary(CompressionDictionary dictionary) {

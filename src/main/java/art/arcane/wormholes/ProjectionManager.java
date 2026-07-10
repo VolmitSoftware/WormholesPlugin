@@ -2,13 +2,16 @@ package art.arcane.wormholes;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 import org.bukkit.Bukkit;
@@ -36,8 +39,11 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEn
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.ProjectionMode;
+import art.arcane.wormholes.network.view.ViewServer;
 import art.arcane.wormholes.render.ProjectionClaimArbiter;
 import art.arcane.wormholes.render.PortalProjector;
+import art.arcane.wormholes.render.view.ProjectionWorldViewProvider;
+import art.arcane.wormholes.render.view.RegionSnapshotWorldViewProvider;
 import art.arcane.wormholes.service.WormholesTelemetry;
 import art.arcane.wormholes.util.AxisAlignedBB;
 import art.arcane.wormholes.util.Direction;
@@ -47,34 +53,47 @@ public class ProjectionManager implements Listener {
     private static final long DIAGNOSTIC_INTERVAL_MS = 5_000L;
 
     private final ProjectionClaimArbiter claimArbiter;
+    private final ProjectionWorldViewProvider viewProvider;
     private final Map<UUID, Map<UUID, PortalProjector>> projectors;
     private final Map<UUID, Map<UUID, Long>> interestGraceUntil;
+    private final Set<UUID> observerTasksInFlight;
+    private final AtomicInteger lastInterestedObservers;
+    private final AtomicInteger lastScheduledProjectors;
+    private final AtomicInteger lastDeferredProjectors;
+    private final AtomicBoolean shutdownFinalized;
+    private final AtomicBoolean shutdownStarted;
     private long lastDiagnostic;
     private long tickCount;
     private boolean firstTickLogged;
+    private volatile boolean closed;
     private int taskId;
     private int currentInterval;
-    private int lastInterestedObservers;
-    private int lastScheduledProjectors;
-    private int lastDeferredProjectors;
 
     public ProjectionManager() {
-        this.claimArbiter = new ProjectionClaimArbiter();
-        this.projectors = new HashMap<UUID, Map<UUID, PortalProjector>>();
-        this.interestGraceUntil = new HashMap<UUID, Map<UUID, Long>>();
+        this.viewProvider = FoliaScheduler.isFoliaThreading(Bukkit.getServer())
+            ? new RegionSnapshotWorldViewProvider(Wormholes.instance)
+            : ProjectionWorldViewProvider.live();
+        this.claimArbiter = new ProjectionClaimArbiter(viewProvider);
+        this.projectors = new ConcurrentHashMap<UUID, Map<UUID, PortalProjector>>();
+        this.interestGraceUntil = new ConcurrentHashMap<UUID, Map<UUID, Long>>();
+        this.observerTasksInFlight = ConcurrentHashMap.newKeySet();
+        this.lastInterestedObservers = new AtomicInteger();
+        this.lastScheduledProjectors = new AtomicInteger();
+        this.lastDeferredProjectors = new AtomicInteger();
+        this.shutdownFinalized = new AtomicBoolean();
+        this.shutdownStarted = new AtomicBoolean();
         this.lastDiagnostic = 0L;
         this.tickCount = 0L;
         this.firstTickLogged = false;
+        this.closed = false;
         this.taskId = -1;
         this.currentInterval = -1;
-        this.lastInterestedObservers = 0;
-        this.lastScheduledProjectors = 0;
-        this.lastDeferredProjectors = 0;
         scheduleTick();
     }
 
     @EventHandler
     public void on(PlayerQuitEvent e) {
+        observerTasksInFlight.remove(e.getPlayer().getUniqueId());
         removeProjector(e.getPlayer());
     }
 
@@ -119,6 +138,9 @@ public class ProjectionManager implements Listener {
     }
 
     private void tick() {
+        if (closed) {
+            return;
+        }
         tickCount++;
 
         if (!firstTickLogged) {
@@ -133,24 +155,52 @@ public class ProjectionManager implements Listener {
             return;
         }
 
-        lastInterestedObservers = 0;
-        lastScheduledProjectors = 0;
-        lastDeferredProjectors = 0;
+        lastInterestedObservers.set(0);
+        lastScheduledProjectors.set(0);
+        lastDeferredProjectors.set(0);
         List<ILocalPortal> active = collectActiveProjectors();
-        Map<UUID, ObserverProjectionPlan> plans = collectObserverPlans(active);
-        int remainingProjectors = Settings.PROJECTION_MAX_PROJECTORS_PER_TICK;
+        cleanupInactivePortals(active);
         boolean updateBlocks = shouldUpdateBlocks();
         boolean updateEntities = shouldUpdateEntities();
-
-        for (ObserverProjectionPlan plan : plans.values()) {
-            int scheduled = updateObserver(plan, remainingProjectors, updateBlocks, updateEntities);
-            if (updateBlocks) {
-                remainingProjectors = Math.max(0, remainingProjectors - scheduled);
+        long frameTick = tickCount;
+        List<Player> onlinePlayers = new ArrayList<Player>(Wormholes.instance.getServer().getOnlinePlayers());
+        int totalBudget = updateBlocks ? Math.max(0, Settings.PROJECTION_MAX_PROJECTORS_PER_TICK) : 0;
+        int perObserverBudget = Math.max(0, Settings.PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK);
+        int[] reservedBudgets = fairBudgetAllocations(onlinePlayers.size(), totalBudget, perObserverBudget, frameTick);
+        int reservedTotal = 0;
+        for (int reserved : reservedBudgets) {
+            reservedTotal += reserved;
+        }
+        AtomicInteger remainingProjectors = new AtomicInteger(Math.max(0, totalBudget - reservedTotal));
+        int rotationStart = onlinePlayers.isEmpty() ? 0 : (int) Math.floorMod(frameTick, onlinePlayers.size());
+        for (int offset = 0; offset < onlinePlayers.size(); offset++) {
+            int index = (rotationStart + offset) % onlinePlayers.size();
+            Player observer = onlinePlayers.get(index);
+            UUID observerId = observer.getUniqueId();
+            int reservedBudget = reservedBudgets[index];
+            if (!observerTasksInFlight.add(observerId)) {
+                remainingProjectors.addAndGet(reservedBudget);
+                continue;
+            }
+            boolean scheduled = FoliaScheduler.runEntity(Wormholes.instance, observer, () -> {
+                try {
+                    if (closed) {
+                        remainingProjectors.addAndGet(reservedBudget);
+                        return;
+                    }
+                    projectObserverFrame(observer, active, remainingProjectors, reservedBudget,
+                        updateBlocks, updateEntities, frameTick);
+                } finally {
+                    observerTasksInFlight.remove(observerId);
+                }
+            });
+            if (!scheduled) {
+                observerTasksInFlight.remove(observerId);
+                remainingProjectors.addAndGet(reservedBudget);
             }
         }
-
-        cleanupDeadPortals(active, plans);
-        WormholesTelemetry.setProjectionGauges(active.size(), plans.size(), countSpoofedEntities());
+        pruneInterestGrace(frameTick);
+        WormholesTelemetry.setProjectionGauges(active.size(), observerTasksInFlight.size(), countSpoofedEntities());
         emitDiagnostics(active);
     }
 
@@ -183,7 +233,7 @@ public class ProjectionManager implements Listener {
 
         Wormholes.v("[ProjectionManager] tick=" + tickCount + " totalPortals=" + totalPortals
                 + " activeProjectingPortals=" + active.size() + " observers=" + totalObservers + " renderedBlocks=" + totalRendered
-                + " interested=" + lastInterestedObservers + " scheduled=" + lastScheduledProjectors + " deferred=" + lastDeferredProjectors);
+                + " interested=" + lastInterestedObservers.get() + " scheduled=" + lastScheduledProjectors.get() + " deferred=" + lastDeferredProjectors.get());
 
         if (active.isEmpty() && totalPortals > 0) {
             for (ILocalPortal portal : Wormholes.portalManager.getLocalPortals()) {
@@ -211,140 +261,128 @@ public class ProjectionManager implements Listener {
         return active;
     }
 
-    private Map<UUID, ObserverProjectionPlan> collectObserverPlans(List<ILocalPortal> active) {
-        Map<UUID, ObserverProjectionPlan> plans = new HashMap<UUID, ObserverProjectionPlan>();
-        Map<World, List<Player>> playersByWorld = new HashMap<World, List<Player>>(2);
-        for (ILocalPortal portal : active) {
-            Location center = portal.getCenter();
-            if (center == null || center.getWorld() == null) {
-                Wormholes.w("[ProjectionManager] portal " + portal.getName() + " has no valid center/world; skipping");
-                continue;
-            }
-            AxisAlignedBB view = portal.getView();
-            if (view == null) {
-                continue;
-            }
-            World world = center.getWorld();
-            List<Player> worldPlayers = playersByWorld.get(world);
-            if (worldPlayers == null) {
-                worldPlayers = world.getPlayers();
-                playersByWorld.put(world, worldPlayers);
-            }
-            for (Player observer : worldPlayers) {
-                Location observerLocation = observer.getLocation();
-                if (!view.contains(observerLocation)) {
-                    continue;
-                }
-                boolean liveInterest = isObserverProjectionInterested(observer.getEyeLocation(), center, portal);
-                if (!liveInterest && !isInsideInterestGrace(portal, observer)) {
-                    continue;
-                }
-                if (liveInterest) {
-                    refreshInterestGrace(portal, observer);
-                    if (Wormholes.arrivalWarmer != null) {
-                        Wormholes.arrivalWarmer.warmDestinationOf(portal);
-                    }
-                }
-                ObserverProjectionPlan plan = plans.get(observer.getUniqueId());
-                if (plan == null) {
-                    plan = new ObserverProjectionPlan(observer);
-                    plans.put(observer.getUniqueId(), plan);
-                }
-                plan.add(portal);
-                lastInterestedObservers++;
-            }
-        }
-        return plans;
-    }
-
-    private void cleanupDeadPortals(List<ILocalPortal> active, Map<UUID, ObserverProjectionPlan> plans) {
+    private void cleanupInactivePortals(List<ILocalPortal> active) {
         Set<UUID> activeIds = new HashSet<UUID>(active.size());
         for (ILocalPortal portal : active) {
             activeIds.add(portal.getId());
         }
-
-        Map<UUID, Set<UUID>> plannedByPortal = new HashMap<UUID, Set<UUID>>();
-        for (ObserverProjectionPlan plan : plans.values()) {
-            for (ILocalPortal portal : plan.portals) {
-                Set<UUID> observers = plannedByPortal.get(portal.getId());
-                if (observers == null) {
-                    observers = new HashSet<UUID>();
-                    plannedByPortal.put(portal.getId(), observers);
-                }
-                observers.add(plan.observer.getUniqueId());
-            }
-        }
-
-        Iterator<Map.Entry<UUID, Map<UUID, PortalProjector>>> it = projectors.entrySet().iterator();
-        while (it.hasNext()) {
-            Map.Entry<UUID, Map<UUID, PortalProjector>> entry = it.next();
-            if (!activeIds.contains(entry.getKey())) {
-                for (PortalProjector projector : entry.getValue().values()) {
-                    Location center = projector.getPortal().getCenter();
-                    closeOnRegion(projector, center);
-                }
-                it.remove();
+        for (Map.Entry<UUID, Map<UUID, PortalProjector>> entry : projectors.entrySet()) {
+            if (activeIds.contains(entry.getKey()) || !projectors.remove(entry.getKey(), entry.getValue())) {
                 continue;
             }
-            Set<UUID> plannedObservers = plannedByPortal.get(entry.getKey());
-            Iterator<Map.Entry<UUID, PortalProjector>> projectorIterator = entry.getValue().entrySet().iterator();
-            while (projectorIterator.hasNext()) {
-                Map.Entry<UUID, PortalProjector> projectorEntry = projectorIterator.next();
-                if (plannedObservers != null && plannedObservers.contains(projectorEntry.getKey())) {
-                    continue;
-                }
-                Location center = projectorEntry.getValue().getPortal().getCenter();
-                closeOnRegion(projectorEntry.getValue(), center);
-                projectorIterator.remove();
-            }
-            if (entry.getValue().isEmpty()) {
-                it.remove();
+            interestGraceUntil.remove(entry.getKey());
+            for (PortalProjector projector : entry.getValue().values()) {
+                closeOnEntity(projector);
             }
         }
-        pruneInterestGrace();
     }
 
-    private int updateObserver(ObserverProjectionPlan plan, int remainingProjectors, boolean updateBlocks, boolean updateEntities) {
-        if (!updateBlocks && !updateEntities) {
-            return 0;
+    private void projectObserverFrame(Player observer,
+                                      List<ILocalPortal> active,
+                                      AtomicInteger remainingProjectors,
+                                      int reservedBudget,
+                                      boolean updateBlocks,
+                                      boolean updateEntities,
+                                      long frameTick) {
+        if (!observer.isOnline()) {
+            remainingProjectors.addAndGet(reservedBudget);
+            return;
         }
-        Player observer = plan.observer;
-        if (observer == null || !observer.isOnline()) {
-            return 0;
+        UUID observerId = observer.getUniqueId();
+        World observerWorld = observer.getWorld();
+        Location observerLocation = observer.getLocation();
+        Location eye = observer.getEyeLocation();
+        claimArbiter.retryPending(observer, observerWorld);
+        List<ILocalPortal> interested = new ArrayList<ILocalPortal>();
+        for (ILocalPortal portal : active) {
+            Location center = portal.getCenter();
+            if (center == null || center.getWorld() == null) {
+                continue;
+            }
+            if (!observerWorld.equals(center.getWorld())) {
+                continue;
+            }
+            AxisAlignedBB view = portal.getView();
+            if (view == null || !view.contains(observerLocation)) {
+                continue;
+            }
+            boolean liveInterest = isObserverProjectionInterested(eye, center, portal);
+            if (!liveInterest && !isInsideInterestGrace(portal, observerId, frameTick)) {
+                continue;
+            }
+            if (liveInterest) {
+                refreshInterestGrace(portal, observerId, frameTick);
+                if (Wormholes.arrivalWarmer != null) {
+                    Wormholes.arrivalWarmer.warmDestinationOf(portal);
+                }
+            }
+            interested.add(portal);
+            lastInterestedObservers.incrementAndGet();
         }
-        if (plan.portals.isEmpty()) {
-            return 0;
+        interested.sort(Comparator.comparingDouble(portal -> distanceSquared(eye, portal)));
+        Set<UUID> interestedIds = new HashSet<UUID>(interested.size());
+        for (ILocalPortal portal : interested) {
+            interestedIds.add(portal.getId());
         }
-
-        plan.sort();
-        boolean observerUpdatesBlocks = updateBlocks && remainingProjectors > 0;
-        if (!observerUpdatesBlocks && !updateEntities) {
-            lastDeferredProjectors += plan.portals.size();
-            return 0;
+        closeUnplannedForObserver(observerId, interestedIds);
+        if ((!updateBlocks && !updateEntities) || interested.isEmpty()) {
+            remainingProjectors.addAndGet(reservedBudget);
+            return;
         }
-        int observerLimit = observerUpdatesBlocks ? Math.min(Settings.PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK, remainingProjectors) : plan.portals.size();
-        int limit = Math.min(observerLimit, plan.portals.size());
+        int desiredBlocks = updateBlocks
+            ? Math.min(Settings.PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK, interested.size())
+            : 0;
+        int reservedUsed = Math.min(reservedBudget, desiredBlocks);
+        int claimedBlocks = reservedUsed + claimProjectorBudget(remainingProjectors, desiredBlocks - reservedUsed);
+        if (reservedBudget > reservedUsed) {
+            remainingProjectors.addAndGet(reservedBudget - reservedUsed);
+        }
+        boolean observerUpdatesBlocks = claimedBlocks > 0;
+        int limit = observerUpdatesBlocks ? claimedBlocks : (updateEntities ? interested.size() : 0);
+        if (limit == 0) {
+            lastDeferredProjectors.addAndGet(interested.size());
+            return;
+        }
         List<ILocalPortal> scheduledPortals = new ArrayList<ILocalPortal>(limit);
         for (int i = 0; i < limit; i++) {
-            scheduledPortals.add(plan.portals.get(i));
+            scheduledPortals.add(interested.get(i));
         }
-        int deferred = Math.max(0, plan.portals.size() - scheduledPortals.size());
+        int deferred = Math.max(0, interested.size() - scheduledPortals.size());
         if (observerUpdatesBlocks) {
-            lastScheduledProjectors += scheduledPortals.size();
-            lastDeferredProjectors += deferred;
+            lastScheduledProjectors.addAndGet(scheduledPortals.size());
+            lastDeferredProjectors.addAndGet(deferred);
         }
-        if (scheduledPortals.isEmpty()) {
-            return 0;
-        }
-
-        Location observerLocation = observer.getLocation();
-        FoliaScheduler.runRegion(Wormholes.instance, observerLocation, () -> projectActiveObserver(observer.getUniqueId(), scheduledPortals, observerUpdatesBlocks, updateEntities));
-        return observerUpdatesBlocks ? scheduledPortals.size() : 0;
+        projectActiveObserver(observer, scheduledPortals, observerUpdatesBlocks, updateEntities);
     }
 
-    private void projectActiveObserver(UUID observerId, List<ILocalPortal> scheduledPortals, boolean updateBlocks, boolean updateEntities) {
-        Player observer = Bukkit.getPlayer(observerId);
-        if (observer == null || !observer.isOnline()) {
+    static int[] fairBudgetAllocations(int observerCount, int totalBudget, int perObserverBudget, long frameTick) {
+        if (observerCount <= 0 || totalBudget <= 0 || perObserverBudget <= 0) {
+            return new int[Math.max(0, observerCount)];
+        }
+        int[] allocations = new int[observerCount];
+        long maximum = (long) observerCount * perObserverBudget;
+        int remaining = (int) Math.min(totalBudget, Math.min(Integer.MAX_VALUE, maximum));
+        int start = (int) Math.floorMod(frameTick, observerCount);
+        while (remaining > 0) {
+            boolean allocated = false;
+            for (int offset = 0; offset < observerCount && remaining > 0; offset++) {
+                int index = (start + offset) % observerCount;
+                if (allocations[index] >= perObserverBudget) {
+                    continue;
+                }
+                allocations[index]++;
+                remaining--;
+                allocated = true;
+            }
+            if (!allocated) {
+                break;
+            }
+        }
+        return allocations;
+    }
+
+    private void projectActiveObserver(Player observer, List<ILocalPortal> scheduledPortals, boolean updateBlocks, boolean updateEntities) {
+        if (closed || observer == null || !observer.isOnline()) {
             return;
         }
         claimArbiter.beginFrame(observer, observer.getWorld(), false);
@@ -355,14 +393,20 @@ public class ProjectionManager implements Listener {
                 }
                 Map<UUID, PortalProjector> portalProjectors = projectors.get(portal.getId());
                 if (portalProjectors == null) {
-                    portalProjectors = new HashMap<UUID, PortalProjector>();
-                    projectors.put(portal.getId(), portalProjectors);
+                    portalProjectors = new ConcurrentHashMap<UUID, PortalProjector>();
+                    Map<UUID, PortalProjector> existing = projectors.putIfAbsent(portal.getId(), portalProjectors);
+                    if (existing != null) {
+                        portalProjectors = existing;
+                    }
                 }
 
                 UUID activeObserverId = observer.getUniqueId();
                 PortalProjector projector = portalProjectors.get(activeObserverId);
                 if (projector == null) {
-                    projector = new PortalProjector(portal, observer, claimArbiter);
+                    if (closed) {
+                        continue;
+                    }
+                    projector = new PortalProjector(portal, observer, claimArbiter, viewProvider, () -> !closed);
                     portalProjectors.put(activeObserverId, projector);
                     Wormholes.v("[ProjectionManager] new projector portal=" + portal.getName()
                             + " observer=" + observer.getName()
@@ -382,6 +426,36 @@ public class ProjectionManager implements Listener {
         }
     }
 
+    private int claimProjectorBudget(AtomicInteger remaining, int requested) {
+        while (requested > 0) {
+            int available = remaining.get();
+            if (available <= 0) {
+                return 0;
+            }
+            int claimed = Math.min(available, requested);
+            if (remaining.compareAndSet(available, available - claimed)) {
+                return claimed;
+            }
+        }
+        return 0;
+    }
+
+    private void closeUnplannedForObserver(UUID observerId, Set<UUID> interestedPortalIds) {
+        for (Map.Entry<UUID, Map<UUID, PortalProjector>> entry : projectors.entrySet()) {
+            if (interestedPortalIds.contains(entry.getKey())) {
+                continue;
+            }
+            PortalProjector projector = entry.getValue().remove(observerId);
+            if (projector == null) {
+                continue;
+            }
+            projector.close();
+            if (entry.getValue().isEmpty()) {
+                projectors.remove(entry.getKey(), entry.getValue());
+            }
+        }
+    }
+
     private boolean isPortalStillProjectable(ILocalPortal portal) {
         if (portal == null || !portal.supportsProjections() || !portal.isProjecting() || !portal.isOpen()) {
             return false;
@@ -392,29 +466,32 @@ public class ProjectionManager implements Listener {
         return true;
     }
 
-    private boolean isInsideInterestGrace(ILocalPortal portal, Player observer) {
-        if (!hasProjector(portal, observer.getUniqueId())) {
+    private boolean isInsideInterestGrace(ILocalPortal portal, UUID observerId, long frameTick) {
+        if (!hasProjector(portal, observerId)) {
             return false;
         }
         Map<UUID, Long> byObserver = interestGraceUntil.get(portal.getId());
         if (byObserver == null) {
             return false;
         }
-        Long until = byObserver.get(observer.getUniqueId());
-        return until != null && until.longValue() >= tickCount;
+        Long until = byObserver.get(observerId);
+        return until != null && until.longValue() >= frameTick;
     }
 
-    private void refreshInterestGrace(ILocalPortal portal, Player observer) {
+    private void refreshInterestGrace(ILocalPortal portal, UUID observerId, long frameTick) {
         int graceTicks = Math.max(0, Settings.PROJECTION_INTEREST_GRACE_TICKS);
         if (graceTicks <= 0) {
             return;
         }
         Map<UUID, Long> byObserver = interestGraceUntil.get(portal.getId());
         if (byObserver == null) {
-            byObserver = new HashMap<UUID, Long>(4);
-            interestGraceUntil.put(portal.getId(), byObserver);
+            byObserver = new ConcurrentHashMap<UUID, Long>(4);
+            Map<UUID, Long> existing = interestGraceUntil.putIfAbsent(portal.getId(), byObserver);
+            if (existing != null) {
+                byObserver = existing;
+            }
         }
-        byObserver.put(observer.getUniqueId(), Long.valueOf(tickCount + graceTicks));
+        byObserver.put(observerId, Long.valueOf(frameTick + graceTicks));
     }
 
     private boolean hasProjector(ILocalPortal portal, UUID observerId) {
@@ -422,54 +499,33 @@ public class ProjectionManager implements Listener {
         return portalProjectors != null && portalProjectors.containsKey(observerId);
     }
 
-    private void pruneInterestGrace() {
-        Iterator<Map.Entry<UUID, Map<UUID, Long>>> portalIterator = interestGraceUntil.entrySet().iterator();
-        while (portalIterator.hasNext()) {
-            Map<UUID, Long> byObserver = portalIterator.next().getValue();
-            Iterator<Map.Entry<UUID, Long>> observerIterator = byObserver.entrySet().iterator();
-            while (observerIterator.hasNext()) {
-                if (observerIterator.next().getValue().longValue() < tickCount) {
-                    observerIterator.remove();
+    private void pruneInterestGrace(long frameTick) {
+        for (Map.Entry<UUID, Map<UUID, Long>> portalEntry : interestGraceUntil.entrySet()) {
+            Map<UUID, Long> byObserver = portalEntry.getValue();
+            for (Map.Entry<UUID, Long> observerEntry : byObserver.entrySet()) {
+                if (observerEntry.getValue().longValue() < frameTick) {
+                    byObserver.remove(observerEntry.getKey(), observerEntry.getValue());
                 }
             }
             if (byObserver.isEmpty()) {
-                portalIterator.remove();
+                interestGraceUntil.remove(portalEntry.getKey(), byObserver);
             }
         }
     }
 
-    private static double distanceSquared(Player observer, ILocalPortal portal) {
+    private static double distanceSquared(Location eye, ILocalPortal portal) {
         Location center = portal.getCenter();
-        Location eye = observer.getEyeLocation();
         if (center == null || eye == null || center.getWorld() == null || eye.getWorld() == null || !center.getWorld().equals(eye.getWorld())) {
             return Double.MAX_VALUE;
         }
         return center.distanceSquared(eye);
     }
 
-    private static final class ObserverProjectionPlan {
-        private final Player observer;
-        private final List<ILocalPortal> portals;
-
-        private ObserverProjectionPlan(Player observer) {
-            this.observer = observer;
-            this.portals = new ArrayList<ILocalPortal>();
-        }
-
-        private void add(ILocalPortal portal) {
-            portals.add(portal);
-        }
-
-        private void sort() {
-            portals.sort(Comparator.comparingDouble(portal -> distanceSquared(observer, portal)));
-        }
-    }
-
     private String formatLoc(Location loc) {
         if (loc == null) {
             return "null";
         }
-        return (loc.getWorld() == null ? "null" : loc.getWorld().getName()) + " " + loc.getBlockX() + "," + loc.getBlockY() + "," + loc.getBlockZ();
+        return loc.getBlockX() + "," + loc.getBlockY() + "," + loc.getBlockZ();
     }
 
     static boolean isLookingTowardPortal(Location eye, Location center, double minimumDot) {
@@ -562,9 +618,8 @@ public class ProjectionManager implements Listener {
         if (portalProjectors == null) {
             return;
         }
-        Location center = portal.getCenter();
         for (PortalProjector projector : portalProjectors.values()) {
-            closeOnRegion(projector, center);
+            closeOnEntity(projector);
         }
     }
 
@@ -575,16 +630,14 @@ public class ProjectionManager implements Listener {
             if (projector == null) {
                 continue;
             }
-            Location center = projector.getPortal().getCenter();
-            closeOnRegion(projector, center);
+            closeOnEntity(projector);
         }
         claimArbiter.releaseObserver(id);
-        Iterator<Map.Entry<UUID, Map<UUID, Long>>> graceIterator = interestGraceUntil.entrySet().iterator();
-        while (graceIterator.hasNext()) {
-            Map<UUID, Long> byObserver = graceIterator.next().getValue();
+        for (Map.Entry<UUID, Map<UUID, Long>> graceEntry : interestGraceUntil.entrySet()) {
+            Map<UUID, Long> byObserver = graceEntry.getValue();
             byObserver.remove(id);
             if (byObserver.isEmpty()) {
-                graceIterator.remove();
+                interestGraceUntil.remove(graceEntry.getKey(), byObserver);
             }
         }
     }
@@ -605,27 +658,43 @@ public class ProjectionManager implements Listener {
         if (projector == null) {
             return;
         }
-        Location center = projector.getPortal().getCenter();
-        closeOnRegion(projector, center);
+        closeOnEntity(projector);
     }
 
     public void shutdown() {
+        if (!shutdownStarted.compareAndSet(false, true)) {
+            return;
+        }
+        closed = true;
         if (taskId >= 0) {
             J.csr(taskId);
             taskId = -1;
         }
-        for (Map<UUID, PortalProjector> portalProjectors : projectors.values()) {
-            for (PortalProjector projector : portalProjectors.values()) {
-                try {
-                    projector.close();
-                } catch (Throwable ex) {
-                    ex.printStackTrace();
-                }
+        List<PortalProjector> closing = snapshotProjectors();
+        AtomicInteger pending = new AtomicInteger(closing.size());
+        CountDownLatch completion = new CountDownLatch(closing.size());
+        if (closing.isEmpty()) {
+            finalizeShutdown();
+        } else {
+            for (PortalProjector projector : closing) {
+                scheduleClose(projector, () -> {
+                    completion.countDown();
+                    if (pending.decrementAndGet() == 0) {
+                        finalizeShutdown();
+                    }
+                });
             }
         }
         projectors.clear();
         interestGraceUntil.clear();
-        claimArbiter.clear();
+        observerTasksInFlight.clear();
+        try {
+            completion.await(2L, TimeUnit.SECONDS);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+        } finally {
+            finalizeShutdown();
+        }
     }
 
     public void onSettingsReloaded() {
@@ -646,7 +715,7 @@ public class ProjectionManager implements Listener {
         if (entityId == null || type == null) {
             return;
         }
-        art.arcane.wormholes.network.view.ViewServer viewServer = Wormholes.viewServer;
+        ViewServer viewServer = Wormholes.viewServer;
         if (viewServer != null) {
             viewServer.forwardAnimation(entityId, type);
         }
@@ -659,11 +728,11 @@ public class ProjectionManager implements Listener {
         }
         for (PortalProjector projector : snapshotProjectors()) {
             Player observer = projector.getObserver();
-            if (observer == null || !observer.isOnline()) {
+            if (observer == null) {
                 continue;
             }
             FoliaScheduler.runEntity(Wormholes.instance, observer, () -> {
-                if (!projector.isClosed() && projector.hasProjectedEntity(entityId)) {
+                if (observer.isOnline() && !projector.isClosed() && projector.hasProjectedEntity(entityId)) {
                     projector.sendProjectedEntityAnimation(entityId, type);
                 }
             });
@@ -674,7 +743,7 @@ public class ProjectionManager implements Listener {
         if (entityId == null) {
             return;
         }
-        art.arcane.wormholes.network.view.ViewServer viewServer = Wormholes.viewServer;
+        ViewServer viewServer = Wormholes.viewServer;
         if (viewServer != null) {
             viewServer.forwardHurt(entityId, yaw);
         }
@@ -687,11 +756,11 @@ public class ProjectionManager implements Listener {
         }
         for (PortalProjector projector : snapshotProjectors()) {
             Player observer = projector.getObserver();
-            if (observer == null || !observer.isOnline()) {
+            if (observer == null) {
                 continue;
             }
             FoliaScheduler.runEntity(Wormholes.instance, observer, () -> {
-                if (!projector.isClosed() && projector.hasProjectedEntity(entityId)) {
+                if (observer.isOnline() && !projector.isClosed() && projector.hasProjectedEntity(entityId)) {
                     projector.sendProjectedEntityHurt(entityId, yaw);
                 }
             });
@@ -718,6 +787,9 @@ public class ProjectionManager implements Listener {
     }
 
     private void scheduleTick() {
+        if (closed) {
+            return;
+        }
         int interval = 1;
         if (taskId >= 0 && currentInterval == interval) {
             return;
@@ -730,22 +802,40 @@ public class ProjectionManager implements Listener {
         Wormholes.v("[ProjectionManager] tick scheduled (taskId=" + taskId + ", interval=" + interval + "t, blockInterval=" + Settings.PROJECTION_REFRESH_INTERVAL_TICKS + "t, entityInterval=" + Settings.ENTITY_UPDATE_INTERVAL_TICKS + "t, range=" + Settings.PROJECTION_RANGE + ")");
     }
 
-    private void closeOnRegion(PortalProjector projector, Location center) {
-        if (center == null || center.getWorld() == null) {
-            try {
-                projector.close();
-            } catch (Throwable ex) {
-                ex.printStackTrace();
-            }
+    private void closeOnEntity(PortalProjector projector) {
+        scheduleClose(projector, () -> {
+        });
+    }
+
+    private void scheduleClose(PortalProjector projector, Runnable onComplete) {
+        Player observer = projector.getObserver();
+        if (observer == null) {
+            projector.requestDiscard();
+            onComplete.run();
             return;
         }
-
-        FoliaScheduler.runRegion(Wormholes.instance, center, () -> {
+        boolean scheduled = FoliaScheduler.runEntity(Wormholes.instance, observer, () -> {
             try {
-                projector.close();
-            } catch (Throwable ex) {
-                ex.printStackTrace();
+                if (observer.isOnline()) {
+                    projector.close();
+                } else {
+                    projector.discard();
+                }
+            } finally {
+                onComplete.run();
             }
         });
+        if (!scheduled) {
+            projector.requestDiscard();
+            onComplete.run();
+        }
+    }
+
+    private void finalizeShutdown() {
+        if (!shutdownFinalized.compareAndSet(false, true)) {
+            return;
+        }
+        claimArbiter.clear();
+        viewProvider.close();
     }
 }

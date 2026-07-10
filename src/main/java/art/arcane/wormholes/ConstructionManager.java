@@ -43,11 +43,12 @@ public class ConstructionManager implements Listener
 
 		Block firstBlock = blocks.iterator().next();
 		Location anchor = firstBlock.getLocation();
+		UUID ownerId = player == null ? null : player.getUniqueId();
 
-		FoliaScheduler.runRegion(Wormholes.instance, anchor, () -> performConstruct(blocks, type, look, onCreated), 25L);
+		FoliaScheduler.runRegion(Wormholes.instance, anchor, () -> performConstruct(blocks, type, look, ownerId, onCreated), 25L);
 	}
 
-	private void performConstruct(Set<Block> blocks, PortalType type, Vector look, Consumer<ILocalPortal> onCreated)
+	private void performConstruct(Set<Block> blocks, PortalType type, Vector look, UUID ownerId, Consumer<ILocalPortal> onCreated)
 	{
 		Cuboid c = null;
 
@@ -81,7 +82,11 @@ public class ConstructionManager implements Listener
 			Direction normal = derivePortalNormal(xDepth, yDepth, zDepth, lookX, lookY, lookZ);
 			PortalStructure s = new PortalStructure();
 			s.setBlocks(blocks);
-			ILocalPortal portal = createPortal(s, type);
+			LocalPortal portal = createPortal(s, type);
+			if(ownerId != null)
+			{
+				portal.setOwner(ownerId);
+			}
 			portal.setFrame(PortalFrame.fromDirectionAndLook(normal, look));
 			portal.open();
 			portal.save();
@@ -138,7 +143,7 @@ public class ConstructionManager implements Listener
 		return lookZ >= 0.0D ? Direction.S : Direction.N;
 	}
 
-	private ILocalPortal createPortal(PortalStructure s, PortalType type)
+	private LocalPortal createPortal(PortalStructure s, PortalType type)
 	{
 		return new LocalPortal(UUID.randomUUID(), type, s);
 	}

@@ -257,6 +257,23 @@ class WireCompressionTest {
     }
 
     @Test
+    void compressionLevelCanChangeWithAnInstalledDictionary() throws IOException {
+        WireCompression compression = new WireCompression(3);
+        try {
+            CompressionDictionary dictionary = trainDictionary();
+            compression.installDictionary(dictionary);
+            compression.setCompressionLevel(9);
+            assertEquals(9, compression.compressionLevel());
+            byte[] payload = compressibleBytes(4096, 91L);
+            byte[] encoded = compression.encode(payload, dictionary.version());
+            assertEquals(WireCompression.MODE_ZSTD_DICT, encoded[0]);
+            assertArrayEquals(payload, compression.decode(encoded).payload());
+        } finally {
+            compression.close();
+        }
+    }
+
+    @Test
     void incompressiblePayloadFallsBackToNoneMode() throws IOException {
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {

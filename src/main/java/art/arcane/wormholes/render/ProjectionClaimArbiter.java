@@ -27,16 +27,23 @@ import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.render.view.ProjectionWorldView;
+import art.arcane.wormholes.render.view.ProjectionWorldViewProvider;
 import art.arcane.wormholes.service.WormholesTelemetry;
 
 public final class ProjectionClaimArbiter {
     private final ConcurrentHashMap<UUID, ObserverClaims> observers;
     private final ConcurrentHashMap<BlockData, Integer> blockGlobalIds;
+    private final ProjectionWorldViewProvider viewProvider;
     private volatile boolean blockMappingFailed;
 
     public ProjectionClaimArbiter() {
+        this(ProjectionWorldViewProvider.live());
+    }
+
+    public ProjectionClaimArbiter(ProjectionWorldViewProvider viewProvider) {
         this.observers = new ConcurrentHashMap<UUID, ObserverClaims>();
         this.blockGlobalIds = new ConcurrentHashMap<BlockData, Integer>();
+        this.viewProvider = viewProvider;
         this.blockMappingFailed = false;
     }
 
@@ -142,9 +149,13 @@ public final class ProjectionClaimArbiter {
             if (state.retired) {
                 return;
             }
-            state.claimSet.releasePortal(portalId);
-            state.pendingLightingKeys.clear();
-            state.sentBlocks.clear();
+            ProjectionClaimSet.ProjectionClaimSetResult releaseResult = state.claimSet.releasePortal(portalId);
+            LongIterator changedKeys = releaseResult.getPacketChangeKeys().iterator();
+            while (changedKeys.hasNext()) {
+                long key = changedKeys.nextLong();
+                state.sentBlocks.remove(key);
+                state.pendingRevertKeys.remove(key);
+            }
             removeObserverIfEmpty(observerId, state);
         }
     }
@@ -160,6 +171,7 @@ public final class ProjectionClaimArbiter {
             }
             state.claimSet.clear();
             state.pendingLightingKeys.clear();
+            state.pendingRevertKeys.clear();
             state.sentBlocks.clear();
             state.frame = null;
             state.retired = true;
@@ -174,6 +186,7 @@ public final class ProjectionClaimArbiter {
                 state.retired = true;
                 state.claimSet.clear();
                 state.pendingLightingKeys.clear();
+                state.pendingRevertKeys.clear();
                 state.sentBlocks.clear();
                 state.frame = null;
             }
@@ -194,6 +207,26 @@ public final class ProjectionClaimArbiter {
                 return false;
             }
             return !state.pendingLightingKeys.isEmpty();
+        }
+    }
+
+    public ClaimUpdateResult retryPending(Player observer, World localWorld) {
+        if (observer == null) {
+            return ClaimUpdateResult.empty();
+        }
+        UUID observerId = observer.getUniqueId();
+        ObserverClaims state = observers.get(observerId);
+        if (state == null) {
+            return ClaimUpdateResult.empty();
+        }
+        synchronized (state) {
+            if (state.retired || state.pendingRevertKeys.isEmpty()) {
+                return ClaimUpdateResult.empty();
+            }
+            ClaimUpdateResult result = applyResult(observer, localWorld, state,
+                new ProjectionClaimSet.ProjectionClaimSetResult(), false);
+            removeObserverIfEmpty(observerId, state);
+            return result;
         }
     }
 
@@ -243,11 +276,15 @@ public final class ProjectionClaimArbiter {
                                           ProjectionClaimSet.ProjectionClaimSetResult setResult,
                                           boolean allowLightingUpdate) {
         boolean canSend = observer != null && observer.isOnline() && localWorld != null && localWorld.equals(observer.getWorld());
-        int expectedChanges = setResult.getPacketChangeKeys().size();
+        LongOpenHashSet packetKeys = new LongOpenHashSet(setResult.getPacketChangeKeys());
+        packetKeys.addAll(observerClaims.pendingRevertKeys);
+        observerClaims.pendingRevertKeys.clear();
+        int expectedChanges = packetKeys.size();
         int mapCapacity = expectedChanges <= 2 ? 4 : (expectedChanges * 4 / 3) + 2;
         Long2ObjectMap<BlockData> blockChanges = new Long2ObjectOpenHashMap<BlockData>(mapCapacity);
         if (canSend) {
-            LongIterator packetIterator = setResult.getPacketChangeKeys().iterator();
+            ProjectionWorldView localView = viewProvider.view(localWorld);
+            LongIterator packetIterator = packetKeys.iterator();
             while (packetIterator.hasNext()) {
                 long key = packetIterator.nextLong();
                 ProjectedBlockClaim winner = observerClaims.claimSet.getWinningClaim(key);
@@ -258,7 +295,11 @@ public final class ProjectionClaimArbiter {
                     if (!observerClaims.sentBlocks.containsKey(key)) {
                         continue;
                     }
-                    BlockData localData = localWorld.getBlockData(x, y, z);
+                    BlockData localData = localView == null ? null : localView.sampleBlockData(x, y, z);
+                    if (localData == null) {
+                        observerClaims.pendingRevertKeys.add(key);
+                        continue;
+                    }
                     BlockData sentData = observerClaims.sentBlocks.get(key);
                     observerClaims.sentBlocks.remove(key);
                     if (sentData.equals(localData)) {
@@ -280,6 +321,7 @@ public final class ProjectionClaimArbiter {
             }
         } else {
             observerClaims.sentBlocks.clear();
+            observerClaims.pendingRevertKeys.clear();
         }
 
         observerClaims.pendingLightingKeys.addAll(setResult.getDirtyLightingKeys());
@@ -295,19 +337,23 @@ public final class ProjectionClaimArbiter {
             return;
         }
         if (!Settings.LIGHTING_FIDELITY) {
-            observerClaims.lighting.revert(observer, localWorld);
+            observerClaims.lighting.revert(observer, viewProvider.view(localWorld));
             observerClaims.pendingLightingKeys.clear();
             return;
         }
         if (observerClaims.claimSet.isEmpty()) {
-            observerClaims.lighting.revert(observer, localWorld);
+            observerClaims.lighting.revert(observer, viewProvider.view(localWorld));
             observerClaims.pendingLightingKeys.clear();
             return;
         }
         if (!allowLightingUpdate || observerClaims.pendingLightingKeys.isEmpty()) {
             return;
         }
-        observerClaims.lighting.apply(observer, localWorld, observerClaims.claimSet.getWinningClaims(),
+        ProjectionWorldView localView = viewProvider.view(localWorld);
+        if (localView == null) {
+            return;
+        }
+        observerClaims.lighting.apply(observer, localView, observerClaims.claimSet.getWinningClaims(),
             observerClaims.pendingLightingKeys);
         observerClaims.pendingLightingKeys.clear();
     }
@@ -363,7 +409,7 @@ public final class ProjectionClaimArbiter {
     }
 
     private void removeObserverIfEmpty(UUID observerId, ObserverClaims state) {
-        if (state.claimSet.isEmpty() && state.frame == null) {
+        if (state.claimSet.isEmpty() && state.frame == null && state.pendingRevertKeys.isEmpty() && state.sentBlocks.isEmpty()) {
             state.retired = true;
             observers.remove(observerId, state);
         }
@@ -427,6 +473,7 @@ public final class ProjectionClaimArbiter {
     private static final class ObserverClaims {
         private final ProjectionClaimSet claimSet;
         private final LongOpenHashSet pendingLightingKeys;
+        private final LongOpenHashSet pendingRevertKeys;
         private final Long2ObjectOpenHashMap<BlockData> sentBlocks;
         private final ProjectorLighting lighting;
         private ObserverFrame frame;
@@ -435,6 +482,7 @@ public final class ProjectionClaimArbiter {
         private ObserverClaims() {
             this.claimSet = new ProjectionClaimSet();
             this.pendingLightingKeys = new LongOpenHashSet();
+            this.pendingRevertKeys = new LongOpenHashSet();
             this.sentBlocks = new Long2ObjectOpenHashMap<BlockData>(256);
             this.lighting = new ProjectorLighting();
             this.frame = null;

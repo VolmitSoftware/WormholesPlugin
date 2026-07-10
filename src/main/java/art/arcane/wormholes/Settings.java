@@ -1,11 +1,13 @@
 package art.arcane.wormholes;
 
 import art.arcane.wormholes.config.WormholesSettings;
+import art.arcane.wormholes.config.VisualQualityProfile;
 import art.arcane.wormholes.config.toml.MainConfig;
 import art.arcane.wormholes.config.toml.ProjectionConfig;
 import art.arcane.wormholes.config.toml.RenderConfig;
 
 public final class Settings {
+    public static volatile VisualQualityProfile VISUAL_QUALITY_PROFILE = VisualQualityProfile.AUTO;
     public static volatile boolean ENABLE_PARTICLES = true;
     public static volatile double PORTAL_CONSTRUCT_SPEED = 0.975D;
     public static volatile double PORTAL_COLAPSE_SPEED = 0.91D;
@@ -58,6 +60,7 @@ public final class Settings {
         MainConfig main = src.getMain();
         ProjectionConfig projection = src.getProjection();
         RenderConfig render = src.getRender();
+        VISUAL_QUALITY_PROFILE = src.getVisualQualityProfile();
 
         ENABLE_PARTICLES = main.enableParticles;
         PORTAL_CONSTRUCT_SPEED = clampDouble(main.portalConstructSpeed, 0.0D, 1.0D);
@@ -102,6 +105,38 @@ public final class Settings {
         ENTITY_CANDIDATE_CACHE_TICKS = clampInt(render.entityCandidateCacheTicks, 1, 40);
         MAX_SPOOFED_ENTITIES = clampInt(render.maxSpoofedEntities, 0, 256);
         CAPTURE_ZONE_RADIUS = clampDouble(render.captureZoneRadius, 1.0D, 64.0D);
+
+        applyVisualQualityProfile();
+    }
+
+    private static void applyVisualQualityProfile() {
+        switch (VISUAL_QUALITY_PROFILE) {
+            case AUTO -> {
+            }
+            case PERFORMANCE -> {
+                LIGHTING_FIDELITY = false;
+                ENTITY_SPOOFING = false;
+                PROJECTION_RANGE = Math.min(PROJECTION_RANGE, 32.0D);
+                PROJECTION_DEPTH_BLOCKS = Math.min(PROJECTION_DEPTH_BLOCKS, 48);
+                PROJECTION_MAX_PROJECTORS_PER_TICK = Math.min(PROJECTION_MAX_PROJECTORS_PER_TICK, 12);
+                PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK = Math.min(PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK, 2);
+            }
+            case BALANCED -> {
+                LIGHTING_REFRESH_INTERVAL_TICKS = Math.max(LIGHTING_REFRESH_INTERVAL_TICKS, 6);
+                ENTITY_UPDATE_INTERVAL_TICKS = Math.max(ENTITY_UPDATE_INTERVAL_TICKS, 2);
+                MAX_SPOOFED_ENTITIES = Math.min(MAX_SPOOFED_ENTITIES, 16);
+                PROJECTION_MAX_PROJECTORS_PER_TICK = Math.min(PROJECTION_MAX_PROJECTORS_PER_TICK, 20);
+            }
+            case CINEMATIC -> {
+                PROJECTION_RANGE = Math.max(PROJECTION_RANGE, 64.0D);
+                PROJECTION_DEPTH_BLOCKS = Math.max(PROJECTION_DEPTH_BLOCKS, 96);
+                PROJECTION_MAX_PROJECTORS_PER_TICK = Math.max(PROJECTION_MAX_PROJECTORS_PER_TICK, 32);
+                LIGHTING_REFRESH_INTERVAL_TICKS = Math.min(LIGHTING_REFRESH_INTERVAL_TICKS, 2);
+                LIGHTING_MAX_SECTIONS_PER_PASS = Math.max(LIGHTING_MAX_SECTIONS_PER_PASS, 4);
+                ENTITY_SPOOF_RANGE = Math.max(ENTITY_SPOOF_RANGE, 64.0D);
+                MAX_SPOOFED_ENTITIES = Math.max(MAX_SPOOFED_ENTITIES, 48);
+            }
+        }
     }
 
     private static int clampInt(int value, int min, int max) {

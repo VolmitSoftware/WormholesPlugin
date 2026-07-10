@@ -17,6 +17,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -69,6 +70,31 @@ class StatusBridgeCompressionTest {
             assertEquals(original.innerType(), result.innerType());
             assertArrayEquals(original.payload(), result.payload());
         }
+    }
+
+    @Test
+    void statusEnvelopeUsesConfiguredCompressionLevel() throws Exception {
+        KeyPair keyPair = keyPair();
+        WireCompression compression = new WireCompression(1);
+        byte[] repeatedPayload = patternedBytes(3_000);
+        List<MinecraftStatusBridge.EncodedMessage> messages = new ArrayList<>();
+        for (int i = 0; i < 12; i++) {
+            WireMessage.Routed routed = new WireMessage.Routed("alpha", "beta", 4, WireMessageType.PING, repeatedPayload);
+            messages.add(new MinecraftStatusBridge.EncodedMessage(routed, WireCodec.encodeFrame(routed)));
+        }
+        MinecraftStatusBridge.StatusPacket packet = MinecraftStatusBridge.create(
+            "alpha", "beta", "26.2", "1.0.0", "10.0.0.5", 25565,
+            keyPair.getPublic().getEncoded(), keyPair.getPrivate(), messages);
+
+        byte[] unsigned = unsignedBytes(packet);
+        byte[] actualTransport = transportBlob(packet.encode(compression));
+        byte[] expectedTransport = compression.encode(unsigned, false);
+        byte[] formerHardCodedTransport = compression.encode(unsigned, false, 12);
+
+        assertFalse(Arrays.equals(expectedTransport, formerHardCodedTransport),
+            "test fixture must distinguish configured level 1 from the former hard-coded level 12");
+        assertArrayEquals(expectedTransport, actualTransport,
+            "status envelope compression must use the WireCompression instance's configured level");
     }
 
     @Test

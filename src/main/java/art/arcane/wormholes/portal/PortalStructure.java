@@ -1,7 +1,9 @@
 package art.arcane.wormholes.portal;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -26,6 +28,7 @@ public class PortalStructure implements IWritable
 	private AxisAlignedBB box;
 	private World world;
 	private KMap<Direction, AxisAlignedBB> faceCache = new KMap<>();
+	private final ConcurrentHashMap<Direction, List<AxisAlignedBB>> apertureFaceCache = new ConcurrentHashMap<>();
 	private KSet<Location> cornerCache;
 	private volatile Location centerCache;
 	private long[] blockKeys = new long[0];
@@ -259,19 +262,38 @@ public class PortalStructure implements IWritable
 
 	public KList<AxisAlignedBB> getApertureFaces(Direction face)
 	{
+		KList<AxisAlignedBB> copy = new KList<AxisAlignedBB>();
+		for(AxisAlignedBB apertureFace : getCachedApertureFaces(face))
+		{
+			copy.add(new AxisAlignedBB(apertureFace));
+		}
+		return copy;
+	}
+
+	public List<AxisAlignedBB> getCachedApertureFaces(Direction face)
+	{
+		List<AxisAlignedBB> cached = apertureFaceCache.get(face);
+		if(cached != null)
+		{
+			return cached;
+		}
+
 		KList<AxisAlignedBB> faces = new KList<AxisAlignedBB>();
 		if(blockPositions.isEmpty() || isFullCuboid())
 		{
 			faces.add(getArea().getFace(face));
-			return faces;
 		}
-
-		for(Vector block : blockPositions)
+		else
 		{
-			faces.add(getBlockBox(block.getBlockX(), block.getBlockY(), block.getBlockZ()).getFace(face));
+			for(Vector block : blockPositions)
+			{
+				faces.add(getBlockBox(block.getBlockX(), block.getBlockY(), block.getBlockZ()).getFace(face));
+			}
 		}
 
-		return faces;
+		List<AxisAlignedBB> immutable = List.copyOf(faces);
+		List<AxisAlignedBB> raced = apertureFaceCache.putIfAbsent(face, immutable);
+		return raced == null ? immutable : raced;
 	}
 
 	public boolean isFullCuboid()
@@ -282,6 +304,7 @@ public class PortalStructure implements IWritable
 	private void invalidateCache()
 	{
 		faceCache.clear();
+		apertureFaceCache.clear();
 		cornerCache = null;
 		box = null;
 		centerCache = null;

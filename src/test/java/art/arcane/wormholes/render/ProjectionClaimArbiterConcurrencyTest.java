@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
@@ -69,6 +70,38 @@ public final class ProjectionClaimArbiterConcurrencyTest {
         ProjectionClaimArbiter.ClaimUpdateResult releaseResult = arbiter.release(observer, portalA, world, false);
         assertEquals(0, releaseResult.getReverts());
         assertTrue(observersMap(arbiter).isEmpty());
+    }
+
+    @Test
+    public void silentPortalReleasePreservesOtherPortalBookkeeping() throws Exception {
+        ProjectionClaimArbiter arbiter = new ProjectionClaimArbiter();
+        UUID observerId = UUID.fromString("00000000-0000-0000-0000-000000000014");
+        Player observer = player(observerId);
+        World world = world();
+        ILocalPortal portalA = portal(UUID.fromString("00000000-0000-0000-0000-000000000024"));
+        ILocalPortal portalB = portal(UUID.fromString("00000000-0000-0000-0000-000000000025"));
+        long portalAKey = CELL_KEY;
+        long portalBKey = CELL_KEY + 1L;
+        BlockData portalAData = blockData("a");
+        BlockData portalBData = blockData("b");
+
+        arbiter.submit(observer, portalA, world, singleClaim(portalAKey, portalAData), 2.0D, false);
+        arbiter.submit(observer, portalB, world, singleClaim(portalBKey, portalBData), 3.0D, false);
+
+        Object observerState = observersMap(arbiter).get(observerId);
+        Long2ObjectOpenHashMap<BlockData> sentBlocks = sentBlocks(observerState);
+        sentBlocks.put(portalAKey, portalAData);
+        sentBlocks.put(portalBKey, portalBData);
+        LongOpenHashSet pendingLighting = pendingLighting(observerState);
+        pendingLighting.add(portalAKey);
+        pendingLighting.add(portalBKey);
+
+        arbiter.releaseSilently(observerId, portalA.getId());
+
+        assertFalse(sentBlocks.containsKey(portalAKey));
+        assertTrue(sentBlocks.containsKey(portalBKey));
+        assertTrue(pendingLighting.contains(portalBKey));
+        assertEquals(1, arbiter.release(observer, portalB, world, false).getReverts());
     }
 
     @Test
@@ -184,9 +217,26 @@ public final class ProjectionClaimArbiterConcurrencyTest {
         return (Map<?, ?>) field.get(arbiter);
     }
 
+    @SuppressWarnings("unchecked")
+    private static Long2ObjectOpenHashMap<BlockData> sentBlocks(Object observerState) throws Exception {
+        Field field = observerState.getClass().getDeclaredField("sentBlocks");
+        field.setAccessible(true);
+        return (Long2ObjectOpenHashMap<BlockData>) field.get(observerState);
+    }
+
+    private static LongOpenHashSet pendingLighting(Object observerState) throws Exception {
+        Field field = observerState.getClass().getDeclaredField("pendingLightingKeys");
+        field.setAccessible(true);
+        return (LongOpenHashSet) field.get(observerState);
+    }
+
     private static Long2ObjectOpenHashMap<ProjectedBlockClaim> singleClaim(BlockData data) {
+        return singleClaim(CELL_KEY, data);
+    }
+
+    private static Long2ObjectOpenHashMap<ProjectedBlockClaim> singleClaim(long key, BlockData data) {
         Long2ObjectOpenHashMap<ProjectedBlockClaim> claims = new Long2ObjectOpenHashMap<ProjectedBlockClaim>(1);
-        claims.put(CELL_KEY, new ProjectedBlockClaim(data, null, ProjectedBlockClaim.NO_REMOTE_KEY, false));
+        claims.put(key, new ProjectedBlockClaim(data, null, ProjectedBlockClaim.NO_REMOTE_KEY, false));
         return claims;
     }
 

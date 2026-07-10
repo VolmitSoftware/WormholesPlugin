@@ -1,11 +1,13 @@
 package art.arcane.wormholes;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BooleanSupplier;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Color;
@@ -49,7 +51,6 @@ public class EffectManager implements Listener
 {
 	private static final int LOOKING_SCAN_INTERVAL_TICKS = 3;
 	private static final int SYNC_SWEEP_INTERVAL_TICKS = 15;
-	private static final double SYNC_AUDIENCE_RANGE = 48.0;
 	private final Map<UUID, Boolean> portalSyncActive = new ConcurrentHashMap<>();
 
 	public EffectManager()
@@ -92,33 +93,38 @@ public class EffectManager implements Listener
 		RemoteViewCache cache = Wormholes.remoteViewCache;
 		if(cache == null || Wormholes.portalManager == null || Wormholes.instance == null)
 		{
+			portalSyncActive.clear();
 			return;
 		}
 
+		Set<UUID> currentPortalIds = new HashSet<>();
 		for(ILocalPortal portal : Wormholes.portalManager.getLocalPortals())
 		{
-			if(portal == null || portal.getId() == null || !portal.isOpen() || !portal.hasTunnel())
+			if(portal == null || portal.getId() == null)
 			{
+				continue;
+			}
+			UUID portalKey = portal.getId();
+			currentPortalIds.add(portalKey);
+			if(!portal.isOpen() || !portal.hasTunnel())
+			{
+				portalSyncActive.remove(portalKey);
 				continue;
 			}
 			ITunnel tunnel = portal.getTunnel();
 			if(!(tunnel instanceof UniversalTunnel))
 			{
+				portalSyncActive.remove(portalKey);
 				continue;
 			}
 			IPortal destination = tunnel.getDestination();
 			if(!(destination instanceof RemotePortal remote) || remote.getId() == null)
 			{
+				portalSyncActive.remove(portalKey);
 				continue;
 			}
 			Location center = portal.getCenter();
 			if(center == null || center.getWorld() == null)
-			{
-				continue;
-			}
-
-			UUID portalKey = portal.getId();
-			if(!hasNearbyPlayer(center, SYNC_AUDIENCE_RANGE))
 			{
 				portalSyncActive.remove(portalKey);
 				continue;
@@ -128,8 +134,8 @@ public class EffectManager implements Listener
 			boolean syncing = !ready && cache.hasSlicesFor(remote.getId());
 			if(syncing)
 			{
-				portalSyncActive.put(portalKey, Boolean.TRUE);
-				FoliaScheduler.runRegion(Wormholes.instance, center, () -> playPortalSyncing(center));
+				boolean justStarted = portalSyncActive.put(portalKey, Boolean.TRUE) == null;
+				FoliaScheduler.runRegion(Wormholes.instance, center, () -> playPortalSyncing(center, justStarted));
 			}
 			else if(ready && Boolean.TRUE.equals(portalSyncActive.remove(portalKey)))
 			{
@@ -140,36 +146,25 @@ public class EffectManager implements Listener
 				portalSyncActive.remove(portalKey);
 			}
 		}
+		portalSyncActive.keySet().removeIf(portalId -> !currentPortalIds.contains(portalId));
 	}
 
-	private boolean hasNearbyPlayer(Location center, double range)
-	{
-		World world = center.getWorld();
-		double rangeSquared = range * range;
-		for(Player player : Bukkit.getOnlinePlayers())
-		{
-			if(!world.equals(player.getWorld()))
-			{
-				continue;
-			}
-			if(player.getLocation().distanceSquared(center) <= rangeSquared)
-			{
-				return true;
-			}
-		}
-		return false;
-	}
-
-	public void playPortalSyncing(Location center)
+	public void playPortalSyncing(Location center, boolean justStarted)
 	{
 		World world = center.getWorld();
 		if(world == null)
 		{
 			return;
 		}
-		world.spawnParticle(Particle.PORTAL, center, 18, 0.6, 0.8, 0.6, 0.35);
-		world.spawnParticle(Particle.REVERSE_PORTAL, center, 6, 0.3, 0.5, 0.3, 0.02);
-		world.playSound(center, Sound.BLOCK_BEACON_AMBIENT, 0.45f, 1.7f + ((float) (Math.random() * 0.1)));
+		if(Settings.ENABLE_PARTICLES)
+		{
+			world.spawnParticle(Particle.PORTAL, center, 8, 0.6, 0.8, 0.6, 0.25);
+			world.spawnParticle(Particle.REVERSE_PORTAL, center, 2, 0.3, 0.5, 0.3, 0.02);
+		}
+		if(justStarted)
+		{
+			world.playSound(center, Sound.BLOCK_BEACON_AMBIENT, 0.45f, 1.7f);
+		}
 	}
 
 	public void playPortalSyncComplete(Location center)
@@ -179,7 +174,10 @@ public class EffectManager implements Listener
 		{
 			return;
 		}
-		world.spawnParticle(Particle.REVERSE_PORTAL, center, 44, 0.5, 0.7, 0.5, 0.5);
+		if(Settings.ENABLE_PARTICLES)
+		{
+			world.spawnParticle(Particle.REVERSE_PORTAL, center, 32, 0.5, 0.7, 0.5, 0.5);
+		}
 		world.playSound(center, Sound.BLOCK_BEACON_ACTIVATE, 0.7f, 1.5f);
 		world.playSound(center, Sound.BLOCK_PORTAL_TRIGGER, 0.5f, 1.8f);
 	}
@@ -305,7 +303,7 @@ public class EffectManager implements Listener
 		block.getWorld().playSound(block.getLocation().clone().add(0.5, 0.5, 0.5), MSound.GLASS.bukkitSound(), 1.2f, (float) (0.25 + ((float) (Math.random() * 0.95))));
 	}
 
-	private static final int FORMATION_DISPLAY_CAP = 80;
+	private static final int FORMATION_DISPLAY_CAP = 24;
 	private static final int VORTEX_STEPS = 20;
 	private static final double VORTEX_TURNS = 1.5D;
 
@@ -337,6 +335,11 @@ public class EffectManager implements Listener
 	{
 		if(world == null || center == null || snapshots == null || snapshots.isEmpty())
 		{
+			return;
+		}
+		if(!Settings.ENABLE_PARTICLES)
+		{
+			world.playSound(center, Sound.BLOCK_BEACON_POWER_SELECT, 1.0f, 0.5f);
 			return;
 		}
 
@@ -455,9 +458,9 @@ public class EffectManager implements Listener
 	private static final int CLOSE_CRACK_TICKS = 9;
 	private static final int CLOSE_CRACK_BRANCHES = 6;
 
-	public void playPortalClose(World world, Location corner, double sx, double sy, double sz)
+	public void playPortalClose(World world, Location corner, double sx, double sy, double sz, BooleanSupplier active)
 	{
-		if(world == null || corner == null)
+		if(world == null || corner == null || active == null || !active.getAsBoolean())
 		{
 			return;
 		}
@@ -469,6 +472,11 @@ public class EffectManager implements Listener
 		final double[] cc = new double[] { corner.getX() + (sx / 2.0D), corner.getY() + (sy / 2.0D), corner.getZ() + (sz / 2.0D) };
 		Location center = new Location(world, cc[0], cc[1], cc[2]);
 		final double maxR = Math.max(0.6D, Math.max(ext[planeA], ext[planeB]) / 2.0D);
+		world.playSound(center, MSound.ECHEST_CLOSE.bukkitSound(), 1.2f, 0.55f);
+		if(!Settings.ENABLE_PARTICLES)
+		{
+			return;
+		}
 
 		float thickness = 0.2f;
 		float[] scale = new float[3];
@@ -504,6 +512,14 @@ public class EffectManager implements Listener
 		Runnable[] holder = new Runnable[1];
 		holder[0] = () ->
 		{
+			if(!active.getAsBoolean())
+			{
+				if(pane.isValid())
+				{
+					pane.remove();
+				}
+				return;
+			}
 			int t = tick[0]++;
 			if(t >= CLOSE_CRACK_TICKS)
 			{
@@ -511,18 +527,19 @@ public class EffectManager implements Listener
 				{
 					pane.remove();
 				}
-				for(int i = 0; i < 60; i++)
+				for(int i = 0; i < 24; i++)
 				{
 					double a = Math.random() * Math.PI * 2.0D;
 					double rr = Math.random() * maxR;
 					double[] p = new double[] { cc[0], cc[1], cc[2] };
 					p[planeA] = cc[planeA] + (rr * Math.cos(a));
 					p[planeB] = cc[planeB] + (rr * Math.sin(a));
-					world.spawnParticle(Particle.BLOCK, new Location(world, p[0], p[1], p[2]), 2, 0.05, 0.05, 0.05, 0.0, shardData);
+					world.spawnParticle(Particle.BLOCK, new Location(world, p[0], p[1], p[2]), 1, 0.05, 0.05, 0.05, 0.0, shardData);
 				}
+				world.spawnParticle(Particle.REVERSE_PORTAL, center, 36, 0.2, 0.3, 0.2, 0.65);
+				world.spawnParticle(Particle.SCULK_SOUL, center, 10, 0.25, 0.35, 0.25, 0.03);
 				world.spawnParticle(Particle.FLASH, center, 1, 0.0, 0.0, 0.0, 0.0, Color.fromRGB(220, 235, 255));
-				world.playSound(center, Sound.BLOCK_GLASS_BREAK, 2.0f, 0.7f);
-				world.playSound(center, Sound.BLOCK_GLASS_BREAK, 1.4f, 1.1f);
+				world.playSound(center, Sound.BLOCK_GLASS_BREAK, 1.8f, 0.8f);
 				world.playSound(center, Sound.ENTITY_ITEM_BREAK, 1.2f, 0.8f);
 				return;
 			}
@@ -553,23 +570,77 @@ public class EffectManager implements Listener
 		FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
 	}
 
-	public void playPortalOpenClimax(World world, Location center, double sx, double sy, double sz)
+	public void playPortalOpen(World world, Location center, double sx, double sy, double sz, BooleanSupplier active)
 	{
-		world.spawnParticle(Particle.FLASH, center, 1, 0.0, 0.0, 0.0, 0.0, Color.fromRGB(190, 130, 255));
-		world.spawnParticle(Particle.REVERSE_PORTAL, center, 140, 0.25, 0.45, 0.25, 0.9);
-		world.spawnParticle(Particle.END_ROD, center, 55, 0.15, 0.15, 0.15, 0.35);
-		for(int i = 0; i < 16; i++)
+		if(world == null || center == null || active == null || !active.getAsBoolean())
 		{
-			Location spark = center.clone().add((Math.random() - 0.5) * 2.0, (Math.random() - 0.5) * 2.0, (Math.random() - 0.5) * 2.0);
-			ParticleEffect.REDSTONE.display(new ParticleEffect.OrdinaryColor(150, 80, 255), spark, 32);
+			return;
 		}
-		world.playSound(center, Sound.BLOCK_BEACON_ACTIVATE, 3.0f, 0.5f);
-		world.playSound(center, Sound.BLOCK_END_PORTAL_SPAWN, 2.6f, 0.8f);
-		FoliaScheduler.runRegion(Wormholes.instance, center, () -> world.playSound(center, Sound.ENTITY_WARDEN_SONIC_BOOM, 1.5f, 0.7f), 6L);
-		playPortalRipple(world, center, sx, sy, sz);
+		world.playSound(center, MSound.FRAME_SPAWN.bukkitSound(), 1.4f, 0.35f);
+		playPortalOpenClimaxIfActive(world, center, sx, sy, sz, active);
+		final int afterglowTicks = 6;
+		int[] tick = new int[] { 0 };
+		Runnable[] holder = new Runnable[1];
+		holder[0] = () ->
+		{
+			if(!active.getAsBoolean())
+			{
+				return;
+			}
+			int t = tick[0]++;
+			if(t >= afterglowTicks)
+			{
+				return;
+			}
+			if(Settings.ENABLE_PARTICLES)
+			{
+				double spread = Math.max(0.15D, 0.9D - (((double) t / afterglowTicks) * 0.7D));
+				world.spawnParticle(Particle.REVERSE_PORTAL, center, 8, spread, spread, spread, 0.25);
+				world.spawnParticle(Particle.ENCHANT, center, 4, spread, spread, spread, 0.05);
+			}
+			FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
+		};
+		FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
 	}
 
-	private void playPortalRipple(World world, Location center, double sx, double sy, double sz)
+	public void playPortalOpenClimax(World world, Location center, double sx, double sy, double sz)
+	{
+		playPortalOpenClimaxIfActive(world, center, sx, sy, sz, () -> true);
+	}
+
+	private void playPortalOpenClimaxIfActive(World world, Location center, double sx, double sy, double sz, BooleanSupplier active)
+	{
+		if(world == null || center == null || active == null || !active.getAsBoolean())
+		{
+			return;
+		}
+		if(Settings.ENABLE_PARTICLES)
+		{
+			world.spawnParticle(Particle.FLASH, center, 1, 0.0, 0.0, 0.0, 0.0, Color.fromRGB(190, 130, 255));
+			world.spawnParticle(Particle.REVERSE_PORTAL, center, 48, 0.25, 0.45, 0.25, 0.75);
+			world.spawnParticle(Particle.END_ROD, center, 24, 0.15, 0.15, 0.15, 0.3);
+			for(int i = 0; i < 8; i++)
+			{
+				Location spark = center.clone().add((Math.random() - 0.5) * 2.0, (Math.random() - 0.5) * 2.0, (Math.random() - 0.5) * 2.0);
+				ParticleEffect.REDSTONE.display(new ParticleEffect.OrdinaryColor(150, 80, 255), spark, 32);
+			}
+		}
+		world.playSound(center, Sound.BLOCK_BEACON_ACTIVATE, 2.0f, 0.55f);
+		world.playSound(center, Sound.BLOCK_END_PORTAL_SPAWN, 1.8f, 0.85f);
+		FoliaScheduler.runRegion(Wormholes.instance, center, () ->
+		{
+			if(active.getAsBoolean())
+			{
+				world.playSound(center, Sound.ENTITY_WARDEN_SONIC_BOOM, 1.0f, 0.8f);
+			}
+		}, 6L);
+		if(Settings.ENABLE_PARTICLES)
+		{
+			playPortalRipple(world, center, sx, sy, sz, active);
+		}
+	}
+
+	private void playPortalRipple(World world, Location center, double sx, double sy, double sz, BooleanSupplier active)
 	{
 		int normalAxis = 1;
 		double min = sy;
@@ -589,10 +660,21 @@ public class EffectManager implements Listener
 		final double maxR = Math.max(1.0D, (Math.max(extA, extB) * 0.5D) + 0.75D);
 		final double[] cc = new double[] { center.getX(), center.getY(), center.getZ() };
 		final int ripTicks = 12;
+		final int maxPointsPerTick = switch(Settings.VISUAL_QUALITY_PROFILE)
+		{
+			case PERFORMANCE -> 16;
+			case BALANCED -> 24;
+			case AUTO -> 32;
+			case CINEMATIC -> 48;
+		};
 		final int[] rt = new int[] { 0 };
 		final Runnable[] holder = new Runnable[1];
 		holder[0] = () ->
 		{
+			if(!active.getAsBoolean())
+			{
+				return;
+			}
 			int t = rt[0]++;
 			if(t >= ripTicks)
 			{
@@ -600,7 +682,7 @@ public class EffectManager implements Listener
 			}
 			double frac = (double) (t + 1) / (double) ripTicks;
 			double radius = maxR * frac;
-			int points = Math.max(10, (int) (radius * 9.0D));
+			int points = Math.min(maxPointsPerTick, Math.max(10, (int) (radius * 9.0D)));
 			double twist = frac * Math.PI * 1.25D;
 			for(int i = 0; i < points; i++)
 			{

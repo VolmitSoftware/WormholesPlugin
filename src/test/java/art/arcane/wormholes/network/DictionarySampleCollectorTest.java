@@ -104,6 +104,20 @@ class DictionarySampleCollectorTest {
     }
 
     @Test
+    void budgetCanChangeWithoutKeepingExcessSamples() {
+        DictionarySampleCollector collector = new DictionarySampleCollector(1024);
+        collector.record(filledArray(256, (byte) 1));
+        collector.record(filledArray(256, (byte) 2));
+        collector.record(filledArray(256, (byte) 3));
+        collector.setBudgetBytes(512);
+        assertEquals(512, collector.budgetBytes());
+        assertEquals(2, collector.sampleCount());
+        assertTrue(collector.isFull());
+        collector.setBudgetBytes(2048);
+        assertFalse(collector.isFull());
+    }
+
+    @Test
     void isFullReflectsStateWithoutReset() throws InterruptedException {
         DictionarySampleCollector collector = new DictionarySampleCollector(512);
         collector.record(filledArray(256, (byte) 1));

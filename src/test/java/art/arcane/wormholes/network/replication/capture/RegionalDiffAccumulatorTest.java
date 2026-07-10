@@ -36,7 +36,7 @@ class RegionalDiffAccumulatorTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
 
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
@@ -53,7 +53,7 @@ class RegionalDiffAccumulatorTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
 
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
@@ -70,8 +70,8 @@ class RegionalDiffAccumulatorTest {
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKeyA = ViewSlice.columnKey(0, 0);
         long chunkKeyB = ViewSlice.columnKey(1, 0);
-        replication.subscribe(PEER, world, chunkKeyA);
-        replication.subscribe(PEER, world, chunkKeyB);
+        replication.subscribe(PEER, world.getUID(), world, chunkKeyA);
+        replication.subscribe(PEER, world.getUID(), world, chunkKeyB);
 
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
@@ -87,7 +87,7 @@ class RegionalDiffAccumulatorTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
 
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
@@ -103,7 +103,7 @@ class RegionalDiffAccumulatorTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
 
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
@@ -119,7 +119,7 @@ class RegionalDiffAccumulatorTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
 
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
@@ -142,7 +142,7 @@ class RegionalDiffAccumulatorTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
 
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());

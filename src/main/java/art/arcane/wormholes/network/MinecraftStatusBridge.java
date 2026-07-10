@@ -42,7 +42,6 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
     static final int MAX_PACKET_BYTES = 24000;
     static final int MAX_FRAME_BYTES = 5000;
     static final int MAX_MESSAGES = 64;
-    static final int SIDEBAND_ZSTD_LEVEL = 12;
     private static final long PENDING_TTL_MS = 10_000L;
     private static final int MAX_PENDING_REQUESTS = 1024;
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -248,7 +247,10 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
     private record PendingRequest(StatusPacket packet, long createdAtMillis) {
     }
 
-    public record EncodedMessage(WireMessage message, byte[] frame) {
+    public record EncodedMessage(WireMessage message, byte[] frame, int sidebandTier) {
+        public EncodedMessage(WireMessage message, byte[] frame) {
+            this(message, frame, SidebandOutbox.tierOf(message));
+        }
     }
 
     public static final class StatusPacket {
@@ -318,7 +320,7 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
         public String encode(WireCompression compression) {
             try {
                 byte[] unsigned = unsignedBytes();
-                byte[] transport = compression.encode(unsigned, false, SIDEBAND_ZSTD_LEVEL);
+                byte[] transport = compression.encode(unsigned, false);
                 ByteArrayOutputStream buffer = new ByteArrayOutputStream(transport.length + signature.length + 16);
                 DataOutputStream out = new DataOutputStream(buffer);
                 WireCodec.writeByteArray(out, transport, MAX_PACKET_BYTES);

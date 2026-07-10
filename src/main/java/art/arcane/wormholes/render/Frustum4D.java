@@ -3,6 +3,8 @@ package art.arcane.wormholes.render;
 import org.bukkit.Location;
 import org.bukkit.util.Vector;
 
+import java.util.List;
+
 import art.arcane.volmlib.util.collection.KList;
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.portal.PortalStructure;
@@ -125,7 +127,7 @@ public final class Frustum4D {
     }
 
     private static void addFrustums(KList<Frustum> frustums, Location apex, PortalStructure structure, Direction face, double range, double aperturePadding) {
-        KList<AxisAlignedBB> apertureFaces = structure.getApertureFaces(face);
+        List<AxisAlignedBB> apertureFaces = structure.getCachedApertureFaces(face);
         for (AxisAlignedBB apertureFace : apertureFaces) {
             frustums.add(new Frustum(apex, apertureFace, face, range, aperturePadding));
         }

@@ -4,14 +4,19 @@ import art.arcane.volmlib.util.director.compat.DirectorEngineFactory;
 import art.arcane.volmlib.util.director.runtime.DirectorRuntimeEngine;
 import art.arcane.volmlib.util.director.runtime.DirectorRuntimeNode;
 import art.arcane.wormholes.commands.CommandWormholes;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WormholesCommandServiceTest {
     @Test
@@ -41,6 +46,84 @@ class WormholesCommandServiceTest {
         assertNull(findChild(root, "rune"));
         assertNull(findChild(root, "reset"));
     }
+
+	@Test
+	void publicTabCompletionOnlyOffersHelpAndInfo()
+	{
+		assertEquals(List.of("help", "info"), WormholesCommandService.publicTabCompletions(new String[] {""}));
+		assertEquals(List.of("info"), WormholesCommandService.publicTabCompletions(new String[] {"i"}));
+		assertEquals(List.of(), WormholesCommandService.publicTabCompletions(new String[] {"network", ""}));
+	}
+
+	@Test
+	void publicExecutionOnlyAllowsHelpAndInfo()
+	{
+		assertEquals(true, WormholesCommandService.isPublicCommandRequest(new String[0]));
+		assertEquals(true, WormholesCommandService.isPublicCommandRequest(new String[] {"help"}));
+		assertEquals(true, WormholesCommandService.isPublicCommandRequest(new String[] {"?"}));
+		assertEquals(true, WormholesCommandService.isPublicCommandRequest(new String[] {"info"}));
+		assertEquals(false, WormholesCommandService.isPublicCommandRequest(new String[] {"reload"}));
+		assertEquals(false, WormholesCommandService.isPublicCommandRequest(new String[] {"network", "status"}));
+		assertEquals(false, WormholesCommandService.isPublicCommandRequest(new String[] {"info", "extra"}));
+	}
+
+	@Test
+	void nonAdministratorExecutionCannotReachMutatingDirectorCommands()
+	{
+		List<String> messages = new ArrayList<>();
+		CommandSender sender = commandSender(messages);
+		WormholesCommandService service = new WormholesCommandService(null);
+		Command command = new Command("wormholes")
+		{
+			@Override
+			public boolean execute(CommandSender sender, String label, String[] args)
+			{
+				return false;
+			}
+		};
+
+		assertTrue(service.onCommand(sender, command, "wormholes", new String[] {"reload"}));
+		assertTrue(messages.stream().anyMatch(message -> message.contains("do not have permission")));
+	}
+
+	private static CommandSender commandSender(List<String> messages)
+	{
+		return (CommandSender) Proxy.newProxyInstance(
+			WormholesCommandServiceTest.class.getClassLoader(),
+			new Class<?>[] {CommandSender.class},
+			(proxy, method, args) ->
+			{
+				if(method.getName().equals("getName"))
+				{
+					return "guest";
+				}
+				if(method.getName().equals("hasPermission") || method.getName().equals("isPermissionSet") || method.getName().equals("isOp"))
+				{
+					return false;
+				}
+				if(method.getName().equals("sendMessage") && args != null)
+				{
+					for(Object value : args)
+					{
+						if(value instanceof String message)
+						{
+							messages.add(message);
+						}
+					}
+					return null;
+				}
+				Class<?> returnType = method.getReturnType();
+				if(returnType == boolean.class)
+				{
+					return false;
+				}
+				if(returnType == int.class)
+				{
+					return 0;
+				}
+				return null;
+			});
+	}
 
     private DirectorRuntimeNode findChild(DirectorRuntimeNode root, String name) {
         for (DirectorRuntimeNode child : root.getChildren()) {

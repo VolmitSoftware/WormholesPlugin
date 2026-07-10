@@ -111,7 +111,7 @@ public class CommandWormholes {
     @Director(name = "info", sync = true, description = "Show portal building instructions")
     public void info(@Param(name = "sender", contextual = true) CommandSender sender) {
         sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "" + ChatColor.BOLD + "How to build a Wormhole");
-        sender.sendMessage(ChatColor.DARK_GRAY + "1. " + ChatColor.GRAY + "Run " + ChatColor.WHITE + "/wormholes wand" + ChatColor.GRAY + " to receive the wand and 1 wormhole rune.");
+		sender.sendMessage(ChatColor.DARK_GRAY + "1. " + ChatColor.GRAY + "Get a Portal Wand and portal runes from your server or an administrator.");
         sender.sendMessage(ChatColor.DARK_GRAY + "2. " + ChatColor.GRAY + "Place the runes in any connected shape on one flat surface.");
         sender.sendMessage(ChatColor.GRAY + "   Any connected shape works: rectangles, lines (3x1), single blocks, L-shapes, crosses.");
         sender.sendMessage(ChatColor.GRAY + "   The runes must sit flat on one axis-aligned wall, floor, or ceiling.");
@@ -119,9 +119,9 @@ public class CommandWormholes {
         sender.sendMessage(ChatColor.GRAY + "   Shapes that do not sit flat on one surface are refunded automatically.");
         sender.sendMessage(ChatColor.DARK_GRAY + "4. " + ChatColor.GRAY + "Build a SECOND portal somewhere else (any distance, any world).");
         sender.sendMessage(ChatColor.DARK_GRAY + "5. " + ChatColor.GRAY + "Click the open portal with the wand to open the main menu.");
-        sender.sendMessage(ChatColor.GRAY + "   Choose " + ChatColor.WHITE + "Link" + ChatColor.GRAY + " then click the other portal in the list. Repeat from the other side.");
-        sender.sendMessage(ChatColor.GRAY + "   Sneak + click the portal opens the configs menu (Mode, Direction, Flip Face, rotation).");
+		sender.sendMessage(ChatColor.GRAY + "   Choose " + ChatColor.WHITE + "Destination" + ChatColor.GRAY + " and select the other portal. Repeat from the other side.");
+		sender.sendMessage(ChatColor.GRAY + "   Orientation and access controls are grouped into their own simple menus.");
         sender.sendMessage(ChatColor.DARK_GRAY + "6. " + ChatColor.GRAY + "Stand within 16 blocks of either portal — the destination world will project through the frame and walking in teleports you.");
-        sender.sendMessage(ChatColor.GRAY + "Need more runes? " + ChatColor.WHITE + "/wormholes wand rune=<portal|wormhole|gateway> count=<n>");
+		sender.sendMessage(ChatColor.GRAY + "Administrators can create supplies with " + ChatColor.WHITE + "/wormholes wand rune=<portal|wormhole|gateway> count=<n>");
     }
 }

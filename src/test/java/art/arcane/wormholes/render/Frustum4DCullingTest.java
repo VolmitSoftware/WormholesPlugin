@@ -2,6 +2,8 @@ package art.arcane.wormholes.render;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import java.util.List;
+
 import org.bukkit.Location;
 import org.junit.jupiter.api.Test;
 
@@ -45,7 +47,7 @@ public final class Frustum4DCullingTest {
         }
 
         @Override
-        public KList<AxisAlignedBB> getApertureFaces(Direction face) {
+        public List<AxisAlignedBB> getCachedApertureFaces(Direction face) {
             KList<AxisAlignedBB> faces = new KList<AxisAlignedBB>();
             switch (face) {
                 case E:

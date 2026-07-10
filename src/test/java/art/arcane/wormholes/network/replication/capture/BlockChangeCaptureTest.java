@@ -32,7 +32,7 @@ class BlockChangeCaptureTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
 
         CapturingFeed feed = new CapturingFeed();
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, CaptureSettings.defaults());
@@ -64,7 +64,7 @@ class BlockChangeCaptureTest {
         ChunkReplicationManager replication = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        replication.subscribe(PEER, world, chunkKey);
+        replication.subscribe(PEER, world.getUID(), world, chunkKey);
         CapturingFeed feed = new CapturingFeed();
         CaptureSettings tight = new CaptureSettings(100, 4, true, true);
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, tight);

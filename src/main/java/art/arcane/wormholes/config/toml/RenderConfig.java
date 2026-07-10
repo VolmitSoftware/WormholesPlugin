@@ -1,32 +1,35 @@
 package art.arcane.wormholes.config.toml;
 
+import art.arcane.wormholes.util.project.config.ConfigAdvanced;
 import art.arcane.wormholes.util.project.config.ConfigDescription;
 import art.arcane.wormholes.util.project.config.ConfigDoc;
 
 @ConfigDoc({
-    "Wormholes render fidelity options."
+    "Advanced visual compatibility overrides."
 })
 public class RenderConfig {
-    @ConfigDescription({
-        "Enable destination-world lighting for projected blocks.",
-        "When true, Wormholes sends UpdateLight packets so projected blocks use the remote world's sky and block light.",
-        "Disable if another plugin aggressively manages client light packets."
-    })
+    @ConfigAdvanced
+    @ConfigDescription("Send destination-world lighting with projected blocks.")
     public boolean lightingFidelity = true;
 
-    @ConfigDescription({
-        "Enable fake entity spawn/teleport/destroy packets inside portal projections.",
-        "When true, nearby non-player entities on the destination side are transformed into the local portal view for each observer.",
-        "Disable if entity packets conflict with another disguise/NPC/entity-visibility plugin."
-    })
+    @ConfigAdvanced
+    @ConfigDescription("Show destination-side entities inside portal projections.")
     public boolean entitySpoofing = true;
 
-    public transient int lightingRefreshIntervalTicks = 4;
-    public transient int lightingMaxSectionsPerPass = 2;
-    public transient boolean adaptiveLighting = true;
-    public transient int entityUpdateIntervalTicks = 1;
-    public transient double entitySpoofRange = 48.0;
-    public transient int entityCandidateCacheTicks = 3;
-    public transient int maxSpoofedEntities = 24;
-    public transient double captureZoneRadius = 8.0;
+    @ConfigAdvanced
+    public int lightingRefreshIntervalTicks = 4;
+    @ConfigAdvanced
+    public int lightingMaxSectionsPerPass = 2;
+    @ConfigAdvanced
+    public boolean adaptiveLighting = true;
+    @ConfigAdvanced
+    public int entityUpdateIntervalTicks = 1;
+    @ConfigAdvanced
+    public double entitySpoofRange = 48.0;
+    @ConfigAdvanced
+    public int entityCandidateCacheTicks = 3;
+    @ConfigAdvanced
+    public int maxSpoofedEntities = 24;
+    @ConfigAdvanced
+    public double captureZoneRadius = 8.0;
 }

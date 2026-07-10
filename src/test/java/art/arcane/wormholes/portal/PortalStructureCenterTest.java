@@ -1,8 +1,12 @@
 package art.arcane.wormholes.portal;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.bukkit.Location;
@@ -10,6 +14,7 @@ import org.bukkit.util.Vector;
 import org.junit.jupiter.api.Test;
 
 import art.arcane.wormholes.util.Cuboid;
+import art.arcane.wormholes.util.AxisAlignedBB;
 import art.arcane.wormholes.util.Direction;
 
 public final class PortalStructureCenterTest {
@@ -53,6 +58,24 @@ public final class PortalStructureCenterTest {
         assertEquals(10.4995D, center.getX(), EPSILON);
         assertEquals(11.4995D, center.getY(), EPSILON);
         assertEquals(10.4995D, center.getZ(), EPSILON);
+    }
+
+    @Test
+    public void apertureFacesAreImmutableCachedAndInvalidatedWithArea() {
+        PortalStructure structure = new PortalStructure();
+        structure.setArea(cuboid(0, 64, 0, 3, 68, 1));
+
+        List<AxisAlignedBB> first = structure.getCachedApertureFaces(Direction.N);
+        List<AxisAlignedBB> second = structure.getCachedApertureFaces(Direction.N);
+
+        assertSame(first, second);
+        assertThrows(UnsupportedOperationException.class, first::clear);
+
+        structure.setArea(cuboid(10, 10, 10, 10, 12, 10));
+        List<AxisAlignedBB> rebuilt = structure.getCachedApertureFaces(Direction.N);
+
+        assertNotSame(first, rebuilt);
+        assertEquals(1, rebuilt.size());
     }
 
     private static Cuboid cuboid(int x1, int y1, int z1, int x2, int y2, int z2) {

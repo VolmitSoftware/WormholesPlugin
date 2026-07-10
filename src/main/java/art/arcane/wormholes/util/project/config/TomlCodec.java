@@ -13,6 +13,8 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public final class TomlCodec {
@@ -31,14 +33,23 @@ public final class TomlCodec {
             return defaults;
         }
 
-        T loaded = readWithRetries(tomlFile, type, defaults);
-        if (loaded == null) {
-            LOGGER.warning("Failed to parse " + tomlFile.getName() + " after " + PARSE_RETRY_ATTEMPTS + " attempts; using defaults this cycle (file left untouched).");
+        LoadResult<T> result = readExisting(tomlFile, type);
+        if (!result.isSuccess()) {
+            LOGGER.log(Level.WARNING, "Failed to parse " + tomlFile.getName() + " after " + PARSE_RETRY_ATTEMPTS + " attempts; using defaults for this standalone load (file left untouched).", result.error());
             return defaults;
         }
 
-        writeCanonical(tomlFile, loaded);
-        return loaded;
+        writeCanonical(tomlFile, result.value());
+        return result.value();
+    }
+
+    public static <T> LoadResult<T> readExisting(File tomlFile, Class<T> type) {
+        if (tomlFile == null || !tomlFile.isFile()) {
+            return new LoadResult<>(null, new IOException("Configuration file does not exist: " + tomlFile));
+        }
+        T defaults = newInstance(type);
+        ReadAttempt<T> attempt = readWithRetries(tomlFile, type, defaults);
+        return new LoadResult<>(attempt.value(), attempt.error());
     }
 
     public static void writeCanonical(File tomlFile, Object instance) {
@@ -57,76 +68,9 @@ public final class TomlCodec {
             out.append('\n');
         }
 
-        List<Field> simple = new ArrayList<>();
-        List<Field> sections = new ArrayList<>();
-        List<Field> tableLists = new ArrayList<>();
-        for (Field f : type.getDeclaredFields()) {
-            if (Modifier.isStatic(f.getModifiers()) || Modifier.isTransient(f.getModifiers())) {
-                continue;
-            }
-            f.setAccessible(true);
-            if (isSectionList(f)) {
-                tableLists.add(f);
-            } else if (isSection(f.getType())) {
-                sections.add(f);
-            } else {
-                simple.add(f);
-            }
-        }
-
         try {
-            for (Field f : simple) {
-                writeField(out, f, instance, "");
-            }
-            for (Field f : sections) {
-                Object section = f.get(instance);
-                if (section == null) {
-                    continue;
-                }
-                String name = toTomlKey(f.getName());
-                out.append('\n');
-                ConfigDoc sectionDoc = section.getClass().getAnnotation(ConfigDoc.class);
-                if (sectionDoc != null) {
-                    for (String line : sectionDoc.value()) {
-                        out.append("# ").append(line).append('\n');
-                    }
-                }
-                out.append('[').append(name).append("]\n");
-                for (Field sf : section.getClass().getDeclaredFields()) {
-                    if (Modifier.isStatic(sf.getModifiers()) || Modifier.isTransient(sf.getModifiers())) {
-                        continue;
-                    }
-                    sf.setAccessible(true);
-                    writeField(out, sf, section, "");
-                }
-            }
-            for (Field f : tableLists) {
-                String name = toTomlKey(f.getName());
-                out.append('\n');
-                ConfigDescription desc = f.getAnnotation(ConfigDescription.class);
-                if (desc != null) {
-                    for (String line : desc.value()) {
-                        out.append("# ").append(line).append('\n');
-                    }
-                }
-                List<?> entries = (List<?>) f.get(instance);
-                if (entries == null) {
-                    continue;
-                }
-                for (Object entry : entries) {
-                    if (entry == null) {
-                        continue;
-                    }
-                    out.append("[[").append(name).append("]]\n");
-                    for (Field ef : entry.getClass().getDeclaredFields()) {
-                        if (Modifier.isStatic(ef.getModifiers()) || Modifier.isTransient(ef.getModifiers())) {
-                            continue;
-                        }
-                        ef.setAccessible(true);
-                        writeField(out, ef, entry, "");
-                    }
-                }
-            }
+            Object defaults = newInstance(type);
+            writeObjectContents(out, instance, defaults, "");
         } catch (IllegalAccessException e) {
             throw new IllegalStateException("Cannot read config field", e);
         }
@@ -145,6 +89,119 @@ public final class TomlCodec {
         }
     }
 
+    private static void writeObjectContents(StringBuilder out, Object instance, Object defaults, String sectionPath) throws IllegalAccessException {
+        for (Field field : instance.getClass().getDeclaredFields()) {
+            if (!isSerializableField(field) || isSection(field.getType()) || isSectionList(field)) {
+                continue;
+            }
+            field.setAccessible(true);
+            Object value = field.get(instance);
+            Object defaultValue = defaults == null ? null : field.get(defaults);
+            if (shouldWriteField(field, value, defaultValue)) {
+                writeField(out, field, instance, "");
+            }
+        }
+
+        for (Field field : instance.getClass().getDeclaredFields()) {
+            if (!isSerializableField(field) || !isSection(field.getType())) {
+                continue;
+            }
+            field.setAccessible(true);
+            Object section = field.get(instance);
+            Object defaultSection = defaults == null ? null : field.get(defaults);
+            if (!hasWritableContent(section, defaultSection)) {
+                continue;
+            }
+            String name = toTomlKey(field.getName());
+            String nestedPath = sectionPath.isEmpty() ? name : sectionPath + "." + name;
+            out.append('\n');
+            appendDoc(out, section.getClass().getAnnotation(ConfigDoc.class));
+            out.append('[').append(nestedPath).append("]\n");
+            writeObjectContents(out, section, defaultSection, nestedPath);
+        }
+
+        for (Field field : instance.getClass().getDeclaredFields()) {
+            if (!isSerializableField(field) || !isSectionList(field)) {
+                continue;
+            }
+            field.setAccessible(true);
+            List<?> entries = (List<?>) field.get(instance);
+            if (entries == null || entries.isEmpty()) {
+                continue;
+            }
+            String name = toTomlKey(field.getName());
+            String nestedPath = sectionPath.isEmpty() ? name : sectionPath + "." + name;
+            for (Object entry : entries) {
+                if (entry == null) {
+                    continue;
+                }
+                out.append('\n');
+                appendDescription(out, field.getAnnotation(ConfigDescription.class));
+                out.append("[[").append(nestedPath).append("]]\n");
+                writeObjectContents(out, entry, newInstance(entry.getClass()), nestedPath);
+            }
+        }
+    }
+
+    private static boolean hasWritableContent(Object instance, Object defaults) throws IllegalAccessException {
+        if (instance == null) {
+            return false;
+        }
+        for (Field field : instance.getClass().getDeclaredFields()) {
+            if (!isSerializableField(field)) {
+                continue;
+            }
+            field.setAccessible(true);
+            Object value = field.get(instance);
+            Object defaultValue = defaults == null ? null : field.get(defaults);
+            if (isSectionList(field)) {
+                if (value instanceof List<?> entries && !entries.isEmpty()) {
+                    return true;
+                }
+                continue;
+            }
+            if (isSection(field.getType())) {
+                if (hasWritableContent(value, defaultValue)) {
+                    return true;
+                }
+                continue;
+            }
+            if (shouldWriteField(field, value, defaultValue)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean shouldWriteField(Field field, Object value, Object defaultValue) {
+        if (value == null) {
+            return false;
+        }
+        return !field.isAnnotationPresent(ConfigAdvanced.class) || !Objects.deepEquals(value, defaultValue);
+    }
+
+    private static boolean isSerializableField(Field field) {
+        return !Modifier.isStatic(field.getModifiers()) && !Modifier.isTransient(field.getModifiers());
+    }
+
+    private static void appendDoc(StringBuilder out, ConfigDoc doc) {
+        if (doc == null) {
+            return;
+        }
+        for (String line : doc.value()) {
+            out.append("# ").append(line).append('\n');
+        }
+    }
+
+    private static void appendDescription(StringBuilder out, ConfigDescription description) {
+        if (description == null) {
+            return;
+        }
+        for (String line : description.value()) {
+            out.append("# ").append(line).append('\n');
+        }
+    }
+
     private static <T> T newInstance(Class<T> type) {
         try {
             return type.getDeclaredConstructor().newInstance();
@@ -153,7 +210,7 @@ public final class TomlCodec {
         }
     }
 
-    private static <T> T readWithRetries(File tomlFile, Class<T> type, T defaults) {
+    private static <T> ReadAttempt<T> readWithRetries(File tomlFile, Class<T> type, T defaults) {
         Throwable lastError = null;
         for (int attempt = 1; attempt <= PARSE_RETRY_ATTEMPTS; attempt++) {
             try {
@@ -171,16 +228,16 @@ public final class TomlCodec {
                 T fresh = newInstance(type);
                 T applied = applyToml(toml, fresh, type);
                 copySectionRefs(applied, defaults);
-                return applied;
+                return new ReadAttempt<>(applied, null);
             } catch (Throwable e) {
                 lastError = e;
                 sleepBackoff(attempt);
             }
         }
-        if (lastError != null) {
-            LOGGER.warning("[TomlCodec] Parse retries exhausted for " + tomlFile.getName() + ": " + lastError.getMessage());
+        if (lastError == null) {
+            lastError = new IOException("Configuration file stayed empty or changed during all parse attempts: " + tomlFile);
         }
-        return null;
+        return new ReadAttempt<>(null, lastError);
     }
 
     private static void sleepBackoff(int attempt) {
@@ -214,6 +271,11 @@ public final class TomlCodec {
     }
 
     private static <T> T applyToml(Toml toml, T target, Class<T> type) throws Exception {
+        applyTomlObject(toml, target, type);
+        return target;
+    }
+
+    private static void applyTomlObject(Toml toml, Object target, Class<?> type) throws Exception {
         for (Field f : type.getDeclaredFields()) {
             if (Modifier.isStatic(f.getModifiers()) || Modifier.isTransient(f.getModifiers())) {
                 continue;
@@ -247,24 +309,16 @@ public final class TomlCodec {
                     existing = f.getType().getDeclaredConstructor().newInstance();
                     f.set(target, existing);
                 }
-                applyTomlSection(sub, existing);
+                applyTomlObject(sub, existing, existing.getClass());
                 continue;
             }
 
             applyScalarField(toml, f, target, key);
         }
-        return target;
     }
 
     private static void applyTomlSection(Toml toml, Object target) throws Exception {
-        for (Field f : target.getClass().getDeclaredFields()) {
-            if (Modifier.isStatic(f.getModifiers()) || Modifier.isTransient(f.getModifiers())) {
-                continue;
-            }
-            f.setAccessible(true);
-            String key = toTomlKey(f.getName());
-            applyScalarField(toml, f, target, key);
-        }
+        applyTomlObject(toml, target, target.getClass());
     }
 
     private static void applyScalarField(Toml toml, Field f, Object target, String key) throws IllegalAccessException {
@@ -415,5 +469,14 @@ public final class TomlCodec {
             } catch (IOException ignored) {
             }
         }
+    }
+
+    public record LoadResult<T>(T value, Throwable error) {
+        public boolean isSuccess() {
+            return error == null && value != null;
+        }
+    }
+
+    private record ReadAttempt<T>(T value, Throwable error) {
     }
 }

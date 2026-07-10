@@ -204,6 +204,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     @Override
     public void onDisable() {
         unregisterIntegrationService();
+        shutdownProjectionBeforeSchedulers();
         if (schedulerRuntime != null) {
             schedulerRuntime.cancelPluginTasks();
         }
@@ -215,11 +216,19 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     public void onPreUnload(ReloadAware.PreUnloadReason reason) {
         getLogger().info("BileTools pre-unload hook fired (" + reason + "). Tearing down Wormholes managers and PacketEvents.");
         unregisterIntegrationService();
+        shutdownProjectionBeforeSchedulers();
         if (schedulerRuntime != null) {
             schedulerRuntime.cancelPluginTasks();
         }
         FoliaScheduler.cancelTasks(this);
         drain();
+    }
+
+    private void shutdownProjectionBeforeSchedulers() {
+        ProjectionManager activeProjection = projectionManager;
+        if (activeProjection != null) {
+            activeProjection.shutdown();
+        }
     }
 
     private void preloadPersistenceClasses() {
@@ -341,7 +350,11 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         }
         try {
             CaptureRuntime activeCapture = captureRuntime;
-            if (activeCapture != null) {
+            if (!reloaded.getNetwork().enabled) {
+                stopCaptureRuntime();
+            } else if (activeCapture == null) {
+                startCaptureRuntime();
+            } else {
                 activeCapture.applySettings(reloaded.getNetwork());
             }
         } catch (Throwable ex) {

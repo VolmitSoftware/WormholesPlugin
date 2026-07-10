@@ -25,9 +25,9 @@ class HashProbeSchedulerTest {
         ChunkReplicationManager manager = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(2, 4);
-        manager.subscribe(PEER, world, chunkKey);
+        manager.subscribe(PEER, world.getUID(), world, chunkKey);
         byte[] payload = synthesizeBulkPayload(2, 4);
-        manager.sendBulk(PEER, chunkKey, payload, contentHashOf(payload));
+        manager.sendBulk(PEER, world.getUID(), chunkKey, payload, contentHashOf(payload));
         sink.clear();
         long expected = contentHashOf(payload);
         ChunkHashProbe.ChunkHashEntry entry = new ChunkHashProbe.ChunkHashEntry(chunkKey, manager.lastBroadcastSeq(PEER, chunkKey), manager.canonicalHash(PEER, chunkKey));
@@ -58,9 +58,9 @@ class HashProbeSchedulerTest {
         ChunkReplicationManager manager = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        manager.subscribe(PEER, world, chunkKey);
+        manager.subscribe(PEER, world.getUID(), world, chunkKey);
         byte[] payload = synthesizeBulkPayload(0, 0);
-        manager.sendBulk(PEER, chunkKey, payload, contentHashOf(payload));
+        manager.sendBulk(PEER, world.getUID(), chunkKey, payload, contentHashOf(payload));
 
         RemoteChunkStore store = new RemoteChunkStore();
         try {
@@ -81,9 +81,9 @@ class HashProbeSchedulerTest {
         ChunkReplicationManager manager = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
-        manager.subscribe(PEER, world, chunkKey);
+        manager.subscribe(PEER, world.getUID(), world, chunkKey);
         byte[] payload = synthesizeBulkPayload(0, 0);
-        manager.sendBulk(PEER, chunkKey, payload, contentHashOf(payload));
+        manager.sendBulk(PEER, world.getUID(), chunkKey, payload, contentHashOf(payload));
 
         RemoteChunkStore store = new RemoteChunkStore();
         try {
@@ -105,9 +105,9 @@ class HashProbeSchedulerTest {
         ChunkReplicationManager manager = sink.getReplicationManager();
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(6, 6);
-        manager.subscribe(PEER, world, chunkKey);
+        manager.subscribe(PEER, world.getUID(), world, chunkKey);
         byte[] payload = synthesizeBulkPayload(6, 6);
-        manager.sendBulk(PEER, chunkKey, payload, contentHashOf(payload));
+        manager.sendBulk(PEER, world.getUID(), chunkKey, payload, contentHashOf(payload));
         manager.onChunkDrain(world, chunkKey,
             List.of(new BlockChange(BlockChange.pack(1, 62, 1), "minecraft:dirt", BlockChange.FLAG_NONE)),
             List.of(), List.of());

@@ -67,7 +67,9 @@ import art.arcane.wormholes.network.view.EntityVisual;
 import art.arcane.wormholes.network.view.PacketBlobs;
 import art.arcane.wormholes.network.view.RemoteViewCache;
 import art.arcane.wormholes.portal.ILocalPortal;
+import art.arcane.wormholes.portal.IPortal;
 import art.arcane.wormholes.portal.PortalFrame;
+import art.arcane.wormholes.render.view.ProjectionEntityView;
 import art.arcane.wormholes.render.view.RemoteWorldView;
 import art.arcane.wormholes.service.WormholesTelemetry;
 
@@ -103,6 +105,7 @@ public final class ProjectedEntityRenderer {
     private boolean flipTeamSent;
     private final Set<String> flipTeamMembers;
     private User batchUser;
+    private volatile int publishedSpoofedCount;
 
     public ProjectedEntityRenderer() {
         this.spoofed = new HashMap<UUID, SpoofedEntity>(16);
@@ -141,7 +144,7 @@ public final class ProjectedEntityRenderer {
     }
 
     public int getSpoofedCount() {
-        return spoofed.size();
+        return publishedSpoofedCount;
     }
 
     public void apply(Player observer,
@@ -192,6 +195,7 @@ public final class ProjectedEntityRenderer {
             restoreLocalEntities(observer);
         } finally {
             endBatch();
+            publishedSpoofedCount = spoofed.size();
         }
     }
 
@@ -239,6 +243,58 @@ public final class ProjectedEntityRenderer {
             restoreLocalEntities(observer);
         } finally {
             endBatch();
+            publishedSpoofedCount = spoofed.size();
+        }
+    }
+
+    public void applySnapshot(Player observer,
+                              ILocalPortal localPortal,
+                              IPortal remotePortal,
+                              boolean mirror,
+                              ProjectionEntityView entityView,
+                              Frustum4D frustum,
+                              double projectionDepth,
+                              PortalFrame localViewFrame,
+                              PortalFrame remoteViewFrame) {
+        if (!Settings.ENTITY_SPOOFING || Settings.MAX_SPOOFED_ENTITIES <= 0) {
+            close(observer);
+            return;
+        }
+        if (observer == null || remotePortal == null || entityView == null) {
+            close(observer);
+            return;
+        }
+
+        double remoteOriginX = remotePortal.getOrigin().getX();
+        double remoteOriginY = remotePortal.getOrigin().getY();
+        double remoteOriginZ = remotePortal.getOrigin().getZ();
+        beginBatch(observer);
+        try {
+            double range = Math.min(Settings.ENTITY_SPOOF_RANGE, projectionDepth);
+            visible.clear();
+            visibleLocalHides.clear();
+            restoreLocalEntities(observer);
+            boolean upsideDown = mirror
+                ? PortalCoordMap.reflectionFlipsWorldUp(localPortal.getFrame())
+                : PortalCoordMap.transformFlipsWorldUp(remoteViewFrame, localViewFrame);
+            int count = 0;
+            List<EntityVisual> visuals = entityView.getEntities(remoteOriginX, remoteOriginY, remoteOriginZ, range);
+            for (EntityVisual visual : visuals) {
+                if (count >= Settings.MAX_SPOOFED_ENTITIES) {
+                    break;
+                }
+                if (!projectSnapshotVisual(observer, localPortal, remoteOriginX, remoteOriginY, remoteOriginZ,
+                    localViewFrame, remoteViewFrame, frustum, entityView, visual, upsideDown, mirror)) {
+                    continue;
+                }
+                visible.add(visual.id());
+                count++;
+            }
+            applyEntityRelationships(observer, visuals);
+            destroyHidden(observer);
+        } finally {
+            endBatch();
+            publishedSpoofedCount = spoofed.size();
         }
     }
 
@@ -325,7 +381,7 @@ public final class ProjectedEntityRenderer {
                                         PortalFrame localViewFrame,
                                         PortalFrame remoteViewFrame,
                                         Frustum4D frustum,
-                                        RemoteWorldView remoteView,
+                                        ProjectionEntityView remoteView,
                                         EntityVisual visual,
                                         boolean upsideDown) {
         EntityType packetType = packetEntityTypeByKey(visual.typeKey());
@@ -395,7 +451,7 @@ public final class ProjectedEntityRenderer {
         return true;
     }
 
-    private void sendRemoteEntityState(Player observer, RemoteWorldView remoteView, EntityVisual visual, SpoofedEntity state) {
+    private void sendRemoteEntityState(Player observer, ProjectionEntityView remoteView, EntityVisual visual, SpoofedEntity state) {
         List<EntityData<?>> metadata = remoteView.getMetadata(visual.id());
         if (metadata != null && !metadata.isEmpty()) {
             List<EntityData<?>> patched = state.upsideDown ? withUpsideDownMetadataRemote(visual.isPlayer(), metadata) : metadata;
@@ -405,6 +461,96 @@ public final class ProjectedEntityRenderer {
         if (equipment != null && !equipment.isEmpty()) {
             sendCounted(observer, new WrapperPlayServerEntityEquipment(state.fakeId, equipment));
         }
+    }
+
+    private boolean projectSnapshotVisual(Player observer,
+                                          ILocalPortal localPortal,
+                                          double remoteOriginX,
+                                          double remoteOriginY,
+                                          double remoteOriginZ,
+                                          PortalFrame localViewFrame,
+                                          PortalFrame remoteViewFrame,
+                                          Frustum4D frustum,
+                                          ProjectionEntityView entityView,
+                                          EntityVisual visual,
+                                          boolean upsideDown,
+                                          boolean mirror) {
+        EntityType packetType = packetEntityTypeByKey(visual.typeKey());
+        if (packetType == null) {
+            return false;
+        }
+
+        double visibleY = visual.y() + (visual.height() * 0.5D);
+        if (mirror) {
+            PortalCoordMap.reflectPointAcrossPlaneInto(visual.x(), visibleY, visual.z(),
+                remoteOriginX, remoteOriginY, remoteOriginZ, localPortal.getFrame(), scratchVisiblePoint);
+        } else {
+            PortalCoordMap.transformPointInto(visual.x(), visibleY, visual.z(),
+                remoteOriginX, remoteOriginY, remoteOriginZ,
+                localPortal.getOrigin().getX(), localPortal.getOrigin().getY(), localPortal.getOrigin().getZ(),
+                remoteViewFrame, localViewFrame, scratchVisiblePoint);
+        }
+        if (!frustum.containsPrimitive(scratchVisiblePoint[0], scratchVisiblePoint[1], scratchVisiblePoint[2])) {
+            return false;
+        }
+
+        if (mirror) {
+            PortalCoordMap.reflectVectorAcrossPlaneInto(visual.lookX(), visual.lookY(), visual.lookZ(),
+                localPortal.getFrame(), scratchDirection);
+        } else {
+            remoteViewFrame.transformVectorInto(visual.lookX(), visual.lookY(), visual.lookZ(), localViewFrame, scratchDirection);
+        }
+        float yaw = yaw(scratchDirection[0], scratchDirection[2]);
+        float pitch = pitch(scratchDirection[0], scratchDirection[1], scratchDirection[2]);
+        double visualBaseY = scratchVisiblePoint[1] - (visual.height() * 0.5D);
+        Vector3d position = new Vector3d(scratchVisiblePoint[0], visualBaseY, scratchVisiblePoint[2]);
+        if (mirror) {
+            PortalCoordMap.reflectVectorAcrossPlaneInto(visual.velocityX(), visual.velocityY(), visual.velocityZ(),
+                localPortal.getFrame(), scratchDirection);
+        } else {
+            remoteViewFrame.transformVectorInto(visual.velocityX(), visual.velocityY(), visual.velocityZ(), localViewFrame, scratchDirection);
+        }
+        Vector3d velocity = new Vector3d(scratchDirection[0], scratchDirection[1], scratchDirection[2]);
+
+        SpoofedEntity state = spoofed.get(visual.id());
+        if (state != null && state.upsideDown != upsideDown) {
+            destroySingleSpoof(observer, state);
+            spoofed.remove(visual.id());
+            state = null;
+        }
+        if (state == null) {
+            state = new SpoofedEntity(NEXT_FAKE_ID.getAndIncrement(), UUID.randomUUID(), visual.isPlayer(), upsideDown,
+                visual.isPlayer() || isLivingType(visual.typeKey()));
+            spoofed.put(visual.id(), state);
+            if (visual.isPlayer()) {
+                sendRemotePlayerInfo(observer, entityView.getProfile(visual.id()), state, upsideDown);
+            }
+            WrapperPlayServerSpawnEntity spawn = new WrapperPlayServerSpawnEntity(state.fakeId, Optional.of(state.fakeUuid),
+                packetType, position, pitch, yaw, yaw, 0, Optional.of(velocity));
+            sendCounted(observer, spawn);
+            state.updateRotation(yaw, pitch);
+            state.rememberPosition(position);
+            sendHeadLook(observer, state, yaw);
+            state.remoteStateVersion = entityView.getStateVersion(visual.id());
+            sendRemoteEntityState(observer, entityView, visual, state);
+            return true;
+        }
+
+        EntityMove move = state.updatePosition(position);
+        boolean rotationChanged = state.updateRotation(yaw, pitch);
+        sendEntityMovement(observer, state, move, rotationChanged, position, yaw, pitch, visual.onGround());
+        if (rotationChanged) {
+            sendHeadLook(observer, state, yaw);
+        }
+        if (state.updateVelocity(velocity)) {
+            sendCounted(observer, new WrapperPlayServerEntityVelocity(state.fakeId, velocity));
+        }
+        int stateVersion = entityView.getStateVersion(visual.id());
+        if (stateVersion != state.remoteStateVersion) {
+            state.remoteStateVersion = stateVersion;
+            sendRemoteEntityState(observer, entityView, visual, state);
+        }
+        return true;
     }
 
     private List<EntityData<?>> withUpsideDownMetadataRemote(boolean isPlayer, List<EntityData<?>> metadata) {
@@ -498,6 +644,15 @@ public final class ProjectedEntityRenderer {
         hiddenLocalEntities.clear();
         visible.clear();
         visibleLocalHides.clear();
+        publishedSpoofedCount = 0;
+    }
+
+    public void discard() {
+        spoofed.clear();
+        hiddenLocalEntities.clear();
+        visible.clear();
+        visibleLocalHides.clear();
+        publishedSpoofedCount = 0;
     }
 
     public boolean hasProjectedEntity(UUID sourceId) {

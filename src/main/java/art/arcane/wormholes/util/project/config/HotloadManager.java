@@ -4,12 +4,14 @@ import art.arcane.wormholes.config.WormholesSettings;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public final class HotloadManager {
@@ -24,6 +26,7 @@ public final class HotloadManager {
     private final Consumer<WormholesSettings> reloadCallback;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final Map<String, FileSignature> lastApplied = new HashMap<>();
+    private final Map<String, FileSignature> lastRejected = new HashMap<>();
     private final Map<String, PendingChange> pending = new HashMap<>();
     private Thread watcherThread;
 
@@ -115,6 +118,11 @@ public final class HotloadManager {
                 pending.remove(name);
                 continue;
             }
+            FileSignature rejected = lastRejected.get(name);
+            if (rejected != null && current.matches(rejected)) {
+                pending.remove(name);
+                continue;
+            }
             PendingChange existing = pending.get(name);
             if (existing == null || !existing.signature.matches(current)) {
                 pending.put(name, new PendingChange(current, now));
@@ -141,19 +149,30 @@ public final class HotloadManager {
             if (!running.get()) {
                 return;
             }
-            logger.info("[Hotload] Configuration reloaded: " + String.join(", ", changedFiles));
             reloadCallback.accept(reloaded);
+            captureAppliedSignatures();
+            logger.info("[Hotload] Configuration reloaded: " + String.join(", ", changedFiles));
         } catch (Exception e) {
-            logger.warning("[Hotload] Failed to reload configuration: " + e.getMessage());
-        } finally {
-            for (String name : WATCHED_FILES) {
-                Path file = configDir.resolve(name);
-                FileSignature signature = readSignature(name, file);
+            logger.log(Level.WARNING, "[Hotload] Failed to reload configuration; keeping the last-known-good settings.", e);
+            for (String name : changedFiles) {
+                FileSignature signature = readSignature(name, configDir.resolve(name));
                 if (signature != null) {
-                    lastApplied.put(name, signature);
+                    lastRejected.put(name, signature);
                 }
             }
+        } finally {
             pending.clear();
+        }
+    }
+
+    private void captureAppliedSignatures() {
+        for (String name : WATCHED_FILES) {
+            FileSignature signature = readSignature(name, configDir.resolve(name));
+            if (signature == null) {
+                continue;
+            }
+            lastApplied.put(name, signature);
+            lastRejected.remove(name);
         }
     }
 
@@ -164,9 +183,10 @@ public final class HotloadManager {
             }
             long mtime = Files.getLastModifiedTime(file).toMillis();
             long size = Files.size(file);
-            return new FileSignature(mtime, size);
+            int contentHash = Arrays.hashCode(Files.readAllBytes(file));
+            return new FileSignature(mtime, size, contentHash);
         } catch (Exception e) {
-            logger.warning("[Hotload] mtime/size check failed for " + name + ": " + e.getMessage());
+            logger.warning("[Hotload] File signature check failed for " + name + ": " + e.getMessage());
             return null;
         }
     }
@@ -174,14 +194,19 @@ public final class HotloadManager {
     private static final class FileSignature {
         private final long modifiedMillis;
         private final long size;
+        private final int contentHash;
 
-        private FileSignature(long modifiedMillis, long size) {
+        private FileSignature(long modifiedMillis, long size, int contentHash) {
             this.modifiedMillis = modifiedMillis;
             this.size = size;
+            this.contentHash = contentHash;
         }
 
         private boolean matches(FileSignature other) {
-            return other != null && this.modifiedMillis == other.modifiedMillis && this.size == other.size;
+            return other != null
+                && this.modifiedMillis == other.modifiedMillis
+                && this.size == other.size
+                && this.contentHash == other.contentHash;
         }
     }
 

@@ -30,6 +30,7 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.BoundingBox;
 import org.bukkit.util.Vector;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -54,6 +55,8 @@ public final class ViewServer implements Listener {
     private static final long SIDEBAND_FULL_RESYNC_TICKS = 80L;
     private static final long SIDEBAND_FULL_RESYNC_JITTER_TICKS = 40L;
     private static final long BLOB_RECAPTURE_INTERVAL_TICKS = 40L;
+    private static final long MAX_BULK_RETRY_DELAY_TICKS = 40L;
+    private static final long BULK_COMPLETE_RETRY_DELAY_TICKS = 5L;
 
     private final NetworkManager network;
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
@@ -61,10 +64,13 @@ public final class ViewServer implements Listener {
     private final Map<ChunkTicketKey, TicketHold> chunkTickets = new HashMap<>();
     private final Map<BlockData, String> blockDataStrings = new ConcurrentHashMap<>();
     private final ChunkBulkBuilder chunkBulkBuilder;
+    private final AtomicBoolean active = new AtomicBoolean(true);
     private final AtomicBoolean taskRunning = new AtomicBoolean(false);
     private final AtomicLong entitySendCount = new AtomicLong();
     private final AtomicLong timeSendCount = new AtomicLong();
     private final PreShipPredictor preShipPredictor = new PreShipPredictor();
+    private final BulkRetryCoordinator<BulkRetryKey> bulkRetryCoordinator = new BulkRetryCoordinator<>(MAX_BULK_RETRY_DELAY_TICKS);
+    private final Set<BulkCompleteKey> bulkCompleteRetries = ConcurrentHashMap.newKeySet();
     private volatile EntityRateScheduler entityRateScheduler;
     private volatile EntityRateScheduler.Bands lastBands;
     private volatile NetworkConfig.ViewConfig cachedPreShipView;
@@ -73,6 +79,7 @@ public final class ViewServer implements Listener {
 
     private static final class Session {
         private final UUID portalId;
+        private final UUID subscriptionId;
         private final World world;
         private final ViewBox box;
         private final int centerChunkX;
@@ -81,6 +88,7 @@ public final class ViewServer implements Listener {
         private final double portalCenterY;
         private final double portalCenterZ;
         private final List<long[]> columns;
+        private final List<Long> chunkKeys;
         private final BoundingBox bounds;
         private final Set<String> peers = ConcurrentHashMap.newKeySet();
         private final Set<UUID> sentProfiles = ConcurrentHashMap.newKeySet();
@@ -97,6 +105,7 @@ public final class ViewServer implements Listener {
         private Session(UUID portalId, World world, ViewBox box, int centerChunkX, int centerChunkZ,
                         double portalCenterX, double portalCenterY, double portalCenterZ) {
             this.portalId = portalId;
+            this.subscriptionId = UUID.randomUUID();
             this.world = world;
             this.box = box;
             this.centerChunkX = centerChunkX;
@@ -105,6 +114,7 @@ public final class ViewServer implements Listener {
             this.portalCenterY = portalCenterY;
             this.portalCenterZ = portalCenterZ;
             this.columns = columnsFor(box);
+            this.chunkKeys = chunkKeysFor(columns);
             this.bounds = new BoundingBox(box.minX(), box.minY(), box.minZ(),
                 box.maxX() + 1, box.maxY() + 1, box.maxZ() + 1);
         }
@@ -118,6 +128,12 @@ public final class ViewServer implements Listener {
     }
 
     private record ChunkTicketKey(UUID worldId, int chunkX, int chunkZ) {
+    }
+
+    private record BulkRetryKey(UUID subscriptionId, String peerName, long chunkKey) {
+    }
+
+    private record BulkCompleteKey(UUID subscriptionId, String peerName) {
     }
 
     private static final class TicketHold {
@@ -160,6 +176,7 @@ public final class ViewServer implements Listener {
     public ViewServer(NetworkManager network) {
         this.network = network;
         this.chunkBulkBuilder = new ChunkBulkBuilder(blockDataStrings);
+        network.getReplicationManager().setBulkRetryListener(this::retryCanonicalBulk);
     }
 
     public static ViewBox computeBox(ILocalPortal portal, int radius) {
@@ -177,6 +194,9 @@ public final class ViewServer implements Listener {
     }
 
     public void onSubscribe(String peerName, UUID portalId) {
+        if (!active.get()) {
+            return;
+        }
         ILocalPortal portal = Wormholes.portalManager == null ? null : Wormholes.portalManager.getLocalPortal(portalId);
         if (portal == null || portal.getStructure() == null || portal.getStructure().getWorld() == null) {
             return;
@@ -197,11 +217,11 @@ public final class ViewServer implements Listener {
         session.sendStates.remove(peerName);
         ChunkReplicationManager replication = network.getReplicationManager();
         for (long[] column : session.columns) {
-            replication.subscribe(peerName, session.world, ViewSlice.columnKey((int) column[0], (int) column[1]));
+            replication.subscribe(peerName, session.subscriptionId, session.world, ViewSlice.columnKey((int) column[0], (int) column[1]));
         }
         int totalColumns = session.columns.size();
         if (totalColumns == 0) {
-            network.send(peerName, new WireMessage.ViewBulkComplete(portalId));
+            sendBulkCompleteWithRetry(session, peerName);
             startTask();
             return;
         }
@@ -217,9 +237,9 @@ public final class ViewServer implements Listener {
                     remainingBulks.decrementAndGet();
                     return;
                 }
-                sendInitialBulk(session, peerName, chunkX, chunkZ).whenComplete((unused, error) -> {
-                    if (remainingBulks.decrementAndGet() == 0 && session.peers.contains(peerName)) {
-                        network.send(peerName, new WireMessage.ViewBulkComplete(portalId));
+                sendInitialBulkWithRetry(session, peerName, chunkX, chunkZ).whenComplete((accepted, error) -> {
+                    if (Boolean.TRUE.equals(accepted) && remainingBulks.decrementAndGet() == 0 && session.peers.contains(peerName)) {
+                        sendBulkCompleteWithRetry(session, peerName);
                     }
                 });
             }, delayTicks);
@@ -232,17 +252,12 @@ public final class ViewServer implements Listener {
         if (session == null) {
             return;
         }
+        ChunkReplicationManager replication = network.getReplicationManager();
+        replication.unsubscribeAll(peerName, session.subscriptionId, session.chunkKeys);
         session.peers.remove(peerName);
         session.sendStates.remove(peerName);
         session.lastSentPresentIds.remove(peerName);
         session.lastPeerSideband.remove(peerName);
-        ChunkReplicationManager replication = network.getReplicationManager();
-        for (long[] column : session.columns) {
-            int chunkX = (int) column[0];
-            int chunkZ = (int) column[1];
-            long chunkKey = ViewSlice.columnKey(chunkX, chunkZ);
-            replication.unsubscribe(peerName, chunkKey);
-        }
         if (session.peers.isEmpty()) {
             sessions.remove(portalId);
             releaseSessionTickets(session);
@@ -267,7 +282,7 @@ public final class ViewServer implements Listener {
             if (!sessionContainsChunk(session, chunkX, chunkZ)) {
                 continue;
             }
-            sendInitialBulk(session, peerName, chunkX, chunkZ);
+            sendInitialBulkWithRetry(session, peerName, chunkX, chunkZ);
             return;
         }
     }
@@ -289,10 +304,12 @@ public final class ViewServer implements Listener {
         if (portal == null || portal.getId() == null) {
             return;
         }
-        Session removed = sessions.remove(portal.getId());
+        Session removed = sessions.get(portal.getId());
         List<String> peers = new ArrayList<>();
         if (removed != null) {
             peers.addAll(removed.peers);
+            unsubscribeSessionReplication(removed);
+            sessions.remove(portal.getId(), removed);
             releaseSessionTickets(removed);
         }
         releaseGatewayTicket(portal.getId());
@@ -311,10 +328,15 @@ public final class ViewServer implements Listener {
     }
 
     public void shutdown() {
+        active.set(false);
+        network.getReplicationManager().setBulkRetryListener(null);
         for (Session session : sessions.values()) {
+            unsubscribeSessionReplication(session);
             releaseSessionTickets(session);
         }
         sessions.clear();
+        bulkRetryCoordinator.clear();
+        bulkCompleteRetries.clear();
         releaseAllGatewayTickets();
         releaseAllChunkTickets();
     }
@@ -364,7 +386,8 @@ public final class ViewServer implements Listener {
         for (Session session : sessions.values()) {
             ILocalPortal portal = Wormholes.portalManager == null ? null : Wormholes.portalManager.getLocalPortal(session.portalId);
             if (portal == null) {
-                sessions.remove(session.portalId);
+                unsubscribeSessionReplication(session);
+                sessions.remove(session.portalId, session);
                 releaseSessionTickets(session);
                 continue;
             }
@@ -517,7 +540,8 @@ public final class ViewServer implements Listener {
                     session.sidebandEntityNextTick.remove(peerName);
                 }
                 Map<UUID, EntitySendState> peerStates = session.sendStatesFor(peerName);
-                peerStates.keySet().retainAll(presentIds);
+                Set<UUID> peerPresentIds = presentIdsForPeer(sideband, presentIds, sidebandAllowed);
+                peerStates.keySet().retainAll(peerPresentIds);
                 Boolean previousSideband = session.lastPeerSideband.put(peerName, Boolean.valueOf(sideband));
                 if (previousSideband != null && previousSideband.booleanValue() != sideband) {
                     for (EntitySendState transitioned : peerStates.values()) {
@@ -559,23 +583,23 @@ public final class ViewServer implements Listener {
                     }
                 }
                 Set<UUID> previousPresent = session.lastSentPresentIds.get(peerName);
-                boolean presentChanged = previousPresent == null || !previousPresent.equals(presentIds);
+                boolean presentChanged = previousPresent == null || !previousPresent.equals(peerPresentIds);
                 if (Settings.DEBUG && presentChanged && previousPresent != null) {
                     Set<UUID> left = new HashSet<>(previousPresent);
-                    left.removeAll(presentIds);
-                    Set<UUID> joined = new HashSet<>(presentIds);
+                    left.removeAll(peerPresentIds);
+                    Set<UUID> joined = new HashSet<>(peerPresentIds);
                     joined.removeAll(previousPresent);
                     if (!left.isEmpty() || !joined.isEmpty()) {
-                        Wormholes.v("[stream] portal=" + session.portalId + " peer=" + peerName + " present=" + presentIds.size() + (left.isEmpty() ? "" : " LEFT=" + left) + (joined.isEmpty() ? "" : " JOINED=" + joined));
+                        Wormholes.v("[stream] portal=" + session.portalId + " peer=" + peerName + " present=" + peerPresentIds.size() + (left.isEmpty() ? "" : " LEFT=" + left) + (joined.isEmpty() ? "" : " JOINED=" + joined));
                     }
                 }
                 if (outbound.isEmpty() && !presentChanged) {
                     continue;
                 }
-                WireMessage.ViewEntities message = new WireMessage.ViewEntities(session.portalId, outbound, new ArrayList<>(presentIds));
+                WireMessage.ViewEntities message = new WireMessage.ViewEntities(session.portalId, outbound, new ArrayList<>(peerPresentIds));
                 boolean sent = network.send(peerName, message);
                 if (sent) {
-                    session.lastSentPresentIds.put(peerName, new HashSet<>(presentIds));
+                    session.lastSentPresentIds.put(peerName, new HashSet<>(peerPresentIds));
                     entitySendCount.addAndGet(outbound.size());
                 } else {
                     for (EntityVisual failedVisual : outbound) {
@@ -591,6 +615,13 @@ public final class ViewServer implements Listener {
         } finally {
             session.entityCaptureRunning.set(false);
         }
+    }
+
+    static Set<UUID> presentIdsForPeer(boolean sideband, Set<UUID> presentIds, Set<UUID> sidebandAllowed) {
+        if (!sideband) {
+            return presentIds;
+        }
+        return sidebandAllowed == null ? Set.of() : sidebandAllowed;
     }
 
     private EntityVisual captureEntityVisualFull(Session session, Entity entity, long entityTick) {
@@ -811,40 +842,135 @@ public final class ViewServer implements Listener {
         return new String[]{"", ""};
     }
 
-    private CompletableFuture<Void> sendInitialBulk(Session session, String peerName, int chunkX, int chunkZ) {
+    private CompletableFuture<Boolean> sendInitialBulkWithRetry(Session session, String peerName, int chunkX, int chunkZ) {
+        long chunkKey = ViewSlice.columnKey(chunkX, chunkZ);
+        BulkRetryKey key = new BulkRetryKey(session.subscriptionId, peerName, chunkKey);
+        return bulkRetryCoordinator.run(
+            key,
+            () -> isSessionChunkActive(session, peerName, chunkKey),
+            () -> sendInitialBulk(session, peerName, chunkX, chunkZ),
+            (retry, delayTicks) -> FoliaScheduler.runAsync(Wormholes.instance, retry, delayTicks)
+        );
+    }
+
+    private CompletableFuture<Boolean> sendInitialBulk(Session session, String peerName, int chunkX, int chunkZ) {
         ChunkReplicationManager replication = network.getReplicationManager();
         long chunkKey = ViewSlice.columnKey(chunkX, chunkZ);
-        CompletableFuture<Void> done = new CompletableFuture<>();
+        CompletableFuture<Boolean> done = new CompletableFuture<>();
+        if (!isSessionChunkActive(session, peerName, chunkKey)) {
+            done.complete(false);
+            return done;
+        }
         session.world.getChunkAtAsync(chunkX, chunkZ).whenComplete((chunk, error) -> {
-            if (error != null || chunk == null) {
-                done.complete(null);
+            if (error != null || chunk == null || !isSessionChunkActive(session, peerName, chunkKey)) {
+                done.complete(false);
                 return;
             }
-            ChunkSnapshot snapshot = chunk.getChunkSnapshot(false, true, false, true);
-            FoliaScheduler.runAsync(Wormholes.instance, () -> {
-                try {
-                    ViewSlice slice = chunkBulkBuilder.buildSlice(session.box, chunkX, chunkZ, snapshot);
-                    if (slice == null) {
-                        return;
-                    }
-                    byte[] payload;
+            boolean snapshotScheduled = FoliaScheduler.runRegion(Wormholes.instance, session.world, chunkX, chunkZ, () -> {
+                if (!isSessionChunkActive(session, peerName, chunkKey)) {
+                    done.complete(false);
+                    return;
+                }
+                ChunkSnapshot snapshot = chunk.getChunkSnapshot(false, true, false, true);
+                boolean encodeScheduled = FoliaScheduler.runAsync(Wormholes.instance, () -> {
                     try {
-                        payload = ChunkBulkBuilder.encodeSliceBytes(slice);
-                    } catch (java.io.IOException e) {
-                        Wormholes.v("net: failed to encode chunk bulk for " + peerName + " (" + chunkX + "," + chunkZ + "): " + e.getMessage());
-                        return;
+                        if (!isSessionChunkActive(session, peerName, chunkKey)) {
+                            done.complete(false);
+                            return;
+                        }
+                        ViewSlice slice = chunkBulkBuilder.buildSlice(session.box, chunkX, chunkZ, snapshot);
+                        if (slice == null) {
+                            done.complete(isSessionChunkActive(session, peerName, chunkKey));
+                            return;
+                        }
+                        byte[] payload;
+                        try {
+                            payload = ChunkBulkBuilder.encodeSliceBytes(slice);
+                        } catch (IOException e) {
+                            Wormholes.v("net: failed to encode chunk bulk for " + peerName + " (" + chunkX + "," + chunkZ + "): " + e.getMessage());
+                            done.complete(false);
+                            return;
+                        }
+                        if (!isSessionChunkActive(session, peerName, chunkKey)) {
+                            done.complete(false);
+                            return;
+                        }
+                        boolean accepted = replication.sendBulk(peerName, session.subscriptionId, chunkKey, payload, slice.contentHash());
+                        if (accepted && session.lastSkyDarken >= 0 && isSessionChunkActive(session, peerName, chunkKey)) {
+                            network.send(peerName, new WireMessage.ViewTime(session.portalId, session.lastSkyDarken));
+                            timeSendCount.incrementAndGet();
+                        }
+                        done.complete(accepted);
+                    } catch (Throwable errorDuringBulk) {
+                        done.complete(false);
                     }
-                    replication.sendBulk(peerName, chunkKey, payload, slice.contentHash());
-                    if (session.lastSkyDarken >= 0) {
-                        network.send(peerName, new WireMessage.ViewTime(session.portalId, session.lastSkyDarken));
-                        timeSendCount.incrementAndGet();
-                    }
-                } finally {
-                    done.complete(null);
+                });
+                if (!encodeScheduled) {
+                    done.complete(false);
                 }
             });
+            if (!snapshotScheduled) {
+                done.complete(false);
+            }
         });
         return done;
+    }
+
+    private void retryCanonicalBulk(String peerName, long chunkKey) {
+        if (!active.get()) {
+            return;
+        }
+        int chunkX = (int) (chunkKey >> 32);
+        int chunkZ = (int) chunkKey;
+        for (Session session : sessions.values()) {
+            if (!session.peers.contains(peerName) || !sessionContainsChunk(session, chunkX, chunkZ)) {
+                continue;
+            }
+            sendInitialBulkWithRetry(session, peerName, chunkX, chunkZ);
+            return;
+        }
+    }
+
+    private void sendBulkCompleteWithRetry(Session session, String peerName) {
+        BulkCompleteKey key = new BulkCompleteKey(session.subscriptionId, peerName);
+        if (!bulkCompleteRetries.add(key)) {
+            return;
+        }
+        attemptBulkComplete(session, peerName, key);
+    }
+
+    private void attemptBulkComplete(Session session, String peerName, BulkCompleteKey key) {
+        if (!isSessionPeerActive(session, peerName)) {
+            bulkCompleteRetries.remove(key);
+            return;
+        }
+        ChunkReplicationManager replication = network.getReplicationManager();
+        if (replication.sendWhenAllBulked(peerName, session.subscriptionId, session.chunkKeys,
+            () -> network.send(peerName, new WireMessage.ViewBulkComplete(session.portalId)))) {
+            bulkCompleteRetries.remove(key);
+            return;
+        }
+        boolean scheduled = FoliaScheduler.runAsync(Wormholes.instance,
+            () -> attemptBulkComplete(session, peerName, key), BULK_COMPLETE_RETRY_DELAY_TICKS);
+        if (!scheduled) {
+            bulkCompleteRetries.remove(key);
+        }
+    }
+
+    private boolean isSessionPeerActive(Session session, String peerName) {
+        return active.get() && sessions.get(session.portalId) == session && session.peers.contains(peerName);
+    }
+
+    private boolean isSessionChunkActive(Session session, String peerName, long chunkKey) {
+        return isSessionPeerActive(session, peerName)
+            && network.getReplicationManager().isSubscribed(peerName, session.subscriptionId, chunkKey);
+    }
+
+    private void unsubscribeSessionReplication(Session session) {
+        ChunkReplicationManager replication = network.getReplicationManager();
+        for (String peerName : session.peers) {
+            replication.unsubscribeAll(peerName, session.subscriptionId, session.chunkKeys);
+        }
     }
 
     private void retainGatewayTickets(ILocalPortal portal) {
@@ -1077,6 +1203,14 @@ public final class ViewServer implements Listener {
             }
         }
         return columns;
+    }
+
+    private static List<Long> chunkKeysFor(List<long[]> columns) {
+        List<Long> chunkKeys = new ArrayList<>(columns.size());
+        for (long[] column : columns) {
+            chunkKeys.add(ViewSlice.columnKey((int) column[0], (int) column[1]));
+        }
+        return List.copyOf(chunkKeys);
     }
 
     public Stats statsSnapshot() {

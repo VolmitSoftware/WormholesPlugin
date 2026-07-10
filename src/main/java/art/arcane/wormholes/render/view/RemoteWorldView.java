@@ -13,7 +13,7 @@ import org.bukkit.block.data.BlockData;
 import java.util.List;
 import java.util.UUID;
 
-public final class RemoteWorldView implements ProjectionWorldView {
+public final class RemoteWorldView implements ProjectionWorldView, ProjectionEntityView {
     private final RemoteViewCache.RemoteView view;
     private final BlockData fallback;
     private int cachedChunkX = Integer.MIN_VALUE;
@@ -106,6 +106,11 @@ public final class RemoteWorldView implements ProjectionWorldView {
         return view.getEntities();
     }
 
+    @Override
+    public List<EntityVisual> getEntities(double centerX, double centerY, double centerZ, double range) {
+        return view.getEntities();
+    }
+
     public RemoteViewCache.RemoteProfile getProfile(UUID entityId) {
         return view.getProfile(entityId);
     }
@@ -123,6 +128,7 @@ public final class RemoteWorldView implements ProjectionWorldView {
         return view.getSkyDarken();
     }
 
+    @Override
     public long getRevision() {
         return view.getRevision();
     }

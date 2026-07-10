@@ -33,6 +33,7 @@ import org.jetbrains.annotations.Nullable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.logging.Level;
 
@@ -73,8 +74,12 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
             return false;
         }
         if (!sender.hasPermission(ROOT_PERMISSION)) {
-            sender.sendMessage("§cYou do not have permission.");
-            playFailureChime(sender);
+            if (sendPublicCommandIfRequested(sender, args)) {
+                playInfoChime(sender);
+            } else {
+                sender.sendMessage(Wormholes.tag + "§cYou do not have permission to use that command.");
+                playFailureChime(sender);
+            }
             return true;
         }
 
@@ -97,11 +102,47 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
     @Nullable
     @Override
     public List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command command, @NotNull String alias, @NotNull String[] args) {
-        if (!command.getName().equalsIgnoreCase(ROOT_COMMAND) || !sender.hasPermission(ROOT_PERMISSION)) {
+        if (!command.getName().equalsIgnoreCase(ROOT_COMMAND)) {
             return List.of();
+        }
+        if (!sender.hasPermission(ROOT_PERMISSION)) {
+            return publicTabCompletions(args);
         }
         return runDirectorTab(sender, alias, args);
     }
+
+	private boolean sendPublicCommandIfRequested(CommandSender sender, String[] args) {
+		if(!isPublicCommandRequest(args)) {
+			return false;
+		}
+		if(isPublicInfoRequest(args)) {
+			new CommandWormholes(plugin).info(sender);
+			return true;
+		}
+		sender.sendMessage(Wormholes.tag + "§7Portal help: §f/wormholes info");
+		sender.sendMessage(Wormholes.tag + "§7Use the Portal Wand on a portal to open its destination, view, travel, and access controls.");
+		return true;
+	}
+
+	static boolean isPublicCommandRequest(String[] args) {
+		return isPublicHelpRequest(args) || isPublicInfoRequest(args);
+	}
+
+	private static boolean isPublicHelpRequest(String[] args) {
+		return args == null || args.length == 0 || (args.length == 1 && isHelpWord(args[0]));
+	}
+
+	private static boolean isPublicInfoRequest(String[] args) {
+		return args != null && args.length == 1 && "info".equalsIgnoreCase(args[0]);
+	}
+
+	static List<String> publicTabCompletions(String[] args) {
+		if(args == null || args.length != 1) {
+			return List.of();
+		}
+		String prefix = args[0] == null ? "" : args[0].toLowerCase(Locale.ROOT);
+		return List.of("help", "info").stream().filter(value -> value.startsWith(prefix)).toList();
+	}
 
     private DirectorRuntimeEngine getDirector() {
         return directorCache.aquire(this::buildDirector);

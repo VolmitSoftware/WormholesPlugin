@@ -1,94 +1,138 @@
 package art.arcane.wormholes.config.toml;
 
+import art.arcane.wormholes.util.project.config.ConfigAdvanced;
 import art.arcane.wormholes.util.project.config.ConfigDescription;
 import art.arcane.wormholes.util.project.config.ConfigDoc;
 
 @ConfigDoc({
-    "Wormholes cross-server networking. Zero-config: the external host auto-detects via HTTPS and self-corrects over the",
-    "signed handshake, peer addresses learn from portal codes, and the only setting worth touching is the raw Wormholes",
-    "listen-port -- forward it on both servers to upgrade from the game-port fallback to full-throughput projection streaming."
+    "Cross-server networking. Portal codes discover peers automatically."
 })
 public class NetworkConfig {
-    @ConfigDescription("Master switch for cross-server networking.")
+    @ConfigDescription("Enable cross-server portals.")
     public boolean enabled = false;
 
-    @ConfigDescription("Open an inbound raw Wormholes socket. Disable for outbound-only servers that always dial peers.")
+    @ConfigAdvanced
     public boolean listenEnabled = true;
 
-    @ConfigDescription("Preferred raw Wormholes port. Forward this on both servers for high-throughput projection streaming. If in use, Wormholes scans the next 50 ports.")
+    @ConfigDescription("Optional raw-stream port. Without forwarding, Wormholes uses the game-port sideband.")
     public int listenPort = 8901;
 
-    @ConfigDescription("Auto-trust a first inbound peer's public key. Disable to require pre-imported portal codes.")
+    @ConfigAdvanced
     public boolean trustOnFirstUse = true;
 
-    @ConfigDescription("Comma-separated entity types this server refuses to accept across portals (players never blocked).")
+    @ConfigAdvanced
     public String entityTransferDenyTypes = "";
 
-    @ConfigDescription({
-        "Manual override for the externally reachable host. Blank = auto-detect via HTTPS and self-correct over the handshake.",
-        "Set this only when auto-detection picks the wrong address (NAT/container hosts, or 127.0.0.1 for a same-machine test)."
-    })
+    @ConfigAdvanced
     public String advertiseHostOverride = "";
 
-    public transient String serverName = "";
-    public transient String transferMode = "auto";
-    public transient long handoffTimeoutMs = 5000L;
-    public transient boolean optimisticHandoff = true;
-    public transient boolean autoAcceptTransfers = true;
+    @ConfigAdvanced
+    public String serverName = "";
+    @ConfigAdvanced
+    public String transferMode = "auto";
+    @ConfigAdvanced
+    public long handoffTimeoutMs = 5000L;
+    @ConfigAdvanced
+    public boolean optimisticHandoff = true;
+    @ConfigAdvanced
+    public boolean autoAcceptTransfers = true;
 
-    public transient TransportConfig transport = new TransportConfig();
-    public transient ViewConfig view = new ViewConfig();
-    public transient StatsConfig stats = new StatsConfig();
-    public transient ReplicationConfig replication = new ReplicationConfig();
+    @ConfigAdvanced
+    public TransportConfig transport = new TransportConfig();
+    @ConfigAdvanced
+    public ViewConfig view = new ViewConfig();
+    @ConfigAdvanced
+    public StatsConfig stats = new StatsConfig();
+    @ConfigAdvanced
+    public ReplicationConfig replication = new ReplicationConfig();
 
     public static class ViewConfig {
+        @ConfigAdvanced
         public boolean entityDeltaEnabled = true;
+        @ConfigAdvanced
         public double entityRateNearRange = 16.0D;
+        @ConfigAdvanced
         public double entityRateMidRange = 64.0D;
+        @ConfigAdvanced
         public double entityRateFarRange = 128.0D;
+        @ConfigAdvanced
         public double entityRateNearHz = 20.0D;
+        @ConfigAdvanced
         public double entityRateMidHz = 10.0D;
+        @ConfigAdvanced
         public double entityRateFarHz = 4.0D;
+        @ConfigAdvanced
         public double entityRateVeryFarHz = 1.0D;
+        @ConfigAdvanced
         public boolean coneEnabled = true;
+        @ConfigAdvanced
         public double coneDegrees = 60.0D;
+        @ConfigAdvanced
         public double coneBehindFactor = 0.4D;
+        @ConfigAdvanced
         public boolean yBiasEnabled = true;
+        @ConfigAdvanced
         public int yBiasCaveYMax = 50;
+        @ConfigAdvanced
         public int yBiasSkyYMin = 200;
+        @ConfigAdvanced
         public double yBiasFactor = 0.5D;
+        @ConfigAdvanced
         public boolean preshipEnabled = true;
+        @ConfigAdvanced
         public double preshipDistance = 24.0D;
+        @ConfigAdvanced
         public double preshipMinSpeed = 0.1D;
+        @ConfigAdvanced
         public double preshipRateFraction = 0.25D;
+        @ConfigAdvanced
         public double preshipCancelGraceSeconds = 2.0D;
     }
 
     public static class TransportConfig {
+        @ConfigAdvanced
         public boolean compressionEnabled = true;
+        @ConfigAdvanced
         public int compressionLevel = 3;
+        @ConfigAdvanced
         public int compressionDictTrainBytes = 10_485_760;
+        @ConfigAdvanced
         public int compressionDictTargetSize = 65_536;
+        @ConfigAdvanced
         public int compressionRetrainIntervalSec = 600;
+        @ConfigAdvanced
         public boolean udsEnabled = true;
+        @ConfigAdvanced
         public String udsDir = "";
     }
 
     public static class ReplicationConfig {
+        @ConfigAdvanced
         public int hashProbeIntervalSec = 30;
+        @ConfigAdvanced
         public int hashProbeChunksPerTick = 16;
+        @ConfigAdvanced
         public int diffWindowSize = 32;
+        @ConfigAdvanced
         public int resyncTimeoutSec = 5;
+        @ConfigAdvanced
         public int maxQueuedDiffsPerPeer = 4096;
+        @ConfigAdvanced
         public int captureSnapshotIntervalTicks = 100;
+        @ConfigAdvanced
         public int captureMaxQueuedDiffsPerChunk = 256;
+        @ConfigAdvanced
         public boolean captureLightEnabled = true;
+        @ConfigAdvanced
         public boolean captureBlockEntityEnabled = true;
     }
 
     public static class StatsConfig {
+        @ConfigAdvanced
         public boolean enabled = true;
+        @ConfigAdvanced
         public int intervalSec = 10;
+        @ConfigAdvanced
         public String pathOverride = "";
     }
 

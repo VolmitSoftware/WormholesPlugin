@@ -1,5 +1,6 @@
 package art.arcane.wormholes.config;
 
+import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.config.toml.NetworkConfig;
 import art.arcane.wormholes.config.toml.WormholesConfigFile;
 import art.arcane.wormholes.util.project.config.TomlCodec;
@@ -11,9 +12,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WormholesConfigFileTest {
@@ -21,68 +24,171 @@ class WormholesConfigFileTest {
     Path tempDir;
 
     @Test
-    void survivingSettingsRoundTripThroughSingleFile() throws IOException {
+    void freshInstallEmitsOnlyConciseOperatorKeys() throws IOException {
+        WormholesSettings settings = WormholesSettings.loadAll(tempDir);
+        Path file = tempDir.resolve("config").resolve(WormholesSettings.CONFIG_FILE_NAME);
+
+        assertEquals(VisualQualityProfile.AUTO, settings.getVisualQualityProfile());
+        assertEquals(List.of(
+            "schema = 2",
+            "quality = \"auto\"",
+            "[main]",
+            "replace-nether-and-end-portals = true",
+            "[network]",
+            "enabled = false",
+            "listen-port = 8901"
+        ), emittedSettings(file));
+    }
+
+    @Test
+    void advancedCompatibilityValuesRoundTripOnlyWhenChanged() throws IOException {
         File file = tempDir.resolve("wormholes.toml").toFile();
-
-        WormholesConfigFile created = TomlCodec.loadOrCreate(file, WormholesConfigFile.class);
-        assertTrue(file.exists());
-
-        created.network.listenPort = 9001;
+        WormholesConfigFile created = new WormholesConfigFile();
         created.network.enabled = true;
+        created.network.listenPort = 9001;
+        created.network.trustOnFirstUse = false;
+        created.network.transport.compressionLevel = 7;
         created.main.enableParticles = false;
+        created.projection.range = 72.0D;
         created.render.entitySpoofing = false;
         TomlCodec.writeCanonical(file, created);
 
-        WormholesConfigFile reloaded = TomlCodec.loadOrCreate(file, WormholesConfigFile.class);
-        assertEquals(9001, reloaded.network.listenPort);
-        assertTrue(reloaded.network.enabled);
-        assertFalse(reloaded.main.enableParticles);
-        assertFalse(reloaded.render.entitySpoofing);
-    }
-
-    @Test
-    void hardCodedSettingsAreAbsentFromFileButRetainValues() throws IOException {
-        File file = tempDir.resolve("wormholes.toml").toFile();
-        WormholesConfigFile config = TomlCodec.loadOrCreate(file, WormholesConfigFile.class);
-
         String written = Files.readString(file.toPath(), StandardCharsets.UTF_8);
-        assertFalse(written.contains("portal-construct-speed"), "hard-coded mechanic must not be written to the config");
-        assertFalse(written.contains("range ="), "hard-coded projection range must not be written to the config");
-        assertFalse(written.contains("compression-enabled"), "hard-coded transport section must not be written to the config");
-        assertFalse(written.contains("entity-rate-near-hz"), "hard-coded view tuning must not be written to the config");
+        assertTrue(written.contains("enable-particles = false"));
+        assertTrue(written.contains("[network.transport]"));
+        assertTrue(written.contains("compression-level = 7"));
+        assertTrue(written.contains("[projection]"));
+        assertFalse(written.contains("compression-enabled"));
 
-        assertEquals(0.975, config.main.portalConstructSpeed);
-        assertEquals(48.0, config.render.entitySpoofRange);
-        assertTrue(config.network.transport.compressionEnabled);
-        assertEquals(20.0, config.network.view.entityRateNearHz);
+        TomlCodec.LoadResult<WormholesConfigFile> result = TomlCodec.readExisting(file, WormholesConfigFile.class);
+        assertTrue(result.isSuccess());
+        assertEquals(9001, result.value().network.listenPort);
+        assertFalse(result.value().network.trustOnFirstUse);
+        assertEquals(7, result.value().network.transport.compressionLevel);
+        assertFalse(result.value().main.enableParticles);
+        assertEquals(72.0D, result.value().projection.range);
+        assertFalse(result.value().render.entitySpoofing);
     }
 
     @Test
-    void migratesLegacyConfigSurvivorsIntoConsolidatedFile() throws IOException {
-        File configDir = tempDir.resolve("config").toFile();
-        assertTrue(configDir.mkdirs());
-        NetworkConfig legacy = new NetworkConfig();
-        legacy.enabled = true;
-        legacy.listenPort = 8950;
-        TomlCodec.writeCanonical(new File(configDir, "network.toml"), legacy);
+    void schemaLessConsolidatedFileIsRejectedWithoutBeingRewritten() throws IOException {
+        Path configDir = tempDir.resolve("config");
+        Files.createDirectories(configDir);
+        Path file = configDir.resolve(WormholesSettings.CONFIG_FILE_NAME);
+        Files.writeString(file, """
+            [main]
+            enable-particles = false
+            portal-construct-speed = 0.8
+            replace-nether-and-end-portals = false
+
+            [network]
+            enabled = true
+            listen-port = 8950
+            trust-on-first-use = false
+
+            [network.transport]
+            compression-level = 6
+
+            [projection]
+            range = 76.0
+
+            [render]
+            entity-spoofing = false
+            """, StandardCharsets.UTF_8);
+
+        String original = Files.readString(file, StandardCharsets.UTF_8);
+        assertThrows(IllegalArgumentException.class, () -> WormholesSettings.loadAll(tempDir));
+        assertEquals(original, Files.readString(file, StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void separateLegacyFilesAreIgnoredAndLeftUntouched() throws IOException {
+        Path configDir = tempDir.resolve("config");
+        Files.createDirectories(configDir);
+
+        NetworkConfig network = new NetworkConfig();
+        network.enabled = true;
+        network.listenPort = 8950;
+        network.transport.compressionLevel = 8;
+        TomlCodec.writeCanonical(configDir.resolve("network.toml").toFile(), network);
 
         WormholesSettings settings = WormholesSettings.loadAll(tempDir);
-        assertTrue(settings.getNetwork().enabled, "upgrade must preserve enabled networking");
-        assertEquals(8950, settings.getNetwork().listenPort);
-        assertTrue(new File(configDir, "wormholes.toml").isFile());
+
+        assertFalse(settings.getNetwork().enabled);
+        assertEquals(8901, settings.getNetwork().listenPort);
+        assertTrue(Files.isRegularFile(configDir.resolve("network.toml")));
+        assertTrue(Files.isRegularFile(configDir.resolve(WormholesSettings.CONFIG_FILE_NAME)));
     }
 
     @Test
-    void onlyOperatorSettingsAppearInFile() throws IOException {
-        File file = tempDir.resolve("wormholes.toml").toFile();
-        TomlCodec.loadOrCreate(file, WormholesConfigFile.class);
-        String written = Files.readString(file.toPath(), StandardCharsets.UTF_8);
+    void allQualityProfilesAreAcceptedAndAutoKeepsCurrentFidelity() throws IOException {
+        Path config = tempDir.resolve("config").resolve(WormholesSettings.CONFIG_FILE_NAME);
+        for (VisualQualityProfile profile : VisualQualityProfile.values()) {
+            Files.createDirectories(config.getParent());
+            Files.writeString(config, "schema = 2\nquality = \"" + profile.configValue() + "\"\n", StandardCharsets.UTF_8);
+            WormholesSettings settings = WormholesSettings.loadAll(tempDir);
+            assertEquals(profile, settings.getVisualQualityProfile());
+        }
 
-        assertTrue(written.contains("listen-port"));
-        assertTrue(written.contains("enable-particles"));
-        assertTrue(written.contains("lighting-fidelity"));
-        assertTrue(written.contains("trust-on-first-use"));
-        assertTrue(written.contains("advertise-host-override"), "the host-override escape hatch is kept and must be written");
-        assertFalse(written.contains("transfer-mode"), "auto-determined transfer mode must not be written");
+        Files.writeString(config, "schema = 2\nquality = \"performance\"\n", StandardCharsets.UTF_8);
+        WormholesSettings performance = WormholesSettings.loadAll(tempDir);
+        Settings.refresh(performance);
+        assertFalse(Settings.LIGHTING_FIDELITY);
+        assertFalse(Settings.ENTITY_SPOOFING);
+        assertEquals(32.0D, Settings.PROJECTION_RANGE);
+
+        Files.writeString(config, "schema = 2\nquality = \"balanced\"\n", StandardCharsets.UTF_8);
+        WormholesSettings balanced = WormholesSettings.loadAll(tempDir);
+        Settings.refresh(balanced);
+        assertEquals(2, Settings.ENTITY_UPDATE_INTERVAL_TICKS);
+        assertEquals(16, Settings.MAX_SPOOFED_ENTITIES);
+
+        Files.writeString(config, "schema = 2\nquality = \"cinematic\"\n", StandardCharsets.UTF_8);
+        WormholesSettings cinematic = WormholesSettings.loadAll(tempDir);
+        Settings.refresh(cinematic);
+        assertEquals(64.0D, Settings.PROJECTION_RANGE);
+        assertEquals(96, Settings.PROJECTION_DEPTH_BLOCKS);
+        assertEquals(48, Settings.MAX_SPOOFED_ENTITIES);
+        assertEquals(2, Settings.LIGHTING_REFRESH_INTERVAL_TICKS);
+
+        Files.writeString(config, "schema = 2\nquality = \"auto\"\n", StandardCharsets.UTF_8);
+        WormholesSettings automatic = WormholesSettings.loadAll(tempDir);
+        Settings.refresh(automatic);
+        assertTrue(Settings.LIGHTING_FIDELITY);
+        assertTrue(Settings.ADAPTIVE_LIGHTING);
+        assertTrue(Settings.ENTITY_SPOOFING);
+        assertEquals(1, Settings.PROJECTION_REFRESH_INTERVAL_TICKS);
+    }
+
+    @Test
+    void malformedExistingConfigIsRejectedWithoutBeingRewritten() throws IOException {
+        Path config = tempDir.resolve("config").resolve(WormholesSettings.CONFIG_FILE_NAME);
+        Files.createDirectories(config.getParent());
+        String malformed = "schema = 2\nquality = \"unterminated\n";
+        Files.writeString(config, malformed, StandardCharsets.UTF_8);
+
+        assertThrows(IllegalStateException.class, () -> WormholesSettings.loadAll(tempDir));
+        assertEquals(malformed, Files.readString(config, StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void unknownQualityAndUnsupportedSchemasAreRejected() throws IOException {
+        Path config = tempDir.resolve("config").resolve(WormholesSettings.CONFIG_FILE_NAME);
+        Files.createDirectories(config.getParent());
+        Files.writeString(config, "schema = 2\nquality = \"ultra\"\n", StandardCharsets.UTF_8);
+        assertThrows(IllegalArgumentException.class, () -> WormholesSettings.loadAll(tempDir));
+
+        Files.writeString(config, "schema = 99\nquality = \"auto\"\n", StandardCharsets.UTF_8);
+        assertThrows(IllegalArgumentException.class, () -> WormholesSettings.loadAll(tempDir));
+
+        Files.writeString(config, "schema = 1\nquality = \"auto\"\n", StandardCharsets.UTF_8);
+        assertThrows(IllegalArgumentException.class, () -> WormholesSettings.loadAll(tempDir));
+    }
+
+    private static List<String> emittedSettings(Path file) throws IOException {
+        return Files.readAllLines(file, StandardCharsets.UTF_8).stream()
+            .map(String::trim)
+            .filter(line -> !line.isEmpty() && !line.startsWith("#"))
+            .toList();
     }
 }
