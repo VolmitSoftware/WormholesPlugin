@@ -126,7 +126,11 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
             throw new IOException("status sideband request is too large: " + handshakeHost.length() + " chars");
         }
         try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
+            try {
+                socket.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
+            } catch (IOException e) {
+                throw new RequestUndeliveredException(e);
+            }
             socket.setTcpNoDelay(true);
             socket.setSoTimeout(READ_TIMEOUT_MS);
             OutputStream output = socket.getOutputStream();
@@ -433,6 +437,12 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
             }
             return new StatusPacket(sourceServer, targetServer, mcVersion, pluginVersion, replyHost, replyPort,
                 publicKey, nonce, ackNonce, messages, null, signature);
+        }
+    }
+
+    public static final class RequestUndeliveredException extends IOException {
+        RequestUndeliveredException(IOException cause) {
+            super(cause.getMessage(), cause);
         }
     }
 }

@@ -62,8 +62,8 @@ public class Cuboid implements Iterable<Block>, Cloneable, ConfigurationSerializ
 	{
 		double s = 0.999;
 		assert x.getAxis().equals(Axis.X) : " X direction must be on the X axis.";
-		assert x.getAxis().equals(Axis.Y) : " Y direction must be on the Y axis.";
-		assert x.getAxis().equals(Axis.Z) : " Z direction must be on the Z axis.";
+		assert y.getAxis().equals(Axis.Y) : " Y direction must be on the Y axis.";
+		assert z.getAxis().equals(Axis.Z) : " Z direction must be on the Z axis.";
 		return new Vector(x.x() == 1 ? (x2 + s) : x1, y.y() == 1 ? (y2 + s) : y1, z.z() == 1 ? (z2 + s) : z1);
 	}
 

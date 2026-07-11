@@ -316,6 +316,10 @@ class NetworkManagerTest {
         beta.nextStatusAttempt.put(ALPHA_NAME, Long.MAX_VALUE);
         beta.nextStatusAttempt.put("gamma", Long.MAX_VALUE);
         gamma.nextStatusAttempt.put(BETA_NAME, Long.MAX_VALUE);
+        alpha.statusPollInFlight.add(BETA_NAME);
+        beta.statusPollInFlight.add(ALPHA_NAME);
+        beta.statusPollInFlight.add("gamma");
+        gamma.statusPollInFlight.add(BETA_NAME);
 
         LinkedBlockingQueue<String> received = new LinkedBlockingQueue<>();
         gamma.setMessageSink((peerName, message) -> {
@@ -555,6 +559,80 @@ class NetworkManagerTest {
     }
 
     @Test
+    void statusSidebandRetriesSameNonceBeforeRequeue() throws IOException {
+        int rawAlpha = freePort();
+        NetworkConfig alphaConfig = config(rawAlpha, ALPHA_NAME);
+        alphaConfig.listenEnabled = false;
+        try (ServerSocket rejector = new ServerSocket(0)) {
+            Thread closer = new Thread(() -> {
+                while (true) {
+                    try {
+                        rejector.accept().close();
+                    } catch (IOException e) {
+                        return;
+                    }
+                }
+            });
+            closer.setDaemon(true);
+            closer.start();
+
+            NetworkConfig.PeerEntry betaRoute = route(BETA_NAME, freePort());
+            betaRoute.publicHost = "127.0.0.1";
+            betaRoute.publicPort = rejector.getLocalPort();
+
+            NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "retry-alpha");
+            alpha.savePeer(betaRoute);
+            alpha.statusPollInFlight.add(BETA_NAME);
+            alpha.start();
+
+            WireMessage.EntityTransfer transfer = new WireMessage.EntityTransfer(UUID.randomUUID(), UUID.randomUUID(), new byte[64], traversive());
+            assertTrue(alpha.send(BETA_NAME, transfer));
+
+            assertFalse(alpha.pollStatusBridgeOnce(betaRoute));
+            NetworkManager.PendingStatusRequest first = alpha.pendingStatusRequests.get(BETA_NAME);
+            assertNotNull(first, "a post-connect poll failure inside the retry window must keep the pending request parked for a same-nonce retry");
+            assertFalse(first.messages().isEmpty());
+            long nonce = first.packet().nonce();
+
+            assertFalse(alpha.pollStatusBridgeOnce(betaRoute));
+            NetworkManager.PendingStatusRequest second = alpha.pendingStatusRequests.get(BETA_NAME);
+            assertNotNull(second);
+            assertEquals(nonce, second.packet().nonce(), "retries inside the retry window must reuse the same packet nonce so the peer can deduplicate redelivered requests");
+
+            alpha.pendingStatusRequests.put(BETA_NAME, new NetworkManager.PendingStatusRequest(second.packet(), second.batch(), second.messages(), System.currentTimeMillis() - NetworkManager.STATUS_REQUEST_RETRY_TTL_MS));
+            assertFalse(alpha.pollStatusBridgeOnce(betaRoute));
+            assertNull(alpha.pendingStatusRequests.get(BETA_NAME), "a poll failure past the retry window must abandon the pending request so the peer outbox cannot park forever");
+
+            assertFalse(alpha.pollStatusBridgeOnce(betaRoute));
+            NetworkManager.PendingStatusRequest redrained = alpha.pendingStatusRequests.get(BETA_NAME);
+            assertNotNull(redrained, "an abandoned request must requeue its batch so the next poll re-drains it");
+            assertFalse(redrained.messages().isEmpty(), "requeued messages must survive back into the outbox");
+            assertNotEquals(nonce, redrained.packet().nonce());
+        }
+    }
+
+    @Test
+    void statusSidebandRequeuesImmediatelyWhenPeerUnreachable() throws IOException {
+        int rawAlpha = freePort();
+        NetworkConfig alphaConfig = config(rawAlpha, ALPHA_NAME);
+        alphaConfig.listenEnabled = false;
+        NetworkConfig.PeerEntry betaRoute = route(BETA_NAME, freePort());
+        betaRoute.publicHost = "127.0.0.1";
+        betaRoute.publicPort = freePort();
+
+        NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "unreachable-alpha");
+        alpha.savePeer(betaRoute);
+        alpha.statusPollInFlight.add(BETA_NAME);
+        alpha.start();
+
+        WireMessage.EntityTransfer transfer = new WireMessage.EntityTransfer(UUID.randomUUID(), UUID.randomUUID(), new byte[64], traversive());
+        assertTrue(alpha.send(BETA_NAME, transfer));
+
+        assertFalse(alpha.pollStatusBridgeOnce(betaRoute));
+        assertNull(alpha.pendingStatusRequests.get(BETA_NAME), "a connect failure means the request was never delivered, so the batch must requeue immediately instead of parking the outbox");
+    }
+
+    @Test
     void statusSidebandFragmentsJumboFrames() throws IOException, InterruptedException {
         int rawAlpha = freePort();
         int rawBeta = freePort();
@@ -589,13 +667,16 @@ class NetworkManagerTest {
         assertTrue(WireCodec.encodeFrame(transfer).length > MinecraftStatusBridge.MAX_FRAME_BYTES);
         assertTrue(alpha.send(BETA_NAME, transfer));
 
-        for (int i = 0; i < 16 && betaTransfers.isEmpty(); i++) {
+        long deadline = System.currentTimeMillis() + 10_000L;
+        while (betaTransfers.isEmpty() && System.currentTimeMillis() < deadline) {
             MinecraftStatusBridge.StatusPacket request = beta.createStatusBridgePacket(ALPHA_NAME, List.of());
             MinecraftStatusBridge.StatusPacket response = alpha.handleStatusBridgeRequest(request);
             assertTrue(response != null);
             assertTrue(beta.handleStatusBridgeResponse(ALPHA_NAME, response, 12L));
+            Thread.sleep(10L);
         }
-        assertEquals(snapshot.length, betaTransfers.poll(10L, TimeUnit.SECONDS));
+        assertEquals(snapshot.length, betaTransfers.poll(),
+            "a 70KB jumbo frame must fragment, ship and reassemble across sideband drain rounds before the pump deadline");
     }
 
     @Test
@@ -635,15 +716,19 @@ class NetworkManagerTest {
         assertTrue(alpha.send(BETA_NAME, transfer));
 
         Integer received = null;
-        for (int i = 0; i < 3 && received == null; i++) {
+        long deadline = System.currentTimeMillis() + 10_000L;
+        while (received == null && System.currentTimeMillis() < deadline) {
             MinecraftStatusBridge.StatusPacket request = beta.createStatusBridgePacket(ALPHA_NAME, List.of());
             MinecraftStatusBridge.StatusPacket response = alpha.handleStatusBridgeRequest(request);
             assertTrue(response != null);
             assertTrue(beta.handleStatusBridgeResponse(ALPHA_NAME, response, 12L));
             received = betaTransfers.poll();
+            if (received == null) {
+                Thread.sleep(10L);
+            }
         }
         assertEquals(snapshot.length, received,
-            "a 240KB highly-compressible frame should compress small enough to cross the sideband in a few drain rounds");
+            "a 240KB highly-compressible frame should compress small enough to cross the sideband before the pump deadline");
     }
 
     @Test

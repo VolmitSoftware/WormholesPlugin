@@ -1596,7 +1596,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		window.setResolution(WindowResolution.W9_H6);
 		window.setViewportHeight(4);
 		window.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
-		window.onClosed((w) -> openMenus.remove(p.getUniqueId()));
+		window.onClosed((w) -> openMenus.remove(p.getUniqueId(), window));
 		rebuildPortalMenuElements(window, p);
 		openMenus.put(p.getUniqueId(), window);
 		return window;
@@ -2170,9 +2170,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		window.onClosed((w) -> FoliaScheduler.runEntity(Wormholes.instance, p, () -> uiOpenPortalMenu(p)));
 
 		window.setElement(0, 0, modePlacardElement());
-		window.setElement(-2, 1, modeOption(PortalType.PORTAL, p, window));
-		window.setElement(0, 1, modeOption(PortalType.WORMHOLE, p, window));
-		window.setElement(2, 1, modeOption(PortalType.GATEWAY, p, window));
+		window.setElement(-3, 1, modeOption(PortalType.PORTAL, p, window));
+		window.setElement(-1, 1, modeOption(PortalType.WORMHOLE, p, window));
+		window.setElement(1, 1, modeOption(PortalType.GATEWAY, p, window));
+		window.setElement(3, 1, mirrorModeOption(p, window));
 		window.setElement(0, 2, backToPortalMenuElement(window, p));
 
 		window.setVisible(true);
@@ -2219,11 +2220,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		UIElement element = new UIElement("mode-placard");
 		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Portal Mode");
 		element.setMaterial(new MaterialBlock(Material.BEACON));
-		element.addLore(ChatColor.GRAY + "Current: " + ChatColor.YELLOW + F.capitalize(getType().name().toLowerCase()));
+		element.addLore(ChatColor.GRAY + "Current: " + ChatColor.YELLOW + currentModeLabel());
 		element.addLore(" ");
 		element.addLore(ChatColor.GRAY + "Portal: basic linked portal.");
 		element.addLore(ChatColor.GRAY + "Wormhole: portal with viewport.");
 		element.addLore(ChatColor.GRAY + "Gateway: cross-server gateway.");
+		element.addLore(ChatColor.GRAY + "Mirror: reflect this side, no travel.");
 		return element;
 	}
 
@@ -2235,7 +2237,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		element.setEnchanted(true);
 		element.addLore(ChatColor.GRAY + modeDescription(getType()));
 		element.addLore(" ");
-		element.addLore(ChatColor.GRAY + "Currently: " + ChatColor.YELLOW + F.capitalize(getType().name().toLowerCase()));
+		element.addLore(ChatColor.GRAY + "Currently: " + ChatColor.YELLOW + currentModeLabel());
 		element.addLore(" ");
 		element.addLore(ChatColor.DARK_GRAY + "Click to change mode.");
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
@@ -2528,7 +2530,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private Element modeOption(PortalType target, Player p, Window window)
 	{
-		boolean current = getType() == target;
+		boolean current = getType() == target && getProjectionMode() != ProjectionMode.MIRROR;
 		String label = F.capitalize(target.name().toLowerCase());
 		UIElement element = new UIElement("mode-" + target.name().toLowerCase());
 		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + label);
@@ -2539,10 +2541,44 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		element.addLore(current ? ChatColor.GREEN + "Currently Selected" : ChatColor.GRAY + "Click to select");
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () ->
 		{
+			boolean changed = false;
+			if(getProjectionMode() == ProjectionMode.MIRROR)
+			{
+				setProjectionMode(ProjectionMode.ON);
+				changed = true;
+			}
 			if(getType() != target)
 			{
 				setType(target);
+				changed = true;
+			}
+			if(changed)
+			{
 				Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " mode set to " + label + ".", getStructure().getCenter());
+			}
+			window.close();
+		}));
+		return element;
+	}
+
+	private Element mirrorModeOption(Player p, Window window)
+	{
+		boolean current = getProjectionMode() == ProjectionMode.MIRROR;
+		UIElement element = new UIElement("mode-mirror");
+		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Mirror");
+		element.setMaterial(new MaterialBlock(ProjectionMode.MIRROR.getIcon()));
+		element.setEnchanted(current);
+		element.addLore(ChatColor.GRAY + ProjectionMode.MIRROR.getLoreLine1());
+		element.addLore(ChatColor.GRAY + ProjectionMode.MIRROR.getLoreLine2());
+		element.addLore(ChatColor.GRAY + "No travel while mirrored.");
+		element.addLore(" ");
+		element.addLore(current ? ChatColor.GREEN + "Currently Selected" : ChatColor.GRAY + "Click to select");
+		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () ->
+		{
+			if(getProjectionMode() != ProjectionMode.MIRROR)
+			{
+				setProjectionMode(ProjectionMode.MIRROR);
+				Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " mode set to Mirror.", getStructure().getCenter());
 			}
 			window.close();
 		}));
@@ -2556,6 +2592,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			return;
 		}
 		Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + ": " + ChatColor.RESET + message, viewer);
+	}
+
+	private String currentModeLabel()
+	{
+		return getProjectionMode() == ProjectionMode.MIRROR ? "Mirror" : F.capitalize(getType().name().toLowerCase());
 	}
 
 	private static Material modeIcon(PortalType type)

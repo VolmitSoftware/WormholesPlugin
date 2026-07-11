@@ -61,7 +61,17 @@ public class EffectManager implements Listener
 	private static final int LOOKING_SCAN_INTERVAL_TICKS = 3;
 	private static final int SYNC_SWEEP_INTERVAL_TICKS = 15;
 	private static final String EFFECT_ENTITY_TAG = "wormholes_fx";
+	private static final int SWIRL_TICKS = 20;
+	private static final int OPEN_PRELUDE_TICKS = 18;
+	private static final int KAWOOSH_TICKS = 12;
+	private static final int KAWOOSH_SURGE_TICKS = 5;
+	private static final int KAWOOSH_BOOM_DELAY_TICKS = 5;
+	private static final double KAWOOSH_TWIST_RADIANS = Math.PI * 1.25D;
+	private static final int CLOSE_CRACK_TICKS = 10;
+	private static final double VORTEX_MATCH_RADIUS_SQUARED = 16.0D;
+	private static final long VORTEX_MARKER_GRACE_MILLIS = 1500L;
 	private final Map<UUID, Boolean> portalSyncActive = new ConcurrentHashMap<>();
+	private final Map<VortexKey, VortexMarker> activeVortices = new ConcurrentHashMap<>();
 	private final Set<UUID> temporaryDisplays = ConcurrentHashMap.newKeySet();
 	private final Object displayLifecycleLock = new Object();
 	private volatile boolean closing;
@@ -115,6 +125,7 @@ public class EffectManager implements Listener
 			displays = new HashSet<UUID>(temporaryDisplays);
 		}
 		portalSyncActive.clear();
+		activeVortices.clear();
 		boolean folia = FoliaScheduler.isFoliaThreading(Bukkit.getServer());
 		CountDownLatch removals = new CountDownLatch(displays.size());
 		for(UUID displayId : displays)
@@ -189,7 +200,7 @@ public class EffectManager implements Listener
 		return entity instanceof Display && entity.getScoreboardTags().contains(EFFECT_ENTITY_TAG);
 	}
 
-	private void trackTemporaryDisplay(Display display)
+	public void trackTemporaryDisplay(Display display)
 	{
 		synchronized(displayLifecycleLock)
 		{
@@ -203,7 +214,7 @@ public class EffectManager implements Listener
 		}
 	}
 
-	private void removeTemporaryDisplay(Entity display)
+	public void removeTemporaryDisplay(Entity display)
 	{
 		if(display == null)
 		{
@@ -429,29 +440,6 @@ public class EffectManager implements Listener
 		block.getWorld().playSound(block.getLocation().clone().add(0.5, 0.5, 0.5), MSound.GLASS.bukkitSound(), 1.2f, (float) (0.25 + ((float) (Math.random() * 0.95))));
 	}
 
-	private static final int VORTEX_KEYFRAME_TICKS = 7;
-	private static final double VORTEX_BEND_RADIANS = Math.toRadians(42.0D);
-
-	public record PortalBlockSnapshot(Location location, BlockData data)
-	{
-	}
-
-	private static final class VortexBlock
-	{
-		private final BlockDisplay display;
-		private final double angle0;
-		private final double radius0;
-		private final double normalOffset0;
-
-		private VortexBlock(BlockDisplay display, double angle0, double radius0, double normalOffset0)
-		{
-			this.display = display;
-			this.angle0 = angle0;
-			this.radius0 = radius0;
-			this.normalOffset0 = normalOffset0;
-		}
-	}
-
 	public void playPortalVortex(World world, Location center, List<PortalBlockSnapshot> snapshots)
 	{
 		if(closing || world == null || center == null || snapshots == null || snapshots.isEmpty())
@@ -489,6 +477,9 @@ public class EffectManager implements Listener
 		final int planeA = normalAxis == 0 ? 1 : 0;
 		final int planeB = normalAxis == 2 ? 1 : 2;
 		final double[] c = new double[] { center.getX(), center.getY(), center.getZ() };
+		final double convergeSx = extentX + 1.0D;
+		final double convergeSy = extentY + 1.0D;
+		final double convergeSz = extentZ + 1.0D;
 
 		int displayCap = formationDisplayCap(Settings.VISUAL_QUALITY_PROFILE);
 		List<PortalBlockSnapshot> selected = selectFormationSnapshots(snapshots, center, planeA, planeB, displayCap);
@@ -517,40 +508,307 @@ public class EffectManager implements Listener
 			double a0 = blockCenter[planeA] - c[planeA];
 			double b0 = blockCenter[planeB] - c[planeB];
 			double normalOffset = blockCenter[normalAxis] - c[normalAxis];
-			vortex.add(new VortexBlock(display, Math.atan2(b0, a0), Math.hypot(a0, b0), normalOffset));
+			vortex.add(new VortexBlock(display, Math.atan2(b0, a0), Math.hypot(a0, b0), normalOffset,
+					1.2D + (Math.random() * 1.0D), 1.2D + (Math.random() * 0.5D), 0.8D + (Math.random() * 0.5D),
+					Math.random() * Math.PI * 2.0D, 0.2D + (Math.random() * 0.25D)));
 		}
 
 		world.spawnParticle(Particle.PORTAL, center, 12, 0.65, 0.8, 0.65, 0.35);
 		world.playSound(center, Sound.BLOCK_RESPAWN_ANCHOR_CHARGE, SoundCategory.BLOCKS, 0.55f, 0.55f);
-		applyVortexKeyframe(vortex, center, c, normalAxis, planeA, planeB, 0.68D, 0.72f, VORTEX_BEND_RADIANS * 0.28D, VORTEX_KEYFRAME_TICKS);
-		boolean middleScheduled = FoliaScheduler.runRegion(Wormholes.instance, center,
-				() -> applyVortexKeyframeUnlessClosing(vortex, center, c, normalAxis, planeA, planeB, 0.24D, 0.3f, VORTEX_BEND_RADIANS * 0.72D, VORTEX_KEYFRAME_TICKS), VORTEX_KEYFRAME_TICKS);
-		boolean collapseScheduled = FoliaScheduler.runRegion(Wormholes.instance, center,
-				() -> applyVortexKeyframeUnlessClosing(vortex, center, c, normalAxis, planeA, planeB, 0.0D, 0.025f, VORTEX_BEND_RADIANS, VORTEX_KEYFRAME_TICKS), VORTEX_KEYFRAME_TICKS * 2L);
-		boolean cleanupScheduled = FoliaScheduler.runRegion(Wormholes.instance, center, () ->
+		world.playSound(center, MSound.FRAME_SPAWN.bukkitSound(), SoundCategory.BLOCKS, 1.4f, 0.35f);
+
+		VortexKey markerKey = vortexKey(world, center);
+		VortexMarker marker = new VortexMarker(markerKey, world, center.getX(), center.getY(), center.getZ(),
+				System.currentTimeMillis() + (SWIRL_TICKS * 50L) + VORTEX_MARKER_GRACE_MILLIS);
+		activeVortices.put(markerKey, marker);
+
+		int[] tick = new int[] { 0 };
+		Runnable[] holder = new Runnable[1];
+		holder[0] = () ->
 		{
-			removeVortex(vortex);
-			if(!closing)
+			if(closing)
 			{
-				world.spawnParticle(Particle.REVERSE_PORTAL, center, 16, 0.08, 0.12, 0.08, 0.45);
-				world.spawnParticle(Particle.SCULK_SOUL, center, 4, 0.12, 0.18, 0.12, 0.02);
+				activeVortices.remove(markerKey, marker);
+				removeVortex(vortex);
+				return;
 			}
-		}, VORTEX_KEYFRAME_TICKS * 3L);
-		if(!middleScheduled || !collapseScheduled || !cleanupScheduled)
+			int t = tick[0]++;
+			if(t >= SWIRL_TICKS)
+			{
+				removeVortex(vortex);
+				playVortexConvergence(world, center, marker, convergeSx, convergeSy, convergeSz);
+				if(!FoliaScheduler.runRegion(Wormholes.instance, center, () -> activeVortices.remove(markerKey, marker), VORTEX_MARKER_GRACE_MILLIS / 50L))
+				{
+					activeVortices.remove(markerKey, marker);
+				}
+				return;
+			}
+			double frac = (double) (t + 1) / (double) SWIRL_TICKS;
+			double[] target = new double[3];
+			int index = 0;
+			for(VortexBlock block : vortex)
+			{
+				index++;
+				if(!block.display().isValid())
+				{
+					continue;
+				}
+				double spin = frac * block.turns() * Math.PI * 2.0D;
+				double angle = block.angle0() + spin;
+				double radiusFactor = Math.pow(1.0D - frac, block.radialExponent());
+				double radius = block.radius0() * radiusFactor;
+				float scale = (float) Math.max(0.04D, Math.pow(1.0D - frac, block.shrinkExponent()));
+				target[0] = c[0];
+				target[1] = c[1];
+				target[2] = c[2];
+				target[normalAxis] += block.normalOffset0() * radiusFactor;
+				target[planeA] += radius * Math.cos(angle);
+				target[planeB] += radius * Math.sin(angle);
+				float tiltAngle = (float) (block.wobbleAmplitude() * Math.sin((spin * 2.0D) + block.wobblePhase()));
+				block.display().setInterpolationDelay(0);
+				block.display().setInterpolationDuration(2);
+				block.display().setTransformation(formationTransformation(center.getX(), center.getY(), center.getZ(), target[0], target[1], target[2], scale, axisRotation(normalAxis, tiltAngle)));
+				if((t & 1) == 0)
+				{
+					Particle trail = (index & 1) == 0 ? Particle.PORTAL : Particle.REVERSE_PORTAL;
+					world.spawnParticle(trail, target[0], target[1], target[2], 1, 0.04, 0.04, 0.04, 0.02);
+				}
+			}
+			if(!FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L))
+			{
+				activeVortices.remove(markerKey, marker);
+				removeVortex(vortex);
+			}
+		};
+		if(!FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L))
 		{
+			activeVortices.remove(markerKey, marker);
 			removeVortex(vortex);
 		}
 	}
 
-	private void removeVortex(List<VortexBlock> vortex)
+	public void playPortalClose(World world, Location corner, double sx, double sy, double sz, BooleanSupplier active)
 	{
-		for(VortexBlock block : vortex)
+		if(closing || world == null || corner == null || active == null || !active.getAsBoolean())
 		{
-			removeTemporaryDisplay(block.display);
+			return;
 		}
+
+		double[] ext = new double[] { sx, sy, sz };
+		final int normalAxis = (ext[0] <= ext[1] && ext[0] <= ext[2]) ? 0 : (ext[1] <= ext[2] ? 1 : 2);
+		final int planeA = normalAxis == 0 ? 1 : 0;
+		final int planeB = normalAxis == 2 ? 1 : 2;
+		final double[] cc = new double[] { corner.getX() + (sx / 2.0D), corner.getY() + (sy / 2.0D), corner.getZ() + (sz / 2.0D) };
+		Location center = new Location(world, cc[0], cc[1], cc[2]);
+		final double halfA = Math.max(0.3D, ext[planeA] / 2.0D);
+		final double halfB = Math.max(0.3D, ext[planeB] / 2.0D);
+		CloseEffectPlan effectPlan = closeEffectPlan(Settings.VISUAL_QUALITY_PROFILE);
+		world.playSound(center, MSound.ECHEST_CLOSE.bukkitSound(), SoundCategory.BLOCKS, 1.2f, 0.55f);
+		if(!Settings.ENABLE_PARTICLES)
+		{
+			world.playSound(center, Sound.BLOCK_GLASS_BREAK, SoundCategory.BLOCKS, 1.0f, 0.9f);
+			return;
+		}
+
+		float thickness = 0.18f;
+		float paneA = (float) Math.max(0.25D, ext[planeA]);
+		float paneB = (float) Math.max(0.25D, ext[planeB]);
+		BlockData glass = Material.GLASS.createBlockData();
+		BlockDisplay pane = world.spawn(center, BlockDisplay.class, e ->
+		{
+			e.setBlock(glass);
+			e.setBrightness(new Display.Brightness(15, 15));
+			e.setPersistent(false);
+			e.setViewRange(2.5f);
+			e.setTransformation(centeredPaneTransform(normalAxis, planeA, planeB, thickness, paneA, paneB));
+		});
+		trackTemporaryDisplay(pane);
+
+		double[] crackAngle = new double[effectPlan.branches()];
+		double[] crackReach = new double[effectPlan.branches()];
+		double[] crackBend = new double[effectPlan.branches()];
+		for(int i = 0; i < effectPlan.branches(); i++)
+		{
+			crackAngle[i] = ((Math.PI * 2.0D * i) / effectPlan.branches()) + ((Math.random() - 0.5D) * 0.45D);
+			crackReach[i] = 0.6D + (Math.random() * 0.4D);
+			crackBend[i] = (Math.random() - 0.5D) * 0.7D;
+		}
+		double[] branchletAngle = new double[effectPlan.branches()];
+		double[] branchletStart = new double[effectPlan.branches()];
+		double[] branchletReach = new double[effectPlan.branches()];
+		int[] branchletTick = new int[effectPlan.branches()];
+		for(int i = 0; i < effectPlan.branches(); i++)
+		{
+			double side = Math.random() < 0.5D ? -1.0D : 1.0D;
+			branchletAngle[i] = crackAngle[i] + (side * (0.55D + (Math.random() * 0.5D)));
+			branchletStart[i] = 0.35D + (Math.random() * 0.3D);
+			branchletReach[i] = 0.18D + (Math.random() * 0.22D);
+			branchletTick[i] = 3 + (int) (Math.random() * 4.0D);
+		}
+
+		Particle.DustOptions crackDust = new Particle.DustOptions(Color.fromRGB(235, 245, 255), 0.75f);
+		Particle.DustOptions branchletDust = new Particle.DustOptions(Color.fromRGB(210, 230, 255), 0.55f);
+		BlockData shardData = Material.GLASS.createBlockData();
+
+		int[] tick = new int[] { 0 };
+		Runnable[] holder = new Runnable[1];
+		holder[0] = () ->
+		{
+			if(closing || !active.getAsBoolean())
+			{
+				removeTemporaryDisplay(pane);
+				return;
+			}
+			int t = tick[0]++;
+			double[] point = new double[3];
+			if(t >= CLOSE_CRACK_TICKS)
+			{
+				removeTemporaryDisplay(pane);
+				for(int i = 0; i < effectPlan.shards(); i++)
+				{
+					double a = Math.random() * Math.PI * 2.0D;
+					double radialA = Math.cos(a);
+					double radialB = Math.sin(a);
+					double rr = ellipseRadius(halfA, halfB, a) * (0.15D + (Math.random() * 0.85D));
+					point[0] = cc[0];
+					point[1] = cc[1];
+					point[2] = cc[2];
+					point[planeA] += rr * radialA;
+					point[planeB] += rr * radialB;
+					double[] velocity = outwardShardVelocity(normalAxis, planeA, planeB, radialA, radialB, (i & 1) == 0 ? 1.0D : -1.0D);
+					world.spawnParticle(Particle.BLOCK, point[0], point[1], point[2], 0, velocity[0], velocity[1], velocity[2], 0.35D, shardData);
+				}
+				world.spawnParticle(Particle.REVERSE_PORTAL, center, effectPlan.shards(), 0.2, 0.3, 0.2, 0.65);
+				world.spawnParticle(Particle.SCULK_SOUL, center, 6, 0.25, 0.35, 0.25, 0.03);
+				world.spawnParticle(Particle.FLASH, center, 1, 0.0, 0.0, 0.0, 0.0, Color.fromRGB(220, 235, 255));
+				world.playSound(center, Sound.BLOCK_GLASS_BREAK, SoundCategory.BLOCKS, 1.8f, 0.8f);
+				world.playSound(center, Sound.BLOCK_GLASS_BREAK, SoundCategory.BLOCKS, 1.1f, 1.05f);
+				world.playSound(center, Sound.ENTITY_ITEM_BREAK, SoundCategory.BLOCKS, 1.2f, 0.8f);
+				return;
+			}
+
+			double frac = (double) (t + 1) / (double) CLOSE_CRACK_TICKS;
+			for(int i = 0; i < effectPlan.branches(); i++)
+			{
+				for(int segment = 1; segment <= effectPlan.segments(); segment++)
+				{
+					double segmentFraction = (double) segment / (double) effectPlan.segments();
+					double angle = crackAngle[i] + (crackBend[i] * frac * frac * segmentFraction);
+					double len = ellipseRadius(halfA, halfB, angle) * crackReach[i] * frac * segmentFraction;
+					point[0] = cc[0];
+					point[1] = cc[1];
+					point[2] = cc[2];
+					point[planeA] += len * Math.cos(angle);
+					point[planeB] += len * Math.sin(angle);
+					world.spawnParticle(Particle.DUST, point[0], point[1], point[2], 1, 0.0, 0.0, 0.0, 0.0, crackDust);
+				}
+			}
+			for(int i = 0; i < effectPlan.branches(); i++)
+			{
+				if(t < branchletTick[i])
+				{
+					continue;
+				}
+				double baseFrac = (double) (branchletTick[i] + 1) / (double) CLOSE_CRACK_TICKS;
+				double baseAngle = crackAngle[i] + (crackBend[i] * baseFrac * baseFrac * branchletStart[i]);
+				double baseLen = ellipseRadius(halfA, halfB, baseAngle) * crackReach[i] * baseFrac * branchletStart[i];
+				double growth = Math.min(1.0D, (double) (t - branchletTick[i] + 1) / 4.0D);
+				for(int segment = 1; segment <= 2; segment++)
+				{
+					double offshoot = ellipseRadius(halfA, halfB, branchletAngle[i]) * branchletReach[i] * growth * ((double) segment / 2.0D);
+					point[0] = cc[0];
+					point[1] = cc[1];
+					point[2] = cc[2];
+					point[planeA] += (baseLen * Math.cos(baseAngle)) + (offshoot * Math.cos(branchletAngle[i]));
+					point[planeB] += (baseLen * Math.sin(baseAngle)) + (offshoot * Math.sin(branchletAngle[i]));
+					world.spawnParticle(Particle.DUST, point[0], point[1], point[2], 1, 0.0, 0.0, 0.0, 0.0, branchletDust);
+				}
+			}
+			if(t == 0)
+			{
+				world.playSound(center, Sound.BLOCK_GLASS_BREAK, SoundCategory.BLOCKS, 0.4f, 1.7f);
+			}
+			if(t % 3 == 1)
+			{
+				world.playSound(center, Sound.BLOCK_AMETHYST_BLOCK_HIT, SoundCategory.BLOCKS, 0.5f, 0.7f);
+			}
+			if(!FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L))
+			{
+				removeTemporaryDisplay(pane);
+			}
+		};
+		if(!FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L))
+		{
+			removeTemporaryDisplay(pane);
+		}
+	}
+
+	public void playPortalOpen(World world, Location center, double sx, double sy, double sz, BooleanSupplier active)
+	{
+		if(closing || world == null || center == null || active == null || !active.getAsBoolean())
+		{
+			return;
+		}
+		if(!Settings.ENABLE_PARTICLES)
+		{
+			world.playSound(center, MSound.FRAME_SPAWN.bukkitSound(), SoundCategory.BLOCKS, 1.4f, 0.35f);
+			playKawooshSounds(world, center, active);
+			return;
+		}
+		VortexMarker marker = findVortexMarker(world, center);
+		if(marker != null)
+		{
+			if(marker.kawooshPlayed)
+			{
+				activeVortices.remove(marker.key, marker);
+				return;
+			}
+			marker.kawoosh = new KawooshRequest(center.clone(), sx, sy, sz, active);
+			return;
+		}
+		world.playSound(center, MSound.FRAME_SPAWN.bukkitSound(), SoundCategory.BLOCKS, 1.4f, 0.35f);
+		playPortalOpenPrelude(world, center, sx, sy, sz, active);
+	}
+
+	public void playPortalDeletion(World world, Location corner, double sx, double sy, double sz)
+	{
+		playPortalClose(world, corner, sx, sy, sz, () -> true);
 	}
 
 	static int formationDisplayCap(VisualQualityProfile profile)
+	{
+		return switch(profile)
+		{
+			case PERFORMANCE -> 8;
+			case BALANCED -> 16;
+			case AUTO -> 18;
+			case CINEMATIC -> 24;
+		};
+	}
+
+	static CloseEffectPlan closeEffectPlan(VisualQualityProfile profile)
+	{
+		return switch(profile)
+		{
+			case PERFORMANCE -> new CloseEffectPlan(4, 3, 14);
+			case BALANCED -> new CloseEffectPlan(6, 4, 22);
+			case AUTO -> new CloseEffectPlan(6, 4, 26);
+			case CINEMATIC -> new CloseEffectPlan(8, 5, 30);
+		};
+	}
+
+	static KawooshPlan kawooshPlan(VisualQualityProfile profile)
+	{
+		return switch(profile)
+		{
+			case PERFORMANCE -> new KawooshPlan(2, 6, 20, 8, 2);
+			case BALANCED -> new KawooshPlan(3, 9, 40, 18, 4);
+			case AUTO -> new KawooshPlan(3, 11, 44, 20, 5);
+			case CINEMATIC -> new KawooshPlan(3, 14, 48, 24, 6);
+		};
+	}
+
+	static int openingRingPoints(VisualQualityProfile profile)
 	{
 		return switch(profile)
 		{
@@ -559,6 +817,240 @@ public class EffectManager implements Listener
 			case AUTO -> 12;
 			case CINEMATIC -> 16;
 		};
+	}
+
+	static double ellipseRadius(double halfA, double halfB, double angle)
+	{
+		double cos = Math.cos(angle);
+		double sin = Math.sin(angle);
+		return 1.0D / Math.sqrt((cos * cos) / (halfA * halfA) + (sin * sin) / (halfB * halfB));
+	}
+
+	static double[] outwardShardVelocity(int normalAxis, int planeA, int planeB, double radialA, double radialB, double normalDirection)
+	{
+		double[] velocity = new double[3];
+		velocity[normalAxis] = normalDirection * 0.65D;
+		velocity[planeA] = radialA;
+		velocity[planeB] = radialB;
+		return velocity;
+	}
+
+	private void playPortalOpenPrelude(World world, Location center, double sx, double sy, double sz, BooleanSupplier active)
+	{
+		double[] ext = new double[] { sx, sy, sz };
+		final int normalAxis = (ext[0] <= ext[1] && ext[0] <= ext[2]) ? 0 : (ext[1] <= ext[2] ? 1 : 2);
+		final int planeA = normalAxis == 0 ? 1 : 0;
+		final int planeB = normalAxis == 2 ? 1 : 2;
+		final double halfA = Math.max(0.6D, (ext[planeA] / 2.0D) + 0.35D);
+		final double halfB = Math.max(0.6D, (ext[planeB] / 2.0D) + 0.35D);
+		final double[] cc = new double[] { center.getX(), center.getY(), center.getZ() };
+		final int streams = openingRingPoints(Settings.VISUAL_QUALITY_PROFILE);
+		final double[] streamAngle = new double[streams];
+		final double[] streamTurns = new double[streams];
+		final double[] streamExponent = new double[streams];
+		for(int i = 0; i < streams; i++)
+		{
+			streamAngle[i] = ((Math.PI * 2.0D * i) / streams) + ((Math.random() - 0.5D) * 0.8D);
+			streamTurns[i] = 1.2D + (Math.random() * 1.0D);
+			streamExponent[i] = 1.2D + (Math.random() * 0.5D);
+		}
+		final Particle.DustTransition streamDust = new Particle.DustTransition(Color.fromRGB(185, 105, 255), Color.fromRGB(20, 5, 35), 0.8f);
+		int[] tick = new int[] { 0 };
+		Runnable[] holder = new Runnable[1];
+		holder[0] = () ->
+		{
+			if(closing || !active.getAsBoolean())
+			{
+				return;
+			}
+			int t = tick[0]++;
+			if(t >= OPEN_PRELUDE_TICKS)
+			{
+				playPortalKawoosh(world, center, sx, sy, sz, active);
+				return;
+			}
+			double frac = (double) (t + 1) / (double) OPEN_PRELUDE_TICKS;
+			double[] point = new double[3];
+			for(int i = 0; i < streams; i++)
+			{
+				double angle = streamAngle[i] + (frac * streamTurns[i] * Math.PI * 2.0D);
+				double radius = ellipseRadius(halfA, halfB, angle) * Math.pow(1.0D - frac, streamExponent[i]);
+				point[0] = cc[0];
+				point[1] = cc[1];
+				point[2] = cc[2];
+				point[planeA] += radius * Math.cos(angle);
+				point[planeB] += radius * Math.sin(angle);
+				Particle stream = (i & 1) == 0 ? Particle.PORTAL : Particle.REVERSE_PORTAL;
+				world.spawnParticle(stream, point[0], point[1], point[2], 1, 0.03, 0.03, 0.03, 0.02);
+				if((t & 1) == 0)
+				{
+					world.spawnParticle(Particle.DUST_COLOR_TRANSITION, point[0], point[1], point[2], 1, 0.0, 0.0, 0.0, 0.0, streamDust);
+				}
+			}
+			FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
+		};
+		FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
+	}
+
+	private void playPortalKawoosh(World world, Location center, double sx, double sy, double sz, BooleanSupplier active)
+	{
+		if(closing || world == null || center == null || active == null || !active.getAsBoolean())
+		{
+			return;
+		}
+		double[] ext = new double[] { sx, sy, sz };
+		final int normalAxis = (ext[0] <= ext[1] && ext[0] <= ext[2]) ? 0 : (ext[1] <= ext[2] ? 1 : 2);
+		final int planeA = normalAxis == 0 ? 1 : 0;
+		final int planeB = normalAxis == 2 ? 1 : 2;
+		final double halfA = Math.max(0.6D, (ext[planeA] / 2.0D) + 0.35D);
+		final double halfB = Math.max(0.6D, (ext[planeB] / 2.0D) + 0.35D);
+		final double[] cc = new double[] { center.getX(), center.getY(), center.getZ() };
+		final KawooshPlan plan = kawooshPlan(Settings.VISUAL_QUALITY_PROFILE);
+		world.spawnParticle(Particle.FLASH, center, 1, 0.0, 0.0, 0.0, 0.0, Color.fromRGB(190, 130, 255));
+		world.spawnParticle(Particle.REVERSE_PORTAL, center, plan.impactReverse(), 0.25, 0.45, 0.25, 0.75);
+		world.spawnParticle(Particle.END_ROD, center, plan.impactEndRod(), 0.15, 0.15, 0.15, 0.3);
+		playKawooshSounds(world, center, active);
+		final Particle.DustTransition armDust = new Particle.DustTransition(Color.fromRGB(185, 105, 255), Color.fromRGB(20, 5, 35), 0.9f);
+		int[] tick = new int[] { 0 };
+		Runnable[] holder = new Runnable[1];
+		holder[0] = () ->
+		{
+			if(closing || !active.getAsBoolean())
+			{
+				return;
+			}
+			int t = tick[0]++;
+			if(t >= KAWOOSH_TICKS)
+			{
+				return;
+			}
+			double frac = (double) (t + 1) / (double) KAWOOSH_TICKS;
+			int armPoints = Math.max(3, (int) Math.round(plan.armPoints() * frac));
+			double[] point = new double[3];
+			for(int arm = 0; arm < plan.arms(); arm++)
+			{
+				double armOffset = (Math.PI * 2.0D * arm) / plan.arms();
+				for(int j = 1; j <= armPoints; j++)
+				{
+					double along = frac * ((double) j / (double) armPoints);
+					double angle = armOffset + (along * KAWOOSH_TWIST_RADIANS);
+					double radius = ellipseRadius(halfA, halfB, angle) * along;
+					point[0] = cc[0];
+					point[1] = cc[1];
+					point[2] = cc[2];
+					point[planeA] += radius * Math.cos(angle);
+					point[planeB] += radius * Math.sin(angle);
+					if(j == armPoints)
+					{
+						world.spawnParticle(Particle.END_ROD, point[0], point[1], point[2], 1, 0.0, 0.0, 0.0, 0.02);
+					}
+					else
+					{
+						world.spawnParticle(Particle.DUST_COLOR_TRANSITION, point[0], point[1], point[2], 1, 0.0, 0.0, 0.0, 0.0, armDust);
+					}
+				}
+			}
+			if(t < KAWOOSH_SURGE_TICKS)
+			{
+				double surgeSpeed = 0.6D - (t * 0.07D);
+				for(int i = 0; i < plan.surgeCount(); i++)
+				{
+					double[] direction = new double[3];
+					direction[normalAxis] = (i & 1) == 0 ? 1.0D : -1.0D;
+					direction[planeA] = (Math.random() - 0.5D) * 0.45D;
+					direction[planeB] = (Math.random() - 0.5D) * 0.45D;
+					world.spawnParticle(Particle.END_ROD, cc[0], cc[1], cc[2], 0, direction[0], direction[1], direction[2], surgeSpeed);
+				}
+			}
+			else
+			{
+				double settleSpread = Math.max(0.15D, 0.9D * (1.0D - frac));
+				world.spawnParticle(Particle.REVERSE_PORTAL, cc[0], cc[1], cc[2], 6, settleSpread, settleSpread, settleSpread, 0.2);
+				world.spawnParticle(Particle.ENCHANT, cc[0], cc[1], cc[2], 3, settleSpread, settleSpread, settleSpread, 0.05);
+			}
+			FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
+		};
+		FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
+	}
+
+	private void playKawooshSounds(World world, Location center, BooleanSupplier active)
+	{
+		world.playSound(center, Sound.BLOCK_END_PORTAL_SPAWN, SoundCategory.BLOCKS, 1.8f, 0.85f);
+		world.playSound(center, Sound.BLOCK_BEACON_ACTIVATE, SoundCategory.BLOCKS, 2.0f, 0.55f);
+		FoliaScheduler.runRegion(Wormholes.instance, center, () ->
+		{
+			if(!closing && active.getAsBoolean())
+			{
+				world.playSound(center, Sound.ENTITY_WARDEN_SONIC_BOOM, SoundCategory.BLOCKS, 1.0f, 0.8f);
+			}
+		}, KAWOOSH_BOOM_DELAY_TICKS);
+	}
+
+	private void playVortexConvergence(World world, Location center, VortexMarker marker, double sx, double sy, double sz)
+	{
+		if(closing)
+		{
+			return;
+		}
+		marker.kawooshPlayed = true;
+		KawooshRequest request = marker.kawoosh;
+		if(request != null && request.active().getAsBoolean())
+		{
+			playPortalKawoosh(world, request.center(), request.sx(), request.sy(), request.sz(), request.active());
+			return;
+		}
+		playPortalKawoosh(world, center, sx, sy, sz, () -> true);
+	}
+
+	private VortexMarker findVortexMarker(World world, Location center)
+	{
+		long now = System.currentTimeMillis();
+		for(Map.Entry<VortexKey, VortexMarker> entry : activeVortices.entrySet())
+		{
+			VortexMarker marker = entry.getValue();
+			if(now >= marker.expiresAtMillis)
+			{
+				activeVortices.remove(entry.getKey(), marker);
+				continue;
+			}
+			if(vortexMarkerMatches(marker.world.getUID(), marker.x, marker.y, marker.z, marker.expiresAtMillis, now, world.getUID(), center.getX(), center.getY(), center.getZ()))
+			{
+				return marker;
+			}
+		}
+		return null;
+	}
+
+	static boolean vortexMarkerMatches(UUID markerWorldId, double markerX, double markerY, double markerZ, long expiresAtMillis, long nowMillis, UUID worldId, double x, double y, double z)
+	{
+		if(nowMillis >= expiresAtMillis)
+		{
+			return false;
+		}
+		if(!markerWorldId.equals(worldId))
+		{
+			return false;
+		}
+		double dx = markerX - x;
+		double dy = markerY - y;
+		double dz = markerZ - z;
+		return (dx * dx) + (dy * dy) + (dz * dz) <= VORTEX_MATCH_RADIUS_SQUARED;
+	}
+
+	private static VortexKey vortexKey(World world, Location center)
+	{
+		long x = center.getBlockX() & 0x3FFFFFFL;
+		long y = center.getBlockY() & 0xFFFL;
+		long z = center.getBlockZ() & 0x3FFFFFFL;
+		return new VortexKey(world.getUID(), (y << 52) | (z << 26) | x);
+	}
+
+	private void removeVortex(List<VortexBlock> vortex)
+	{
+		for(VortexBlock block : vortex)
+		{
+			removeTemporaryDisplay(block.display());
+		}
 	}
 
 	private static List<PortalBlockSnapshot> selectFormationSnapshots(List<PortalBlockSnapshot> snapshots, Location center, int planeA, int planeB, int cap)
@@ -605,37 +1097,6 @@ public class EffectManager implements Listener
 		return selected;
 	}
 
-	private void applyVortexKeyframe(List<VortexBlock> vortex, Location anchor, double[] center, int normalAxis, int planeA, int planeB,
-			double radiusFactor, float scale, double bend, int duration)
-	{
-		for(VortexBlock block : vortex)
-		{
-			if(!block.display.isValid())
-			{
-				continue;
-			}
-			double angle = block.angle0 + bend;
-			double radius = block.radius0 * radiusFactor;
-			double[] target = new double[] { center[0], center[1], center[2] };
-			target[normalAxis] += block.normalOffset0 * radiusFactor;
-			target[planeA] += radius * Math.cos(angle);
-			target[planeB] += radius * Math.sin(angle);
-			Quaternionf rotation = axisRotation(normalAxis, (float) bend);
-			block.display.setInterpolationDelay(0);
-			block.display.setInterpolationDuration(duration);
-			block.display.setTransformation(formationTransformation(anchor.getX(), anchor.getY(), anchor.getZ(), target[0], target[1], target[2], scale, rotation));
-		}
-	}
-
-	private void applyVortexKeyframeUnlessClosing(List<VortexBlock> vortex, Location anchor, double[] center, int normalAxis, int planeA, int planeB,
-			double radiusFactor, float scale, double bend, int duration)
-	{
-		if(!closing)
-		{
-			applyVortexKeyframe(vortex, anchor, center, normalAxis, planeA, planeB, radiusFactor, scale, bend, duration);
-		}
-	}
-
 	private static Transformation formationTransformation(double anchorX, double anchorY, double anchorZ, double targetX, double targetY, double targetZ, float scale, Quaternionf rotation)
 	{
 		float half = 0.5f * scale;
@@ -654,146 +1115,6 @@ public class EffectManager implements Listener
 		};
 	}
 
-
-	private static final int CLOSE_CRACK_TICKS = 7;
-
-	static CloseEffectPlan closeEffectPlan(VisualQualityProfile profile)
-	{
-		return switch(profile)
-		{
-			case PERFORMANCE -> new CloseEffectPlan(3, 1, 6);
-			case BALANCED -> new CloseEffectPlan(4, 2, 8);
-			case AUTO -> new CloseEffectPlan(4, 2, 10);
-			case CINEMATIC -> new CloseEffectPlan(5, 3, 12);
-		};
-	}
-
-	static double ellipseRadius(double halfA, double halfB, double angle)
-	{
-		double cos = Math.cos(angle);
-		double sin = Math.sin(angle);
-		return 1.0D / Math.sqrt((cos * cos) / (halfA * halfA) + (sin * sin) / (halfB * halfB));
-	}
-
-	record CloseEffectPlan(int branches, int segments, int shards)
-	{
-	}
-
-	public void playPortalClose(World world, Location corner, double sx, double sy, double sz, BooleanSupplier active)
-	{
-		if(closing || world == null || corner == null || active == null || !active.getAsBoolean())
-		{
-			return;
-		}
-
-		double[] ext = new double[] { sx, sy, sz };
-		final int normalAxis = (ext[0] <= ext[1] && ext[0] <= ext[2]) ? 0 : (ext[1] <= ext[2] ? 1 : 2);
-		final int planeA = normalAxis == 0 ? 1 : 0;
-		final int planeB = normalAxis == 2 ? 1 : 2;
-		final double[] cc = new double[] { corner.getX() + (sx / 2.0D), corner.getY() + (sy / 2.0D), corner.getZ() + (sz / 2.0D) };
-		Location center = new Location(world, cc[0], cc[1], cc[2]);
-		final double halfA = Math.max(0.3D, ext[planeA] / 2.0D);
-		final double halfB = Math.max(0.3D, ext[planeB] / 2.0D);
-		CloseEffectPlan effectPlan = closeEffectPlan(Settings.VISUAL_QUALITY_PROFILE);
-		world.playSound(center, Sound.BLOCK_AMETHYST_BLOCK_HIT, SoundCategory.BLOCKS, 0.35f, 0.65f);
-		if(!Settings.ENABLE_PARTICLES)
-		{
-			return;
-		}
-
-		float thickness = 0.16f;
-		float paneA = (float) Math.max(0.25D, ext[planeA]);
-		float paneB = (float) Math.max(0.25D, ext[planeB]);
-		BlockData glass = Material.TINTED_GLASS.createBlockData();
-		BlockDisplay pane = world.spawn(center, BlockDisplay.class, e ->
-		{
-			e.setBlock(glass);
-			e.setBrightness(new Display.Brightness(10, 15));
-			e.setPersistent(false);
-			e.setViewRange(2.5f);
-			e.setTransformation(centeredPaneTransform(normalAxis, planeA, planeB, thickness, paneA, paneB));
-		});
-		trackTemporaryDisplay(pane);
-
-		double[] crackAngle = new double[effectPlan.branches()];
-		double[] crackReach = new double[effectPlan.branches()];
-		double[] crackBend = new double[effectPlan.branches()];
-		for(int i = 0; i < effectPlan.branches(); i++)
-		{
-			crackAngle[i] = ((Math.PI * 2.0D * i) / effectPlan.branches()) + ((Math.random() - 0.5D) * 0.45D);
-			crackReach[i] = 0.6D + (Math.random() * 0.4D);
-			crackBend[i] = (Math.random() - 0.5D) * 0.7D;
-		}
-
-		Particle.DustOptions crackDust = new Particle.DustOptions(Color.fromRGB(235, 245, 255), 0.7f);
-		BlockData shardData = Material.GLASS.createBlockData();
-
-		int[] tick = new int[] { 0 };
-		Runnable[] holder = new Runnable[1];
-		holder[0] = () ->
-		{
-			if(closing || !active.getAsBoolean())
-			{
-				removeTemporaryDisplay(pane);
-				return;
-			}
-			int t = tick[0]++;
-			if(t >= CLOSE_CRACK_TICKS)
-			{
-				removeTemporaryDisplay(pane);
-				for(int i = 0; i < effectPlan.shards(); i++)
-				{
-					double a = Math.random() * Math.PI * 2.0D;
-					double radialA = Math.cos(a);
-					double radialB = Math.sin(a);
-					double rr = ellipseRadius(halfA, halfB, a) * (0.2D + (Math.random() * 0.8D));
-					double[] p = new double[] { cc[0], cc[1], cc[2] };
-					p[planeA] = cc[planeA] + (rr * radialA);
-					p[planeB] = cc[planeB] + (rr * radialB);
-					double[] velocity = outwardShardVelocity(normalAxis, planeA, planeB, radialA, radialB, (i & 1) == 0 ? 1.0D : -1.0D);
-					world.spawnParticle(Particle.BLOCK, new Location(world, p[0], p[1], p[2]), 0, velocity[0], velocity[1], velocity[2], 0.35D, shardData);
-				}
-				world.spawnParticle(Particle.REVERSE_PORTAL, center, Math.min(8, effectPlan.shards()), 0.15, 0.22, 0.15, 0.5);
-				world.spawnParticle(Particle.FLASH, center, 1, 0.0, 0.0, 0.0, 0.0);
-				world.playSound(center, Sound.BLOCK_GLASS_BREAK, SoundCategory.BLOCKS, 0.75f, 0.82f);
-				world.playSound(center, Sound.BLOCK_BEACON_DEACTIVATE, SoundCategory.BLOCKS, 0.4f, 0.55f);
-				return;
-			}
-
-			double frac = (double) (t + 1) / (double) CLOSE_CRACK_TICKS;
-			for(int i = 0; i < effectPlan.branches(); i++)
-			{
-				for(int segment = 1; segment <= effectPlan.segments(); segment++)
-				{
-					double segmentFraction = (double) segment / effectPlan.segments();
-					double angle = crackAngle[i] + (crackBend[i] * frac * frac * segmentFraction);
-					double len = ellipseRadius(halfA, halfB, angle) * crackReach[i] * frac * segmentFraction;
-					double[] p = new double[] { cc[0], cc[1], cc[2] };
-					p[planeA] = cc[planeA] + (len * Math.cos(angle));
-					p[planeB] = cc[planeB] + (len * Math.sin(angle));
-					world.spawnParticle(Particle.DUST, new Location(world, p[0], p[1], p[2]), 1, 0.0, 0.0, 0.0, 0.0, crackDust);
-				}
-			}
-			if(t == CLOSE_CRACK_TICKS - 2 && pane.isValid())
-			{
-				boolean collapseA = planeA == 1 || planeB != 1;
-				float collapsedA = collapseA ? 0.06f : paneA;
-				float collapsedB = collapseA ? paneB : 0.06f;
-				pane.setInterpolationDelay(0);
-				pane.setInterpolationDuration(2);
-				pane.setTransformation(centeredPaneTransform(normalAxis, planeA, planeB, thickness, collapsedA, collapsedB));
-			}
-			if(!FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L))
-			{
-				removeTemporaryDisplay(pane);
-			}
-		};
-		if(!FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L))
-		{
-			removeTemporaryDisplay(pane);
-		}
-	}
-
 	private static Transformation centeredPaneTransform(int normalAxis, int planeA, int planeB, float thickness, float scaleA, float scaleB)
 	{
 		float[] scale = new float[3];
@@ -801,143 +1122,6 @@ public class EffectManager implements Listener
 		scale[planeA] = scaleA;
 		scale[planeB] = scaleB;
 		return new Transformation(new Vector3f(-scale[0] / 2.0f, -scale[1] / 2.0f, -scale[2] / 2.0f), new Quaternionf(), new Vector3f(scale[0], scale[1], scale[2]), new Quaternionf());
-	}
-
-	static double[] outwardShardVelocity(int normalAxis, int planeA, int planeB, double radialA, double radialB, double normalDirection)
-	{
-		double[] velocity = new double[3];
-		velocity[normalAxis] = normalDirection * 0.65D;
-		velocity[planeA] = radialA;
-		velocity[planeB] = radialB;
-		return velocity;
-	}
-
-	public void playPortalOpen(World world, Location center, double sx, double sy, double sz, BooleanSupplier active)
-	{
-		if(closing || world == null || center == null || active == null || !active.getAsBoolean())
-		{
-			return;
-		}
-		playPortalOpenClimaxIfActive(world, center, sx, sy, sz, active);
-		final int afterglowTicks = 3;
-		int[] tick = new int[] { 0 };
-		Runnable[] holder = new Runnable[1];
-		holder[0] = () ->
-		{
-			if(closing || !active.getAsBoolean())
-			{
-				return;
-			}
-			int t = tick[0]++;
-			if(t >= afterglowTicks)
-			{
-				return;
-			}
-			if(Settings.ENABLE_PARTICLES)
-			{
-				double spread = Math.max(0.12D, 0.45D - (((double) t / afterglowTicks) * 0.25D));
-				world.spawnParticle(Particle.REVERSE_PORTAL, center, 3, spread, spread, spread, 0.18);
-				world.spawnParticle(Particle.ENCHANT, center, 1, spread, spread, spread, 0.03);
-			}
-			FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
-		};
-		FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
-	}
-
-	public void playPortalOpenClimax(World world, Location center, double sx, double sy, double sz)
-	{
-		playPortalOpenClimaxIfActive(world, center, sx, sy, sz, () -> true);
-	}
-
-	private void playPortalOpenClimaxIfActive(World world, Location center, double sx, double sy, double sz, BooleanSupplier active)
-	{
-		if(closing || world == null || center == null || active == null || !active.getAsBoolean())
-		{
-			return;
-		}
-		if(Settings.ENABLE_PARTICLES)
-		{
-			world.spawnParticle(Particle.FLASH, center, 1, 0.0, 0.0, 0.0, 0.0);
-			world.spawnParticle(Particle.REVERSE_PORTAL, center, 16, 0.18, 0.28, 0.18, 0.55);
-			world.spawnParticle(Particle.END_ROD, center, 6, 0.1, 0.1, 0.1, 0.18);
-		}
-		world.playSound(center, Sound.BLOCK_END_PORTAL_SPAWN, SoundCategory.BLOCKS, 0.75f, 0.88f);
-		world.playSound(center, Sound.BLOCK_BEACON_ACTIVATE, SoundCategory.BLOCKS, 0.4f, 0.62f);
-		if(Settings.ENABLE_PARTICLES)
-		{
-			playPortalRipple(world, center, sx, sy, sz, active);
-		}
-	}
-
-	private void playPortalRipple(World world, Location center, double sx, double sy, double sz, BooleanSupplier active)
-	{
-		int normalAxis = 1;
-		double min = sy;
-		if(sx <= min)
-		{
-			min = sx;
-			normalAxis = 0;
-		}
-		if(sz < min)
-		{
-			normalAxis = 2;
-		}
-		final int planeA = normalAxis == 0 ? 1 : 0;
-		final int planeB = normalAxis == 2 ? 1 : 2;
-		double extA = planeA == 0 ? sx : (planeA == 1 ? sy : sz);
-		double extB = planeB == 0 ? sx : (planeB == 1 ? sy : sz);
-		final double maxR = Math.max(1.0D, (Math.max(extA, extB) * 0.5D) + 0.75D);
-		final double[] cc = new double[] { center.getX(), center.getY(), center.getZ() };
-		final int ripTicks = 5;
-		final int points = openingRingPoints(Settings.VISUAL_QUALITY_PROFILE);
-		final Particle.DustTransition ringDust = new Particle.DustTransition(Color.fromRGB(185, 105, 255), Color.fromRGB(20, 5, 35), 0.85f);
-		final int[] rt = new int[] { 0 };
-		final Runnable[] holder = new Runnable[1];
-		holder[0] = () ->
-		{
-			if(closing || !active.getAsBoolean())
-			{
-				return;
-			}
-			int t = rt[0]++;
-			if(t >= ripTicks)
-			{
-				return;
-			}
-			double frac = (double) (t + 1) / (double) ripTicks;
-			double radius = 0.12D + (maxR * Math.pow(1.0D - frac, 1.35D));
-			double twist = frac * Math.PI * 0.85D;
-			for(int i = 0; i < points; i++)
-			{
-				double a = ((Math.PI * 2.0D * i) / points) + twist;
-				double[] p = new double[] { cc[0], cc[1], cc[2] };
-				p[planeA] = cc[planeA] + (radius * Math.cos(a));
-				p[planeB] = cc[planeB] + (radius * Math.sin(a));
-				world.spawnParticle(Particle.DUST_COLOR_TRANSITION, new Location(world, p[0], p[1], p[2]), 1, 0.0, 0.0, 0.0, 0.0, ringDust);
-			}
-			if(t == ripTicks - 1)
-			{
-				world.spawnParticle(Particle.SONIC_BOOM, center, 1, 0.0, 0.0, 0.0, 0.0);
-			}
-			FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
-		};
-		FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
-	}
-
-	static int openingRingPoints(VisualQualityProfile profile)
-	{
-		return switch(profile)
-		{
-			case PERFORMANCE -> 6;
-			case BALANCED -> 8;
-			case AUTO -> 10;
-			case CINEMATIC -> 12;
-		};
-	}
-
-	public void playPortalDeletion(World world, Location corner, double sx, double sy, double sz)
-	{
-		playPortalClose(world, corner, sx, sy, sz, () -> true);
 	}
 
 	private static Quaternionf axisRotation(int axis, float angle)
@@ -948,5 +1132,51 @@ public class EffectManager implements Listener
 			case 2 -> new Quaternionf().rotationZ(angle);
 			default -> new Quaternionf().rotationY(angle);
 		};
+	}
+
+	public record PortalBlockSnapshot(Location location, BlockData data)
+	{
+	}
+
+	record CloseEffectPlan(int branches, int segments, int shards)
+	{
+	}
+
+	record KawooshPlan(int arms, int armPoints, int impactReverse, int impactEndRod, int surgeCount)
+	{
+	}
+
+	private record KawooshRequest(Location center, double sx, double sy, double sz, BooleanSupplier active)
+	{
+	}
+
+	private record VortexBlock(BlockDisplay display, double angle0, double radius0, double normalOffset0, double turns, double radialExponent, double shrinkExponent, double wobblePhase, double wobbleAmplitude)
+	{
+	}
+
+	private record VortexKey(UUID worldId, long packedPos)
+	{
+	}
+
+	private static final class VortexMarker
+	{
+		private final VortexKey key;
+		private final World world;
+		private final double x;
+		private final double y;
+		private final double z;
+		private final long expiresAtMillis;
+		private volatile KawooshRequest kawoosh;
+		private volatile boolean kawooshPlayed;
+
+		private VortexMarker(VortexKey key, World world, double x, double y, double z, long expiresAtMillis)
+		{
+			this.key = key;
+			this.world = world;
+			this.x = x;
+			this.y = y;
+			this.z = z;
+			this.expiresAtMillis = expiresAtMillis;
+		}
 	}
 }

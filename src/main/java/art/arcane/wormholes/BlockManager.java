@@ -26,6 +26,7 @@ import org.bukkit.block.Block;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
+import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -59,6 +60,7 @@ public class BlockManager implements Listener
 	};
 	private final Map<GChunk, Set<PortalBlock>> blocks;
 	private final Object runeMutationLock = new Object();
+	private final Set<RuneCell> reservedRuneCells = ConcurrentHashMap.newKeySet();
 	private final ItemStack wandTemplate;
 	private final ItemStack portalRuneTemplate;
 	private final ItemStack wormholeRuneTemplate;
@@ -175,7 +177,7 @@ public class BlockManager implements Listener
 		}
 	}
 
-	@EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+	@EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
 	public void on(PlayerInteractEvent e)
 	{
 		if(!isWand(e.getPlayer().getInventory().getItemInMainHand()))
@@ -187,14 +189,22 @@ public class BlockManager implements Listener
 			return;
 		}
 
+		if(isReservedRuneCell(e.getClickedBlock()))
+		{
+			e.setUseInteractedBlock(Event.Result.DENY);
+			e.setCancelled(true);
+			return;
+		}
+
 		PortalBlock b = getBlock(e.getClickedBlock());
 
 		if(b == null)
 		{
-			WormholesAudience.sendActionBar(e.getPlayer(),Component.text("That is not a placed rune. Place runes (Portal/Wormhole/Gateway) in any connected shape on one flat surface, then left-click one with the wand.", NamedTextColor.GOLD));
 			return;
 		}
 
+		e.setUseInteractedBlock(Event.Result.DENY);
+		e.setCancelled(true);
 		WormholesAudience.sendActionBar(e.getPlayer(),Component.text("Forming portal... " + b.getType().name().toLowerCase() + " runes must connect on one flat wall, floor, or ceiling.", NamedTextColor.AQUA));
 		construct(e.getPlayer(), e.getClickedBlock());
 	}
@@ -245,6 +255,7 @@ public class BlockManager implements Listener
 			for(PortalBlock portalBlock : connected)
 			{
 				unregisterBlockLocked(portalBlock);
+				reservedRuneCells.add(RuneCell.from(portalBlock.getLocation()));
 			}
 			return new RuneReservation(type, Set.copyOf(connected), true);
 		}
@@ -389,6 +400,7 @@ public class BlockManager implements Listener
 		{
 			if(Wormholes.constructionManager.constructPortal(ownerId, consumed, type, look))
 			{
+				clearReservedCells(reserved);
 				Wormholes.effectManager.playPortalVortex(world, center, snapshots);
 				return;
 			}
@@ -444,6 +456,7 @@ public class BlockManager implements Listener
 					{
 						registerBlockSilently(portalBlock);
 					}
+					reservedRuneCells.remove(RuneCell.from(location));
 				}
 			};
 			boolean scheduled = FoliaScheduler.runRegion(Wormholes.instance, world, chunk.x(), chunk.z(), rollback);
@@ -453,8 +466,25 @@ public class BlockManager implements Listener
 			}
 			else if(!scheduled)
 			{
+				for(PortalBlock portalBlock : entry.getValue())
+				{
+					reservedRuneCells.remove(RuneCell.from(portalBlock.getLocation()));
+				}
 				Wormholes.w("Could not restore reserved portal runes in " + world.getName() + " chunk " + chunk.x() + "," + chunk.z() + " because region scheduling was rejected");
 			}
+		}
+	}
+
+	private boolean isReservedRuneCell(Block block)
+	{
+		return reservedRuneCells.contains(RuneCell.from(block));
+	}
+
+	private void clearReservedCells(Set<PortalBlock> reserved)
+	{
+		for(PortalBlock portalBlock : reserved)
+		{
+			reservedRuneCells.remove(RuneCell.from(portalBlock.getLocation()));
 		}
 	}
 
@@ -484,6 +514,19 @@ public class BlockManager implements Listener
 	{
 	}
 
+	private record RuneCell(String world, int x, int y, int z)
+	{
+		private static RuneCell from(Block block)
+		{
+			return new RuneCell(block.getWorld().getName(), block.getX(), block.getY(), block.getZ());
+		}
+
+		private static RuneCell from(Location location)
+		{
+			return new RuneCell(location.getWorld().getName(), location.getBlockX(), location.getBlockY(), location.getBlockZ());
+		}
+	}
+
 	@EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
 	public void on(BlockPlaceEvent e)
 	{
@@ -510,6 +553,25 @@ public class BlockManager implements Listener
 
 		placeBlock(new PortalBlock(placedType, e.getBlock().getLocation()));
 		WormholesAudience.sendActionBar(e.getPlayer(),Component.text("Rune placed. Build any connected shape on one flat surface, then left-click any rune with the Portal Wand.", NamedTextColor.AQUA));
+	}
+
+	@EventHandler(priority = EventPriority.LOWEST)
+	public void denyWandRuneBreak(BlockBreakEvent e)
+	{
+		if(isReservedRuneCell(e.getBlock()))
+		{
+			e.setCancelled(true);
+			return;
+		}
+		if(!isWand(e.getPlayer().getInventory().getItemInMainHand()))
+		{
+			return;
+		}
+		if(getBlock(e.getBlock()) == null)
+		{
+			return;
+		}
+		e.setCancelled(true);
 	}
 
 	@EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

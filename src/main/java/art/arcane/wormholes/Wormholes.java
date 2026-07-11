@@ -64,6 +64,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     public static volatile BlockManager blockManager;
     public static volatile EffectManager effectManager;
     public static volatile ConstructionManager constructionManager;
+    public static volatile WandSelectionManager wandSelectionManager;
     public static volatile PortalManager portalManager;
     public static volatile TraversableManager traversableManager;
     public static volatile ProjectionManager projectionManager;
@@ -125,6 +126,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             blockManager = new BlockManager();
             effectManager = new EffectManager();
             constructionManager = new ConstructionManager();
+            wandSelectionManager = new WandSelectionManager();
             portalManager = new PortalManager();
             traversableManager = new TraversableManager();
             projectionManager = new ProjectionManager();
@@ -134,6 +136,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             getServer().getPluginManager().registerEvents(blockManager, this);
             getServer().getPluginManager().registerEvents(effectManager, this);
             getServer().getPluginManager().registerEvents(constructionManager, this);
+            getServer().getPluginManager().registerEvents(wandSelectionManager, this);
             getServer().getPluginManager().registerEvents(portalManager, this);
             getServer().getPluginManager().registerEvents(traversableManager, this);
             getServer().getPluginManager().registerEvents(projectionManager, this);
