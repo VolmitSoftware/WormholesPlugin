@@ -1,18 +1,18 @@
 name: ${name}
 version: ${version}
 main: ${main}
+bootstrapper: ${bootstrapper}
 folia-supported: true
 api-version: ${apiVersion}
 load: STARTUP
 description: Through-portal projection. See what is on the other side without crossing.
 authors: [ VolmitSoftware ]
-softdepend:
-  - PlaceholderAPI
-commands:
-  wormholes:
-    aliases: [ wh, wormhole ]
-    description: Wormholes base command.
-    usage: /wormholes [wand|info|reload|debug|stats|network|admin]
+dependencies:
+  server:
+    PlaceholderAPI:
+      load: BEFORE
+      required: false
+      join-classpath: true
 permissions:
   wormholes.*:
     description: Gives access to all Wormholes permissions.

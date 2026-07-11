@@ -12,6 +12,7 @@ group = 'art.arcane'
 version = '1.0.0-26.2'
 def apiVersion = '26.2'
 def main = 'art.arcane.wormholes.Wormholes'
+def bootstrapper = 'art.arcane.wormholes.survival.doors.dimension.WormholesBootstrap'
 def lib = 'art.arcane.wormholes.libs'
 String volmLibCoordinate = providers.gradleProperty('volmLibCoordinate')
     .orElse('com.github.VolmitSoftware:VolmLib:master-SNAPSHOT')
@@ -86,14 +87,15 @@ shadowJarTask.configure {
 
 tasks.named('processResources').configure {
     def pluginProperties = [
-        name      : rootProject.name,
-        version   : project.version,
-        main      : main,
-        apiVersion: apiVersion,
+        name        : rootProject.name,
+        version     : project.version,
+        main        : main,
+        bootstrapper: bootstrapper,
+        apiVersion  : apiVersion,
     ]
 
     inputs.properties(pluginProperties)
-    filesMatching('**/plugin.yml') {
+    filesMatching('**/paper-plugin.yml') {
         expand(pluginProperties)
     }
 }

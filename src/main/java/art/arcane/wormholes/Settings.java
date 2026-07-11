@@ -48,6 +48,7 @@ public final class Settings {
     public static volatile boolean ARRIVAL_TRANSITION_MASK = true;
     public static volatile int ARRIVAL_TRANSITION_MASK_TICKS = 25;
     public static volatile boolean REPLACE_NETHER_AND_END_PORTALS = true;
+    public static volatile boolean DIMENSIONAL_DOORS_ENABLED = true;
     public static volatile boolean DEBUG = false;
 
     private Settings() {
@@ -76,6 +77,7 @@ public final class Settings {
         ARRIVAL_TRANSITION_MASK = main.arrivalTransitionMask;
         ARRIVAL_TRANSITION_MASK_TICKS = clampInt(main.arrivalTransitionMaskTicks, 0, 200);
         REPLACE_NETHER_AND_END_PORTALS = main.replaceNetherAndEndPortals;
+        DIMENSIONAL_DOORS_ENABLED = main.dimensionalDoorsEnabled;
         DEBUG = main.verboseLogging;
 
         FRUSTUM_CULLING_RATIO = clampDouble(projection.frustumCullingRatio, 0.0D, 1.0D);

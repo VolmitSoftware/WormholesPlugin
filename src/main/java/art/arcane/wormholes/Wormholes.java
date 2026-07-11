@@ -5,6 +5,9 @@ import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.volmlib.util.scheduling.SchedulerBridge;
 import art.arcane.volmlib.util.scheduling.SchedulerRuntime;
 import art.arcane.wormholes.config.WormholesSettings;
+import art.arcane.wormholes.door.DimensionalDoorManager;
+import art.arcane.wormholes.door.DimensionalDoorRepository;
+import art.arcane.wormholes.door.DoorStoreSnapshot;
 import art.arcane.wormholes.network.ImportExportService;
 import art.arcane.wormholes.network.NetworkManager;
 import art.arcane.wormholes.network.NetworkRouter;
@@ -25,12 +28,14 @@ import art.arcane.wormholes.service.StatsSnapshotWriter;
 import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.wormholes.service.WormholesCommandService;
 import art.arcane.wormholes.service.WormholesIntegrationService;
+import art.arcane.wormholes.survival.doors.dimension.PocketWorldService;
 import art.arcane.wormholes.util.J;
 import art.arcane.wormholes.util.common.SplashScreen;
 import art.arcane.wormholes.util.project.config.HotloadManager;
 import io.github.slimjar.app.builder.SpigotApplicationBuilder;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -47,6 +52,7 @@ import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -78,10 +84,13 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     public static volatile ViewSubscriptionManager viewSubscriptions;
     public static volatile ViewServer viewServer;
     public static volatile ImportExportService importExportService;
+    public static volatile PocketWorldService pocketWorldService;
+    public static volatile DimensionalDoorManager dimensionalDoorManager;
 
     private static final ConcurrentHashMap<UUID, Consumer<String>> CHAT_INPUTS = new ConcurrentHashMap<>();
 
     private final AtomicBoolean alreadyDrained = new AtomicBoolean(false);
+    private final AtomicBoolean dimensionalDoorDisablePending = new AtomicBoolean(false);
     private SchedulerRuntime schedulerRuntime;
     private PacketEventsRuntime packetEventsRuntime;
     private MetricsRuntime metricsRuntime;
@@ -132,6 +141,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             projectionManager = new ProjectionManager();
             projectionChangeTracker = new art.arcane.wormholes.render.ProjectionWorldChangeTracker();
             arrivalWarmer = new ArrivalWarmer();
+            applyDimensionalDoorSetting(settings);
 
             getServer().getPluginManager().registerEvents(blockManager, this);
             getServer().getPluginManager().registerEvents(effectManager, this);
@@ -209,6 +219,8 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     @Override
     public void onDisable() {
         unregisterIntegrationService();
+        shutdownDimensionalDoorsBeforeSchedulers();
+        shutdownPocketWorldService();
         shutdownProjectionBeforeSchedulers();
         shutdownEffectsBeforeSchedulers();
         if (schedulerRuntime != null) {
@@ -222,6 +234,8 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     public void onPreUnload(ReloadAware.PreUnloadReason reason) {
         getLogger().info("BileTools pre-unload hook fired (" + reason + "). Tearing down Wormholes managers and PacketEvents.");
         unregisterIntegrationService();
+        shutdownDimensionalDoorsBeforeSchedulers();
+        shutdownPocketWorldService();
         shutdownProjectionBeforeSchedulers();
         shutdownEffectsBeforeSchedulers();
         if (schedulerRuntime != null) {
@@ -236,6 +250,167 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         if (activeProjection != null) {
             activeProjection.shutdown();
         }
+    }
+
+    private void shutdownPocketWorldService() {
+        PocketWorldService activeService = pocketWorldService;
+        pocketWorldService = null;
+        if (activeService == null) {
+            return;
+        }
+        try {
+            activeService.close();
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "Error during PocketWorldService shutdown", ex);
+        }
+    }
+
+    private void shutdownDimensionalDoorsBeforeSchedulers() {
+        DimensionalDoorManager activeManager = dimensionalDoorManager;
+        dimensionalDoorManager = null;
+        if (activeManager == null) {
+            return;
+        }
+        try {
+            activeManager.close();
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "Error during Dimensional Doors shutdown", ex);
+        }
+    }
+
+    private void startDimensionalDoorsSafely() {
+        try {
+            startDimensionalDoorsOrThrow();
+        } catch (Throwable ex) {
+            getLogger().log(Level.SEVERE,
+                "Dimensional Doors could not start. Core Wormholes features will remain available.", ex);
+        }
+    }
+
+    private void startDimensionalDoorsOrThrow() throws IOException {
+        if (dimensionalDoorManager != null) {
+            return;
+        }
+        PocketWorldService activePocketWorld = pocketWorldService;
+        boolean createdPocketWorldService = false;
+        if (activePocketWorld == null) {
+            activePocketWorld = new PocketWorldService(this);
+            try {
+                activePocketWorld.start();
+            } catch (RuntimeException ex) {
+                try {
+                    activePocketWorld.close();
+                } catch (Throwable closeError) {
+                    getLogger().log(Level.WARNING, "Error cleaning up a failed pocket-world service startup", closeError);
+                }
+                throw ex;
+            }
+            pocketWorldService = activePocketWorld;
+            createdPocketWorldService = true;
+        }
+
+        DimensionalDoorManager manager = new DimensionalDoorManager(this, activePocketWorld);
+        try {
+            manager.start();
+            dimensionalDoorManager = manager;
+        } catch (IOException | RuntimeException ex) {
+            try {
+                manager.close();
+            } catch (Throwable closeError) {
+                getLogger().log(Level.WARNING, "Error cleaning up a failed Dimensional Doors startup", closeError);
+            }
+            if (createdPocketWorldService) {
+                shutdownPocketWorldService();
+            }
+            throw ex;
+        }
+    }
+
+    private void applyDimensionalDoorSetting(WormholesSettings activeSettings) {
+        if (activeSettings.getMain().dimensionalDoorsEnabled) {
+            dimensionalDoorDisablePending.set(false);
+            DimensionalDoorManager activeManager = dimensionalDoorManager;
+            if (activeManager != null) {
+                activeManager.resumeEntries();
+                return;
+            }
+            startDimensionalDoorsSafely();
+            return;
+        }
+        DimensionalDoorManager activeManager = dimensionalDoorManager;
+        if (activeManager == null) {
+            dimensionalDoorDisablePending.set(false);
+            shutdownPocketWorldService();
+            return;
+        }
+        activeManager.beginDrain();
+        if (!hasDimensionalDoorDrainWork(activeManager)) {
+            dimensionalDoorDisablePending.set(false);
+            finishDimensionalDoorDisable(activeManager);
+            return;
+        }
+        if (dimensionalDoorDisablePending.compareAndSet(false, true)) {
+            getLogger().warning("Dimensional Doors are draining current transits and pocket occupants before disabling.");
+            notifyPocketOccupantsOfDisable();
+            scheduleDimensionalDoorDisableCheck(activeSettings, activeManager);
+        }
+    }
+
+    private void scheduleDimensionalDoorDisableCheck(
+        WormholesSettings expectedSettings,
+        DimensionalDoorManager expectedManager
+    ) {
+        boolean scheduled = FoliaScheduler.runGlobal(this, () -> {
+            if (settings != expectedSettings
+                || expectedSettings.getMain().dimensionalDoorsEnabled
+                || dimensionalDoorManager != expectedManager) {
+                dimensionalDoorDisablePending.set(false);
+                return;
+            }
+            if (hasDimensionalDoorDrainWork(expectedManager)) {
+                scheduleDimensionalDoorDisableCheck(expectedSettings, expectedManager);
+                return;
+            }
+            dimensionalDoorDisablePending.set(false);
+            finishDimensionalDoorDisable(expectedManager);
+        }, 20L);
+        if (!scheduled) {
+            dimensionalDoorDisablePending.set(false);
+            getLogger().warning("Could not schedule the Dimensional Doors disable drain check.");
+        }
+    }
+
+    private boolean hasDimensionalDoorDrainWork(DimensionalDoorManager manager) {
+        World pocketWorld = activePocketWorld();
+        return manager.hasActiveTransits()
+            || (pocketWorld != null && !pocketWorld.getPlayers().isEmpty());
+    }
+
+    private void notifyPocketOccupantsOfDisable() {
+        World pocketWorld = activePocketWorld();
+        if (pocketWorld == null) {
+            return;
+        }
+        for (Player player : pocketWorld.getPlayers()) {
+            FoliaScheduler.runEntity(this, player, () -> player.sendMessage(
+                tag + "Dimensional Doors are being disabled. Leave through the pocket return door now."));
+        }
+    }
+
+    private World activePocketWorld() {
+        PocketWorldService activeService = pocketWorldService;
+        return activeService == null
+            ? Bukkit.getWorld(PocketWorldService.WORLD_KEY)
+            : activeService.world().orElseGet(() -> Bukkit.getWorld(PocketWorldService.WORLD_KEY));
+    }
+
+    private void finishDimensionalDoorDisable(DimensionalDoorManager expectedManager) {
+        if (dimensionalDoorManager != expectedManager) {
+            return;
+        }
+        shutdownDimensionalDoorsBeforeSchedulers();
+        shutdownPocketWorldService();
+        getLogger().info("Dimensional Doors disabled; placed doors now behave as ordinary physical doors.");
     }
 
     private void shutdownEffectsBeforeSchedulers() {
@@ -292,19 +467,48 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     }
 
     public ResetResult resetEverythingNow() throws IOException {
+        Path dataFolder = getDataFolder().toPath();
+        DimensionalDoorManager resetManager = dimensionalDoorManager;
+        boolean resumeEntries = resetManager != null && resetManager.beginDrain();
+        World pocketWorld = activePocketWorld();
+        if ((pocketWorld != null && !pocketWorld.getPlayers().isEmpty())
+            || (resetManager != null && resetManager.hasActiveTransits())) {
+            if (resumeEntries) {
+                resetManager.resumeEntries();
+            }
+            throw new IOException("Cannot reset Wormholes while players are inside or transiting a pocket dimension");
+        }
+        long retiredPocketSlots = resetManager == null
+            ? loadRetiredPocketSlots(dataFolder)
+            : resetManager.state().snapshot().nextPocketSlot();
+        dimensionalDoorDisablePending.set(false);
+        shutdownDimensionalDoorsBeforeSchedulers();
         stopHotloadManager();
         int deletedPortals = deleteAllPortalsNow();
         resetNetworkRuntime();
         CHAT_INPUTS.clear();
-        Path dataFolder = getDataFolder().toPath();
         deletePathTree(dataFolder.resolve("config"));
         deletePathTree(dataFolder.resolve("identity"));
         deletePathTree(dataFolder.resolve("routes"));
         deletePathTree(dataFolder.resolve("trust"));
         deletePathTree(dataFolder.resolve("portals"));
+        deletePathTree(dataFolder.resolve("doors"));
+        DimensionalDoorRepository.under(dataFolder).save(new DoorStoreSnapshot(
+            DoorStoreSnapshot.CURRENT_SCHEMA,
+            retiredPocketSlots,
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of()
+        ));
         WormholesSettings defaults = WormholesSettings.loadAll(dataFolder);
         settings = defaults;
         Settings.refresh(defaults);
+        if (defaults.getMain().dimensionalDoorsEnabled) {
+            startDimensionalDoorsOrThrow();
+        } else {
+            shutdownPocketWorldService();
+        }
         rebuildNetworkRuntime(defaults);
         WormholesCommandService activeService = commandService;
         if (activeService != null) {
@@ -313,6 +517,19 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         hotloadManager = new HotloadManager(getDataFolder().toPath(), getLogger(), this::onConfigHotReload);
         hotloadManager.start();
         return new ResetResult(deletedPortals);
+    }
+
+    private long loadRetiredPocketSlots(Path dataFolder) throws IOException {
+        DimensionalDoorRepository repository = DimensionalDoorRepository.under(dataFolder);
+        try {
+            return repository.load().nextPocketSlot();
+        } catch (IOException parseFailure) {
+            long recovered = repository.recoverNextPocketSlot();
+            getLogger().log(Level.WARNING,
+                "Recovered the retired pocket slot from malformed Dimensional Doors state during reset.",
+                parseFailure);
+            return recovered;
+        }
     }
 
     private void onConfigHotReload(WormholesSettings reloaded) {
@@ -332,6 +549,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         if (settings != reloaded) {
             return;
         }
+        applyDimensionalDoorSetting(reloaded);
         ProjectionManager activeProjection = projectionManager;
         if (activeProjection != null) {
             try {
@@ -504,6 +722,14 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         return projectionManager;
     }
 
+    public PocketWorldService getPocketWorldService() {
+        return pocketWorldService;
+    }
+
+    public DimensionalDoorManager getDimensionalDoorManager() {
+        return dimensionalDoorManager;
+    }
+
     public NetworkManager getNetworkManager() {
         return networkManager;
     }
@@ -626,9 +852,10 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
 
         if (commandService != null) {
             try {
-                commandService.invalidateCache();
+                commandService.close();
+                commandService = null;
             } catch (Throwable ex) {
-                getLogger().log(Level.WARNING, "Error invalidating command service cache", ex);
+                getLogger().log(Level.WARNING, "Error closing command service", ex);
             }
         }
 

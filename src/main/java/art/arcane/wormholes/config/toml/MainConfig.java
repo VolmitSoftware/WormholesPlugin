@@ -15,6 +15,9 @@ public class MainConfig {
     @ConfigDescription("Replace vanilla Nether and End portals with auto-linking Wormholes portals.")
     public boolean replaceNetherAndEndPortals = true;
 
+    @ConfigDescription("Enable the complete Dimensional Doors survival feature set.")
+    public boolean dimensionalDoorsEnabled = true;
+
     @ConfigAdvanced
     public double portalConstructSpeed = 0.975;
     @ConfigAdvanced

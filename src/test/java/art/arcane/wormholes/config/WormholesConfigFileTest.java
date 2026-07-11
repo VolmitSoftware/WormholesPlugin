@@ -29,11 +29,13 @@ class WormholesConfigFileTest {
         Path file = tempDir.resolve("config").resolve(WormholesSettings.CONFIG_FILE_NAME);
 
         assertEquals(VisualQualityProfile.AUTO, settings.getVisualQualityProfile());
+        assertTrue(settings.getMain().dimensionalDoorsEnabled);
         assertEquals(List.of(
             "schema = 2",
             "quality = \"auto\"",
             "[main]",
             "replace-nether-and-end-portals = true",
+            "dimensional-doors-enabled = true",
             "[network]",
             "enabled = false",
             "listen-port = 8901"
@@ -68,6 +70,24 @@ class WormholesConfigFileTest {
         assertFalse(result.value().main.enableParticles);
         assertEquals(72.0D, result.value().projection.range);
         assertFalse(result.value().render.entitySpoofing);
+    }
+
+    @Test
+    void dimensionalDoorToggleRoundTripsAndRefreshesLiveSettings() throws IOException {
+        Path config = tempDir.resolve("config").resolve(WormholesSettings.CONFIG_FILE_NAME);
+        Files.createDirectories(config.getParent());
+        Files.writeString(config, "schema = 2\n[main]\ndimensional-doors-enabled = false\n", StandardCharsets.UTF_8);
+
+        WormholesSettings disabled = WormholesSettings.loadAll(tempDir);
+        Settings.refresh(disabled);
+        assertFalse(disabled.getMain().dimensionalDoorsEnabled);
+        assertFalse(Settings.DIMENSIONAL_DOORS_ENABLED);
+
+        Files.writeString(config, "schema = 2\n[main]\ndimensional-doors-enabled = true\n", StandardCharsets.UTF_8);
+        WormholesSettings enabled = WormholesSettings.loadAll(tempDir);
+        Settings.refresh(enabled);
+        assertTrue(enabled.getMain().dimensionalDoorsEnabled);
+        assertTrue(Settings.DIMENSIONAL_DOORS_ENABLED);
     }
 
     @Test

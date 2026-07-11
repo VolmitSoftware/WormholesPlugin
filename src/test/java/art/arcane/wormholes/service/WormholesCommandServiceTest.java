@@ -1,8 +1,11 @@
 package art.arcane.wormholes.service;
 
 import art.arcane.volmlib.util.director.compat.DirectorEngineFactory;
+import art.arcane.volmlib.util.director.exceptions.DirectorParsingException;
+import art.arcane.volmlib.util.director.runtime.DirectorInvocation;
 import art.arcane.volmlib.util.director.runtime.DirectorRuntimeEngine;
 import art.arcane.volmlib.util.director.runtime.DirectorRuntimeNode;
+import art.arcane.volmlib.util.director.runtime.DirectorSender;
 import art.arcane.wormholes.commands.CommandWormholes;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
@@ -16,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WormholesCommandServiceTest {
@@ -34,6 +38,7 @@ class WormholesCommandServiceTest {
 
         assertEquals(List.of("wh", "wormhole"), List.copyOf(root.getDescriptor().getAliases()));
         assertNotNull(findChild(root, "wand"));
+        assertNotNull(findChild(root, "door"));
         assertNotNull(findChild(root, "reload"));
         assertNotNull(findChild(root, "info"));
         assertNotNull(findChild(root, "debug"));
@@ -45,6 +50,29 @@ class WormholesCommandServiceTest {
         assertNotNull(findChild(root, "admin"));
         assertNull(findChild(root, "rune"));
         assertNull(findChild(root, "reset"));
+    }
+
+    @Test
+    void dimensionalDoorTypeCompletionOffersCanonicalValues() {
+        DirectorRuntimeEngine engine = DirectorEngineFactory.create(new CommandWormholes(null));
+        DirectorSender sender = directorSender();
+
+        assertEquals(
+            List.of("type=iron", "type=pair", "type=personal"),
+            engine.tabComplete(new DirectorInvocation(sender, "wormholes", List.of("door", "type=")))
+        );
+        assertEquals(
+            List.of("type=pair", "type=personal"),
+            engine.tabComplete(new DirectorInvocation(sender, "wormholes", List.of("door", "type=p")))
+        );
+        assertEquals(
+            List.of("type="),
+            engine.tabComplete(new DirectorInvocation(sender, "wormholes", List.of("door", "type=unknown")))
+        );
+        assertThrows(
+            DirectorParsingException.class,
+            () -> new CommandWormholes.DoorTypeHandler().parse(" ", false)
+        );
     }
 
 	@Test
@@ -124,6 +152,24 @@ class WormholesCommandServiceTest {
 				return null;
 			});
 	}
+
+    private static DirectorSender directorSender() {
+        return new DirectorSender() {
+            @Override
+            public String getName() {
+                return "tester";
+            }
+
+            @Override
+            public boolean isPlayer() {
+                return false;
+            }
+
+            @Override
+            public void sendMessage(String message) {
+            }
+        };
+    }
 
     private DirectorRuntimeNode findChild(DirectorRuntimeNode root, String name) {
         for (DirectorRuntimeNode child : root.getChildren()) {

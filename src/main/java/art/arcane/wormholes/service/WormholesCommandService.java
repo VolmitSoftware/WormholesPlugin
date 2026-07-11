@@ -17,6 +17,9 @@ import art.arcane.volmlib.util.director.theme.DirectorThemes;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.commands.CommandWormholes;
 import art.arcane.wormholes.util.common.cache.AtomicCache;
+import io.papermc.paper.command.brigadier.BasicCommand;
+import io.papermc.paper.command.brigadier.CommandSourceStack;
+import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
@@ -32,6 +35,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -54,18 +58,35 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
     }
 
     public void register() {
-        PluginCommand command = plugin.getCommand(ROOT_COMMAND);
-        if (command == null) {
-            plugin.getLogger().warning("Failed to find command '" + ROOT_COMMAND + "'");
+        getDirector();
+        PluginCommand command = null;
+        try {
+            command = plugin.getCommand(ROOT_COMMAND);
+        } catch (UnsupportedOperationException ignored) {
+            // Paper plugins register commands through LifecycleEvents.COMMANDS.
+        }
+        if (command != null) {
+            command.setExecutor(this);
+            command.setTabCompleter(this);
             return;
         }
-        command.setExecutor(this);
-        command.setTabCompleter(this);
-        getDirector();
+
+        plugin.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event ->
+            event.registrar().register(
+                ROOT_COMMAND,
+                "Wormholes base command.",
+                List.of("wh", "wormhole"),
+                new PaperCommand()
+            )
+        );
     }
 
     public void invalidateCache() {
         directorCache.invalidate();
+    }
+
+    public void close() {
+        invalidateCache();
     }
 
     @Override
@@ -73,6 +94,10 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
         if (!command.getName().equalsIgnoreCase(ROOT_COMMAND)) {
             return false;
         }
+        return executeCommand(sender, label, args);
+    }
+
+    private boolean executeCommand(CommandSender sender, String label, String[] args) {
         if (!sender.hasPermission(ROOT_PERMISSION)) {
             if (sendPublicCommandIfRequested(sender, args)) {
                 playInfoChime(sender);
@@ -105,10 +130,31 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
         if (!command.getName().equalsIgnoreCase(ROOT_COMMAND)) {
             return List.of();
         }
+        return tabComplete(sender, alias, args);
+    }
+
+    private List<String> tabComplete(CommandSender sender, String alias, String[] args) {
         if (!sender.hasPermission(ROOT_PERMISSION)) {
             return publicTabCompletions(args);
         }
         return runDirectorTab(sender, alias, args);
+    }
+
+    private final class PaperCommand implements BasicCommand {
+        @Override
+        public void execute(CommandSourceStack source, String[] args) {
+            executeCommand(source.getSender(), ROOT_COMMAND, args);
+        }
+
+        @Override
+        public Collection<String> suggest(CommandSourceStack source, String[] args) {
+            return tabComplete(source.getSender(), ROOT_COMMAND, args);
+        }
+
+        @Override
+        public boolean canUse(CommandSender sender) {
+            return true;
+        }
     }
 
 	private boolean sendPublicCommandIfRequested(CommandSender sender, String[] args) {

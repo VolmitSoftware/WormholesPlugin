@@ -1,19 +1,27 @@
 package art.arcane.wormholes.commands;
 
-import art.arcane.wormholes.Settings;
-import art.arcane.wormholes.Wormholes;
-import art.arcane.wormholes.service.StatsSnapshotWriter;
+import art.arcane.volmlib.util.collection.KList;
+import art.arcane.volmlib.util.director.DirectorParameterHandler;
 import art.arcane.volmlib.util.director.annotations.Director;
 import art.arcane.volmlib.util.director.annotations.Param;
+import art.arcane.volmlib.util.director.exceptions.DirectorParsingException;
+import art.arcane.wormholes.Settings;
+import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.door.DimensionalDoorManager;
+import art.arcane.wormholes.service.StatsSnapshotWriter;
 import org.bukkit.ChatColor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Locale;
 
 @Director(name = "wormholes", aliases = {"wh", "wormhole"}, description = "Wormholes command root")
 public class CommandWormholes {
+    private static final List<String> DOOR_TYPE_COMPLETIONS = List.of("pair", "personal", "iron");
+
     private final Wormholes plugin;
     private CommandAdmin admin = new CommandAdmin();
     private CommandNetwork network = new CommandNetwork();
@@ -59,6 +67,39 @@ public class CommandWormholes {
         player.sendMessage(Wormholes.tag + ChatColor.GREEN + "Portal Wand and 1 Wormhole Rune granted.");
         player.sendMessage(Wormholes.tag + ChatColor.GRAY + "Build TWO wormhole-rune shapes (any connected shape on one flat surface), link them, and stand within 16 blocks to see the projection.");
         player.sendMessage(Wormholes.tag + ChatColor.GRAY + "Run " + ChatColor.WHITE + "/wormholes info" + ChatColor.GRAY + " for the full step-by-step.");
+    }
+
+    @Director(name = "door", sync = true, description = "Give a survival Dimensional Door item")
+    public void door(@Param(name = "sender", contextual = true) CommandSender sender,
+                     @Param(name = "type", description = "pair | personal | iron", defaultValue = "pair", customHandler = DoorTypeHandler.class) String type) {
+        if (!sender.hasPermission("wormholes.admin.items")) {
+            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
+            return;
+        }
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Only players can receive items.");
+            return;
+        }
+        DimensionalDoorManager manager = plugin.getDimensionalDoorManager();
+        if (!Settings.DIMENSIONAL_DOORS_ENABLED || manager == null) {
+            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Dimensional Doors are unavailable.");
+            return;
+        }
+
+        String normalized = type == null ? "pair" : type.toLowerCase(Locale.ROOT);
+        ItemStack item = switch (normalized) {
+            case "pair", "paired", "wormhole" -> manager.items().createPairKit();
+            case "personal" -> manager.items().createPersonalDoor();
+            case "iron" -> manager.items().createIronDoor();
+            default -> null;
+        };
+        if (item == null) {
+            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Unknown door type. Use pair, personal, or iron.");
+            return;
+        }
+        player.getInventory().addItem(item).values().forEach(overflow ->
+            player.getWorld().dropItemNaturally(player.getLocation(), overflow));
+        sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Granted a " + ChatColor.WHITE + normalized + ChatColor.GREEN + " dimensional door item.");
     }
 
     @Director(name = "reload", sync = true, description = "Reload Wormholes configuration")
@@ -122,6 +163,32 @@ public class CommandWormholes {
 		sender.sendMessage(ChatColor.GRAY + "   Choose " + ChatColor.WHITE + "Destination" + ChatColor.GRAY + " and select the other portal. Repeat from the other side.");
 		sender.sendMessage(ChatColor.GRAY + "   Orientation and access controls are grouped into their own simple menus.");
         sender.sendMessage(ChatColor.DARK_GRAY + "6. " + ChatColor.GRAY + "Stand within 16 blocks of either portal — the destination world will project through the frame and walking in teleports you.");
-		sender.sendMessage(ChatColor.GRAY + "Administrators can create supplies with " + ChatColor.WHITE + "/wormholes wand rune=<portal|wormhole|gateway> count=<n>");
+        sender.sendMessage(ChatColor.GRAY + "Administrators can create supplies with " + ChatColor.WHITE + "/wormholes wand rune=<portal|wormhole|gateway> count=<n>");
+		sender.sendMessage(ChatColor.GRAY + "Dimensional Doors are crafted with Wormhole Runes. Open a placed door and physically cross its threshold to travel; a closed door never activates.");
+    }
+
+    public static final class DoorTypeHandler implements DirectorParameterHandler<String> {
+        @Override
+        public KList<String> getPossibilities() {
+            return new KList<>(DOOR_TYPE_COMPLETIONS);
+        }
+
+        @Override
+        public String toString(String value) {
+            return value == null ? "" : value;
+        }
+
+        @Override
+        public String parse(String input, boolean force) throws DirectorParsingException {
+            if (input == null || input.trim().isEmpty()) {
+                throw new DirectorParsingException("Door type cannot be empty");
+            }
+            return input.trim();
+        }
+
+        @Override
+        public boolean supports(Class<?> type) {
+            return type == String.class;
+        }
     }
 }

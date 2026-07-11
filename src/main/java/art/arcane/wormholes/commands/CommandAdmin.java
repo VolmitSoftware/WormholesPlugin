@@ -2,6 +2,7 @@ package art.arcane.wormholes.commands;
 
 import art.arcane.volmlib.util.director.annotations.Director;
 import art.arcane.volmlib.util.director.annotations.Param;
+import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.Wormholes;
 import org.bukkit.ChatColor;
 import org.bukkit.command.CommandSender;
@@ -16,12 +17,16 @@ public class CommandAdmin {
             sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
             return;
         }
-        try {
-            int deleted = Wormholes.instance.deleteAllPortalsNow();
-            sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Deleted " + ChatColor.WHITE + deleted + ChatColor.GREEN + " portal" + (deleted == 1 ? "" : "s") + " and cleared local portal links.");
-        } catch (Throwable e) {
-            Wormholes.instance.getLogger().log(Level.SEVERE, "Failed to delete all Wormholes portals", e);
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Failed to delete all portals. Check console for the full stacktrace.");
+        if (!FoliaScheduler.runGlobal(Wormholes.instance, () -> {
+            try {
+                int deleted = Wormholes.instance.deleteAllPortalsNow();
+                sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Deleted " + ChatColor.WHITE + deleted + ChatColor.GREEN + " portal" + (deleted == 1 ? "" : "s") + " and cleared local portal links.");
+            } catch (Throwable e) {
+                Wormholes.instance.getLogger().log(Level.SEVERE, "Failed to delete all Wormholes portals", e);
+                sender.sendMessage(Wormholes.tag + ChatColor.RED + "Failed to delete all portals. Check console for the full stacktrace.");
+            }
+        })) {
+            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Could not schedule the portal reset.");
         }
     }
 
@@ -31,12 +36,16 @@ public class CommandAdmin {
             sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
             return;
         }
-        try {
-            Wormholes.ResetResult result = Wormholes.instance.resetEverythingNow();
-            sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Wormholes reset to default state. Deleted " + ChatColor.WHITE + result.deletedPortals() + ChatColor.GREEN + " portal" + (result.deletedPortals() == 1 ? "" : "s") + ", closed network connections, and regenerated default config files.");
-        } catch (Throwable e) {
-            Wormholes.instance.getLogger().log(Level.SEVERE, "Failed to reset Wormholes", e);
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Failed to reset Wormholes. Check console for the full stacktrace.");
+        if (!FoliaScheduler.runGlobal(Wormholes.instance, () -> {
+            try {
+                Wormholes.ResetResult result = Wormholes.instance.resetEverythingNow();
+                sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Wormholes reset to default state. Deleted " + ChatColor.WHITE + result.deletedPortals() + ChatColor.GREEN + " portal" + (result.deletedPortals() == 1 ? "" : "s") + ", closed network connections, and regenerated default config files.");
+            } catch (Throwable e) {
+                Wormholes.instance.getLogger().log(Level.SEVERE, "Failed to reset Wormholes", e);
+                sender.sendMessage(Wormholes.tag + ChatColor.RED + "Failed to reset Wormholes. Check console for the full stacktrace.");
+            }
+        })) {
+            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Could not schedule the Wormholes reset.");
         }
     }
 }
