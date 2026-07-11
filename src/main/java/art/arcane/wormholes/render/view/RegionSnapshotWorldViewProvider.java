@@ -1,6 +1,7 @@
 package art.arcane.wormholes.render.view;
 
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
+import art.arcane.wormholes.EffectManager;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.network.view.EntityVisual;
 import art.arcane.wormholes.network.view.PacketBlobs;
@@ -134,7 +135,7 @@ public final class RegionSnapshotWorldViewProvider implements ProjectionWorldVie
         List<CapturedEntity> captured = new ArrayList<CapturedEntity>(limit);
         for (int i = 0; i < source.length && captured.size() < limit; i++) {
             Entity entity = source[i];
-            if (entity == null || entity.isDead() || !entity.isValid()) {
+            if (entity == null || entity.isDead() || !entity.isValid() || EffectManager.isPortalEffectEntity(entity)) {
                 continue;
             }
             captured.add(captureEntity(view, entity, chunkKey));

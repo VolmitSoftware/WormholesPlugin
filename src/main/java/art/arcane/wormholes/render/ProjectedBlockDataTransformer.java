@@ -20,12 +20,20 @@ public final class ProjectedBlockDataTransformer {
     }
 
     public static BlockData transform(BlockData source, PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {
+        return transform(source, DirectionMapping.between(fromFrame, toFrame, scratch3));
+    }
+
+    public static BlockData mirror(BlockData source, PortalFrame frame, int quarterTurns, double[] scratch3) {
+        return transform(source, DirectionMapping.mirror(frame, quarterTurns, scratch3));
+    }
+
+    private static BlockData transform(BlockData source, DirectionMapping mapping) {
         BlockData copy = source.clone();
-        transformDirectional(copy, fromFrame, toFrame, scratch3);
-        transformRotatable(copy, fromFrame, toFrame, scratch3);
-        transformOrientable(copy, fromFrame, toFrame, scratch3);
-        transformMultipleFacing(copy, fromFrame, toFrame, scratch3);
-        transformRail(copy, fromFrame, toFrame, scratch3);
+        transformDirectional(copy, mapping);
+        transformRotatable(copy, mapping);
+        transformOrientable(copy, mapping);
+        transformMultipleFacing(copy, mapping);
+        transformRail(copy, mapping);
         return copy;
     }
 
@@ -37,7 +45,7 @@ public final class ProjectedBlockDataTransformer {
             || source instanceof Rail;
     }
 
-    private static void transformDirectional(BlockData data, PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {
+    private static void transformDirectional(BlockData data, DirectionMapping mapping) {
         if (!(data instanceof Directional)) {
             return;
         }
@@ -46,7 +54,7 @@ public final class ProjectedBlockDataTransformer {
         if (source == null) {
             return;
         }
-        Direction target = rotate(source, fromFrame, toFrame, scratch3);
+        Direction target = mapping.map(source);
         BlockFace targetFace = toBlockFace(target);
         Set<BlockFace> faces = directional.getFaces();
         if (targetFace != null && faces.contains(targetFace)) {
@@ -54,7 +62,7 @@ public final class ProjectedBlockDataTransformer {
         }
     }
 
-    private static void transformRotatable(BlockData data, PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {
+    private static void transformRotatable(BlockData data, DirectionMapping mapping) {
         if (!(data instanceof Rotatable)) {
             return;
         }
@@ -63,7 +71,7 @@ public final class ProjectedBlockDataTransformer {
         if (source == null) {
             return;
         }
-        Direction target = rotate(source, fromFrame, toFrame, scratch3);
+        Direction target = mapping.map(source);
         BlockFace targetFace = toBlockFace(target);
         if (targetFace == null || targetFace == BlockFace.UP || targetFace == BlockFace.DOWN) {
             return;
@@ -71,20 +79,20 @@ public final class ProjectedBlockDataTransformer {
         rotatable.setRotation(targetFace);
     }
 
-    private static void transformOrientable(BlockData data, PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {
+    private static void transformOrientable(BlockData data, DirectionMapping mapping) {
         if (!(data instanceof Orientable)) {
             return;
         }
         Orientable orientable = (Orientable) data;
         Direction source = directionForAxis(orientable.getAxis());
-        Direction target = rotate(source, fromFrame, toFrame, scratch3);
+        Direction target = mapping.map(source);
         Axis axis = axisForDirection(target);
         if (orientable.getAxes().contains(axis)) {
             orientable.setAxis(axis);
         }
     }
 
-    private static void transformMultipleFacing(BlockData data, PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {
+    private static void transformMultipleFacing(BlockData data, DirectionMapping mapping) {
         if (!(data instanceof MultipleFacing)) {
             return;
         }
@@ -98,7 +106,7 @@ public final class ProjectedBlockDataTransformer {
             if (source == null) {
                 continue;
             }
-            Direction target = rotate(source, fromFrame, toFrame, scratch3);
+            Direction target = mapping.map(source);
             BlockFace targetFace = toBlockFace(target);
             if (targetFace != null && multiple.getAllowedFaces().contains(targetFace)) {
                 multiple.setFace(targetFace, true);
@@ -106,46 +114,46 @@ public final class ProjectedBlockDataTransformer {
         }
     }
 
-    private static void transformRail(BlockData data, PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {
+    private static void transformRail(BlockData data, DirectionMapping mapping) {
         if (!(data instanceof Rail)) {
             return;
         }
         Rail rail = (Rail) data;
-        Rail.Shape transformed = rotateRailShape(rail.getShape(), fromFrame, toFrame, scratch3);
+        Rail.Shape transformed = rotateRailShape(rail.getShape(), mapping);
         if (transformed != null && rail.getShapes().contains(transformed)) {
             rail.setShape(transformed);
         }
     }
 
-    private static Rail.Shape rotateRailShape(Rail.Shape shape, PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {
+    private static Rail.Shape rotateRailShape(Rail.Shape shape, DirectionMapping mapping) {
         switch(shape) {
             case NORTH_SOUTH:
-                return straightRailShape(rotateHorizontal(Direction.N, fromFrame, toFrame, scratch3));
+                return straightRailShape(rotateHorizontal(Direction.N, mapping));
             case EAST_WEST:
-                return straightRailShape(rotateHorizontal(Direction.E, fromFrame, toFrame, scratch3));
+                return straightRailShape(rotateHorizontal(Direction.E, mapping));
             case ASCENDING_NORTH:
-                return ascendingRailShape(rotateHorizontal(Direction.N, fromFrame, toFrame, scratch3), shape);
+                return ascendingRailShape(rotateHorizontal(Direction.N, mapping), shape);
             case ASCENDING_SOUTH:
-                return ascendingRailShape(rotateHorizontal(Direction.S, fromFrame, toFrame, scratch3), shape);
+                return ascendingRailShape(rotateHorizontal(Direction.S, mapping), shape);
             case ASCENDING_EAST:
-                return ascendingRailShape(rotateHorizontal(Direction.E, fromFrame, toFrame, scratch3), shape);
+                return ascendingRailShape(rotateHorizontal(Direction.E, mapping), shape);
             case ASCENDING_WEST:
-                return ascendingRailShape(rotateHorizontal(Direction.W, fromFrame, toFrame, scratch3), shape);
+                return ascendingRailShape(rotateHorizontal(Direction.W, mapping), shape);
             case SOUTH_EAST:
-                return curvedRailShape(rotateHorizontal(Direction.S, fromFrame, toFrame, scratch3), rotateHorizontal(Direction.E, fromFrame, toFrame, scratch3));
+                return curvedRailShape(rotateHorizontal(Direction.S, mapping), rotateHorizontal(Direction.E, mapping));
             case SOUTH_WEST:
-                return curvedRailShape(rotateHorizontal(Direction.S, fromFrame, toFrame, scratch3), rotateHorizontal(Direction.W, fromFrame, toFrame, scratch3));
+                return curvedRailShape(rotateHorizontal(Direction.S, mapping), rotateHorizontal(Direction.W, mapping));
             case NORTH_WEST:
-                return curvedRailShape(rotateHorizontal(Direction.N, fromFrame, toFrame, scratch3), rotateHorizontal(Direction.W, fromFrame, toFrame, scratch3));
+                return curvedRailShape(rotateHorizontal(Direction.N, mapping), rotateHorizontal(Direction.W, mapping));
             case NORTH_EAST:
-                return curvedRailShape(rotateHorizontal(Direction.N, fromFrame, toFrame, scratch3), rotateHorizontal(Direction.E, fromFrame, toFrame, scratch3));
+                return curvedRailShape(rotateHorizontal(Direction.N, mapping), rotateHorizontal(Direction.E, mapping));
             default:
                 return null;
         }
     }
 
-    private static BlockFace rotateHorizontal(Direction source, PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {
-        BlockFace face = toBlockFace(rotate(source, fromFrame, toFrame, scratch3));
+    private static BlockFace rotateHorizontal(Direction source, DirectionMapping mapping) {
+        BlockFace face = toBlockFace(mapping.map(source));
         if (face == BlockFace.NORTH || face == BlockFace.SOUTH || face == BlockFace.EAST || face == BlockFace.WEST) {
             return face;
         }
@@ -203,8 +211,40 @@ public final class ProjectedBlockDataTransformer {
         return null;
     }
 
-    private static Direction rotate(Direction source, PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {
-        return fromFrame.transformDirection(source, toFrame, scratch3);
+    static Direction mirrorDirection(Direction source, PortalFrame frame, int quarterTurns, double[] scratch3) {
+        PortalCoordMap.mirrorSourceToDisplayVectorInto(source.x(), source.y(), source.z(), frame, quarterTurns, scratch3);
+        return Direction.closest(scratch3[0], scratch3[1], scratch3[2]);
+    }
+
+    private static final class DirectionMapping {
+        private final PortalFrame fromFrame;
+        private final PortalFrame toFrame;
+        private final PortalFrame mirrorFrame;
+        private final int quarterTurns;
+        private final double[] scratch3;
+
+        private DirectionMapping(PortalFrame fromFrame, PortalFrame toFrame, PortalFrame mirrorFrame, int quarterTurns, double[] scratch3) {
+            this.fromFrame = fromFrame;
+            this.toFrame = toFrame;
+            this.mirrorFrame = mirrorFrame;
+            this.quarterTurns = quarterTurns;
+            this.scratch3 = scratch3;
+        }
+
+        private static DirectionMapping between(PortalFrame fromFrame, PortalFrame toFrame, double[] scratch3) {
+            return new DirectionMapping(fromFrame, toFrame, null, 0, scratch3);
+        }
+
+        private static DirectionMapping mirror(PortalFrame frame, int quarterTurns, double[] scratch3) {
+            return new DirectionMapping(null, null, frame, quarterTurns, scratch3);
+        }
+
+        private Direction map(Direction source) {
+            if(mirrorFrame != null) {
+                return mirrorDirection(source, mirrorFrame, quarterTurns, scratch3);
+            }
+            return fromFrame.transformDirection(source, toFrame, scratch3);
+        }
     }
 
     private static Direction directionForAxis(Axis axis) {

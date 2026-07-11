@@ -374,6 +374,9 @@ public final class RemoteViewCache {
         }
         for (EntityVisual incoming : entities) {
             EntityVisual lastKnown = view.lastEntityState.get(incoming.id());
+            if (!canApplyEntityUpdate(incoming, lastKnown)) {
+                continue;
+            }
             EntityVisual full = EntityDeltaCodec.applyDelta(incoming, lastKnown);
             view.lastEntityState.put(incoming.id(), full);
             if (full.isPlayer() && full.playerName() != null && !full.playerName().isEmpty()) {
@@ -420,6 +423,11 @@ public final class RemoteViewCache {
         }
         view.entities = List.copyOf(view.lastEntityState.values());
         view.lastUpdateMillis = System.currentTimeMillis();
+    }
+
+    static boolean canApplyEntityUpdate(EntityVisual incoming, EntityVisual lastKnown) {
+        return incoming.isFull()
+            || (lastKnown != null && incoming.sequence() == ((lastKnown.sequence() + 1) & 0xFFFF));
     }
 
     public void clear() {

@@ -138,7 +138,8 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             getServer().getPluginManager().registerEvents(traversableManager, this);
             getServer().getPluginManager().registerEvents(projectionManager, this);
             getServer().getPluginManager().registerEvents(new art.arcane.wormholes.render.ProjectionChangeListener(projectionChangeTracker), this);
-            getServer().getPluginManager().registerEvents(new VanillaPortalReplacer(), this);
+            VanillaPortalReplacer vanillaPortalReplacer = new VanillaPortalReplacer();
+            getServer().getPluginManager().registerEvents(vanillaPortalReplacer, this);
             getServer().getPluginManager().registerEvents(new ChatInputListener(), this);
 
             remotePortalRegistry = new RemotePortalRegistry();
@@ -178,6 +179,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
                     activeWarmer.sweep();
                 }
             }, 40);
+            J.sr(vanillaPortalReplacer::validateDimensionalFrames, 40);
 
             commandService = new WormholesCommandService(this);
             commandService.register();
@@ -205,6 +207,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     public void onDisable() {
         unregisterIntegrationService();
         shutdownProjectionBeforeSchedulers();
+        shutdownEffectsBeforeSchedulers();
         if (schedulerRuntime != null) {
             schedulerRuntime.cancelPluginTasks();
         }
@@ -217,6 +220,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         getLogger().info("BileTools pre-unload hook fired (" + reason + "). Tearing down Wormholes managers and PacketEvents.");
         unregisterIntegrationService();
         shutdownProjectionBeforeSchedulers();
+        shutdownEffectsBeforeSchedulers();
         if (schedulerRuntime != null) {
             schedulerRuntime.cancelPluginTasks();
         }
@@ -228,6 +232,13 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         ProjectionManager activeProjection = projectionManager;
         if (activeProjection != null) {
             activeProjection.shutdown();
+        }
+    }
+
+    private void shutdownEffectsBeforeSchedulers() {
+        EffectManager activeEffects = effectManager;
+        if (activeEffects != null) {
+            activeEffects.shutdown();
         }
     }
 

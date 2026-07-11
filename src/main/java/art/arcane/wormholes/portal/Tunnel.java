@@ -59,7 +59,8 @@ public abstract class Tunnel implements ITunnel
 		return o;
 	}
 
-	protected UUID getDestinationId()
+	@Override
+	public UUID getDestinationId()
 	{
 		return portal == null ? pendingDestinationId : portal.getId();
 	}

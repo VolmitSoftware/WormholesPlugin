@@ -1,30 +1,38 @@
 package art.arcane.wormholes;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
 import org.bukkit.Bukkit;
+import org.bukkit.Chunk;
 import org.bukkit.Color;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Particle;
 import org.bukkit.Sound;
+import org.bukkit.SoundCategory;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.Display;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.server.PluginDisableEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.Transformation;
 import org.joml.Quaternionf;
@@ -39,6 +47,7 @@ import art.arcane.wormholes.portal.ITunnel;
 import art.arcane.wormholes.portal.RemotePortal;
 import art.arcane.wormholes.portal.UniversalTunnel;
 import art.arcane.wormholes.network.view.RemoteViewCache;
+import art.arcane.wormholes.config.VisualQualityProfile;
 import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.volmlib.util.scheduling.AR;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
@@ -51,11 +60,16 @@ public class EffectManager implements Listener
 {
 	private static final int LOOKING_SCAN_INTERVAL_TICKS = 3;
 	private static final int SYNC_SWEEP_INTERVAL_TICKS = 15;
+	private static final String EFFECT_ENTITY_TAG = "wormholes_fx";
 	private final Map<UUID, Boolean> portalSyncActive = new ConcurrentHashMap<>();
+	private final Set<UUID> temporaryDisplays = ConcurrentHashMap.newKeySet();
+	private final Object displayLifecycleLock = new Object();
+	private volatile boolean closing;
 
 	public EffectManager()
 	{
 		Wormholes.v("Starting Effect Manager");
+		cleanupOrphanedDisplays();
 
 		new AR(LOOKING_SCAN_INTERVAL_TICKS)
 		{
@@ -86,6 +100,120 @@ public class EffectManager implements Listener
 				sweepRemoteSync();
 			}
 		};
+	}
+
+	public void shutdown()
+	{
+		Set<UUID> displays;
+		synchronized(displayLifecycleLock)
+		{
+			if(closing)
+			{
+				return;
+			}
+			closing = true;
+			displays = new HashSet<UUID>(temporaryDisplays);
+		}
+		portalSyncActive.clear();
+		boolean folia = FoliaScheduler.isFoliaThreading(Bukkit.getServer());
+		CountDownLatch removals = new CountDownLatch(displays.size());
+		for(UUID displayId : displays)
+		{
+			Entity entity = Bukkit.getEntity(displayId);
+			if(entity == null)
+			{
+				temporaryDisplays.remove(displayId);
+				removals.countDown();
+				continue;
+			}
+			if(!folia || FoliaScheduler.isOwnedByCurrentRegion(entity))
+			{
+				removeTemporaryDisplay(entity);
+				removals.countDown();
+				continue;
+			}
+			boolean scheduled = entity.getScheduler().execute(Wormholes.instance, () ->
+			{
+				removeTemporaryDisplay(entity);
+				removals.countDown();
+			}, removals::countDown, 1L);
+			if(!scheduled)
+			{
+				removals.countDown();
+			}
+		}
+		if(folia && removals.getCount() > 0)
+		{
+			try
+			{
+				removals.await(1L, TimeUnit.SECONDS);
+			}
+			catch(InterruptedException e)
+			{
+				Thread.currentThread().interrupt();
+			}
+		}
+	}
+
+	@EventHandler(priority = EventPriority.LOWEST)
+	public void onPluginDisable(PluginDisableEvent event)
+	{
+		if(event.getPlugin() == Wormholes.instance)
+		{
+			shutdown();
+		}
+	}
+
+	private void cleanupOrphanedDisplays()
+	{
+		for(World world : Bukkit.getWorlds())
+		{
+			for(Chunk chunk : world.getLoadedChunks())
+			{
+				FoliaScheduler.runRegion(Wormholes.instance, world, chunk.getX(), chunk.getZ(), () ->
+				{
+					for(Entity entity : chunk.getEntities())
+					{
+						if(isPortalEffectEntity(entity))
+						{
+							entity.remove();
+						}
+					}
+				});
+			}
+		}
+	}
+
+	public static boolean isPortalEffectEntity(Entity entity)
+	{
+		return entity instanceof Display && entity.getScoreboardTags().contains(EFFECT_ENTITY_TAG);
+	}
+
+	private void trackTemporaryDisplay(Display display)
+	{
+		synchronized(displayLifecycleLock)
+		{
+			if(closing)
+			{
+				display.remove();
+				return;
+			}
+			display.addScoreboardTag(EFFECT_ENTITY_TAG);
+			temporaryDisplays.add(display.getUniqueId());
+		}
+	}
+
+	private void removeTemporaryDisplay(Entity display)
+	{
+		if(display == null)
+		{
+			return;
+		}
+		temporaryDisplays.remove(display.getUniqueId());
+		if(display.isValid())
+		{
+			display.remove();
+		}
 	}
 
 	private void sweepRemoteSync()
@@ -158,12 +286,12 @@ public class EffectManager implements Listener
 		}
 		if(Settings.ENABLE_PARTICLES)
 		{
-			world.spawnParticle(Particle.PORTAL, center, 8, 0.6, 0.8, 0.6, 0.25);
-			world.spawnParticle(Particle.REVERSE_PORTAL, center, 2, 0.3, 0.5, 0.3, 0.02);
+			world.spawnParticle(Particle.PORTAL, center, 4, 0.45, 0.65, 0.45, 0.18);
+			world.spawnParticle(Particle.REVERSE_PORTAL, center, 1, 0.2, 0.35, 0.2, 0.01);
 		}
 		if(justStarted)
 		{
-			world.playSound(center, Sound.BLOCK_BEACON_AMBIENT, 0.45f, 1.7f);
+			world.playSound(center, Sound.BLOCK_BEACON_AMBIENT, SoundCategory.BLOCKS, 0.3f, 1.7f);
 		}
 	}
 
@@ -176,10 +304,9 @@ public class EffectManager implements Listener
 		}
 		if(Settings.ENABLE_PARTICLES)
 		{
-			world.spawnParticle(Particle.REVERSE_PORTAL, center, 32, 0.5, 0.7, 0.5, 0.5);
+			world.spawnParticle(Particle.REVERSE_PORTAL, center, 12, 0.4, 0.6, 0.4, 0.4);
 		}
-		world.playSound(center, Sound.BLOCK_BEACON_ACTIVATE, 0.7f, 1.5f);
-		world.playSound(center, Sound.BLOCK_PORTAL_TRIGGER, 0.5f, 1.8f);
+		world.playSound(center, Sound.BLOCK_BEACON_ACTIVATE, SoundCategory.BLOCKS, 0.55f, 1.5f);
 	}
 
 	private void scanLookingPortalsFor(Player player, List<ILocalPortal> portals)
@@ -277,13 +404,12 @@ public class EffectManager implements Listener
 
 	public void playPortalBlockPlaced(Block block)
 	{
-		block.getWorld().playSound(block.getLocation().clone().add(0.5, 0.5, 0.5), MSound.FRAME_FILL.bukkitSound(), 1.2f, 1.1f + ((float) (Math.random() * 0.2)));
+		block.getWorld().playSound(block.getLocation().clone().add(0.5, 0.5, 0.5), MSound.FRAME_FILL.bukkitSound(), SoundCategory.BLOCKS, 0.65f, 1.1f + ((float) (Math.random() * 0.2)));
 	}
 
 	public void playPortalBlockDestroyed(Block block)
 	{
-		block.getWorld().playSound(block.getLocation().clone().add(0.5, 0.5, 0.5), MSound.EYE_DEATH.bukkitSound(), 0.7f, 1.46f + ((float) (Math.random() * 0.2)));
-		block.getWorld().playSound(block.getLocation().clone().add(0.5, 0.5, 0.5), MSound.GLASS.bukkitSound(), 0.7f, 1.55f + ((float) (Math.random() * 0.2)));
+		block.getWorld().playSound(block.getLocation().clone().add(0.5, 0.5, 0.5), MSound.GLASS.bukkitSound(), SoundCategory.BLOCKS, 0.5f, 1.55f + ((float) (Math.random() * 0.2)));
 	}
 
 	public void playPortalFailOpen(Set<Block> blocks)
@@ -303,9 +429,8 @@ public class EffectManager implements Listener
 		block.getWorld().playSound(block.getLocation().clone().add(0.5, 0.5, 0.5), MSound.GLASS.bukkitSound(), 1.2f, (float) (0.25 + ((float) (Math.random() * 0.95))));
 	}
 
-	private static final int FORMATION_DISPLAY_CAP = 24;
-	private static final int VORTEX_STEPS = 20;
-	private static final double VORTEX_TURNS = 1.5D;
+	private static final int VORTEX_KEYFRAME_TICKS = 7;
+	private static final double VORTEX_BEND_RADIANS = Math.toRadians(42.0D);
 
 	public record PortalBlockSnapshot(Location location, BlockData data)
 	{
@@ -314,32 +439,28 @@ public class EffectManager implements Listener
 	private static final class VortexBlock
 	{
 		private final BlockDisplay display;
-		private final double cornerX;
-		private final double cornerY;
-		private final double cornerZ;
 		private final double angle0;
 		private final double radius0;
+		private final double normalOffset0;
 
-		private VortexBlock(BlockDisplay display, double cornerX, double cornerY, double cornerZ, double angle0, double radius0)
+		private VortexBlock(BlockDisplay display, double angle0, double radius0, double normalOffset0)
 		{
 			this.display = display;
-			this.cornerX = cornerX;
-			this.cornerY = cornerY;
-			this.cornerZ = cornerZ;
 			this.angle0 = angle0;
 			this.radius0 = radius0;
+			this.normalOffset0 = normalOffset0;
 		}
 	}
 
 	public void playPortalVortex(World world, Location center, List<PortalBlockSnapshot> snapshots)
 	{
-		if(world == null || center == null || snapshots == null || snapshots.isEmpty())
+		if(closing || world == null || center == null || snapshots == null || snapshots.isEmpty())
 		{
 			return;
 		}
 		if(!Settings.ENABLE_PARTICLES)
 		{
-			world.playSound(center, Sound.BLOCK_BEACON_POWER_SELECT, 1.0f, 0.5f);
+			world.playSound(center, Sound.BLOCK_RESPAWN_ANCHOR_CHARGE, SoundCategory.BLOCKS, 0.55f, 0.55f);
 			return;
 		}
 
@@ -369,98 +490,198 @@ public class EffectManager implements Listener
 		final int planeB = normalAxis == 2 ? 1 : 2;
 		final double[] c = new double[] { center.getX(), center.getY(), center.getZ() };
 
-		List<VortexBlock> vortex = new ArrayList<VortexBlock>();
-		int spawned = 0;
-		for(PortalBlockSnapshot snapshot : snapshots)
+		int displayCap = formationDisplayCap(Settings.VISUAL_QUALITY_PROFILE);
+		List<PortalBlockSnapshot> selected = selectFormationSnapshots(snapshots, center, planeA, planeB, displayCap);
+		List<VortexBlock> vortex = new ArrayList<VortexBlock>(selected.size());
+		for(PortalBlockSnapshot snapshot : selected)
 		{
-			if(spawned >= FORMATION_DISPLAY_CAP)
-			{
-				break;
-			}
 			Location loc = snapshot.location();
 			double cornerX = Math.floor(loc.getX());
 			double cornerY = Math.floor(loc.getY());
 			double cornerZ = Math.floor(loc.getZ());
-			Location corner = new Location(world, cornerX, cornerY, cornerZ);
+			double blockCenterX = cornerX + 0.5D;
+			double blockCenterY = cornerY + 0.5D;
+			double blockCenterZ = cornerZ + 0.5D;
 			BlockData data = snapshot.data();
-			BlockDisplay display = world.spawn(corner, BlockDisplay.class, e ->
+			Transformation initial = formationTransformation(center.getX(), center.getY(), center.getZ(), blockCenterX, blockCenterY, blockCenterZ, 1.0f, new Quaternionf());
+			BlockDisplay display = world.spawn(center, BlockDisplay.class, e ->
 			{
 				e.setBlock(data);
 				e.setBrightness(new Display.Brightness(15, 15));
 				e.setPersistent(false);
 				e.setViewRange(2.5f);
+				e.setTransformation(initial);
 			});
-			double[] blockCenter = new double[] { cornerX + 0.5D, cornerY + 0.5D, cornerZ + 0.5D };
+			trackTemporaryDisplay(display);
+			double[] blockCenter = new double[] { blockCenterX, blockCenterY, blockCenterZ };
 			double a0 = blockCenter[planeA] - c[planeA];
 			double b0 = blockCenter[planeB] - c[planeB];
-			vortex.add(new VortexBlock(display, cornerX, cornerY, cornerZ, Math.atan2(b0, a0), Math.hypot(a0, b0)));
-			spawned++;
+			double normalOffset = blockCenter[normalAxis] - c[normalAxis];
+			vortex.add(new VortexBlock(display, Math.atan2(b0, a0), Math.hypot(a0, b0), normalOffset));
 		}
 
-		world.spawnParticle(Particle.PORTAL, center, 80, 1.0, 1.2, 1.0, 0.8);
-		world.playSound(center, Sound.BLOCK_BEACON_POWER_SELECT, 1.6f, 0.5f);
-		world.playSound(center, Sound.BLOCK_PORTAL_TRIGGER, 0.8f, 1.4f);
-
-		int[] tick = new int[] { 0 };
-		Runnable[] holder = new Runnable[1];
-		holder[0] = () ->
+		world.spawnParticle(Particle.PORTAL, center, 12, 0.65, 0.8, 0.65, 0.35);
+		world.playSound(center, Sound.BLOCK_RESPAWN_ANCHOR_CHARGE, SoundCategory.BLOCKS, 0.55f, 0.55f);
+		applyVortexKeyframe(vortex, center, c, normalAxis, planeA, planeB, 0.68D, 0.72f, VORTEX_BEND_RADIANS * 0.28D, VORTEX_KEYFRAME_TICKS);
+		boolean middleScheduled = FoliaScheduler.runRegion(Wormholes.instance, center,
+				() -> applyVortexKeyframeUnlessClosing(vortex, center, c, normalAxis, planeA, planeB, 0.24D, 0.3f, VORTEX_BEND_RADIANS * 0.72D, VORTEX_KEYFRAME_TICKS), VORTEX_KEYFRAME_TICKS);
+		boolean collapseScheduled = FoliaScheduler.runRegion(Wormholes.instance, center,
+				() -> applyVortexKeyframeUnlessClosing(vortex, center, c, normalAxis, planeA, planeB, 0.0D, 0.025f, VORTEX_BEND_RADIANS, VORTEX_KEYFRAME_TICKS), VORTEX_KEYFRAME_TICKS * 2L);
+		boolean cleanupScheduled = FoliaScheduler.runRegion(Wormholes.instance, center, () ->
 		{
-			int t = tick[0]++;
-			if(t > VORTEX_STEPS)
+			removeVortex(vortex);
+			if(!closing)
 			{
-				for(VortexBlock vb : vortex)
-				{
-					if(vb.display.isValid())
-					{
-						vb.display.remove();
-					}
-				}
-				world.spawnParticle(Particle.REVERSE_PORTAL, center, 60, 0.1, 0.2, 0.1, 0.6);
-				return;
+				world.spawnParticle(Particle.REVERSE_PORTAL, center, 16, 0.08, 0.12, 0.08, 0.45);
+				world.spawnParticle(Particle.SCULK_SOUL, center, 4, 0.12, 0.18, 0.12, 0.02);
 			}
+		}, VORTEX_KEYFRAME_TICKS * 3L);
+		if(!middleScheduled || !collapseScheduled || !cleanupScheduled)
+		{
+			removeVortex(vortex);
+		}
+	}
 
-			double frac = (double) t / (double) VORTEX_STEPS;
-			double spin = frac * VORTEX_TURNS * Math.PI * 2.0D;
-			double radiusFactor = Math.pow(1.0D - frac, 1.4D);
-			float scale = (float) Math.max(0.04D, 1.0D - frac);
-			double half = 0.5D * scale;
-			for(VortexBlock vb : vortex)
-			{
-				if(!vb.display.isValid())
-				{
-					continue;
-				}
-				double angle = vb.angle0 + spin;
-				double r = vb.radius0 * radiusFactor;
-				double[] worldPos = new double[] { c[0], c[1], c[2] };
-				worldPos[planeA] = c[planeA] + (r * Math.cos(angle));
-				worldPos[planeB] = c[planeB] + (r * Math.sin(angle));
-				float tiltAngle = (float) (0.35D * Math.sin((spin * 2.0D) + vb.angle0));
-				Quaternionf tilt = axisRotation(normalAxis, tiltAngle);
-				Vector3f pivot = tilt.transform(new Vector3f((float) half, (float) half, (float) half));
-				Vector3f translation = new Vector3f((float) (worldPos[0] - vb.cornerX) - pivot.x, (float) (worldPos[1] - vb.cornerY) - pivot.y, (float) (worldPos[2] - vb.cornerZ) - pivot.z);
-				Transformation target = new Transformation(translation, tilt, new Vector3f(scale, scale, scale), new Quaternionf());
-				vb.display.setInterpolationDelay(0);
-				vb.display.setInterpolationDuration(2);
-				vb.display.setTransformation(target);
-			}
+	private void removeVortex(List<VortexBlock> vortex)
+	{
+		for(VortexBlock block : vortex)
+		{
+			removeTemporaryDisplay(block.display);
+		}
+	}
 
-			if((t & 1) == 0)
-			{
-				world.spawnParticle(Particle.PORTAL, center, 10, 0.5, 0.6, 0.5, 0.6);
-			}
-			FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
+	static int formationDisplayCap(VisualQualityProfile profile)
+	{
+		return switch(profile)
+		{
+			case PERFORMANCE -> 6;
+			case BALANCED -> 10;
+			case AUTO -> 12;
+			case CINEMATIC -> 16;
 		};
-		FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
+	}
+
+	private static List<PortalBlockSnapshot> selectFormationSnapshots(List<PortalBlockSnapshot> snapshots, Location center, int planeA, int planeB, int cap)
+	{
+		if(snapshots.size() <= cap)
+		{
+			return List.copyOf(snapshots);
+		}
+		PortalBlockSnapshot[] sectors = new PortalBlockSnapshot[cap];
+		double[] sectorRadius = new double[cap];
+		Arrays.fill(sectorRadius, -1.0D);
+		for(PortalBlockSnapshot snapshot : snapshots)
+		{
+			double offsetA = coordinate(snapshot.location(), planeA) + 0.5D - coordinate(center, planeA);
+			double offsetB = coordinate(snapshot.location(), planeB) + 0.5D - coordinate(center, planeB);
+			double normalizedAngle = (Math.atan2(offsetB, offsetA) + Math.PI) / (Math.PI * 2.0D);
+			int sector = Math.min(cap - 1, Math.max(0, (int) Math.floor(normalizedAngle * cap)));
+			double radius = (offsetA * offsetA) + (offsetB * offsetB);
+			if(radius > sectorRadius[sector])
+			{
+				sectorRadius[sector] = radius;
+				sectors[sector] = snapshot;
+			}
+		}
+		List<PortalBlockSnapshot> selected = new ArrayList<PortalBlockSnapshot>(cap);
+		for(PortalBlockSnapshot snapshot : sectors)
+		{
+			if(snapshot != null)
+			{
+				selected.add(snapshot);
+			}
+		}
+		for(PortalBlockSnapshot candidate : snapshots)
+		{
+			if(selected.size() >= cap)
+			{
+				break;
+			}
+			if(!selected.contains(candidate))
+			{
+				selected.add(candidate);
+			}
+		}
+		return selected;
+	}
+
+	private void applyVortexKeyframe(List<VortexBlock> vortex, Location anchor, double[] center, int normalAxis, int planeA, int planeB,
+			double radiusFactor, float scale, double bend, int duration)
+	{
+		for(VortexBlock block : vortex)
+		{
+			if(!block.display.isValid())
+			{
+				continue;
+			}
+			double angle = block.angle0 + bend;
+			double radius = block.radius0 * radiusFactor;
+			double[] target = new double[] { center[0], center[1], center[2] };
+			target[normalAxis] += block.normalOffset0 * radiusFactor;
+			target[planeA] += radius * Math.cos(angle);
+			target[planeB] += radius * Math.sin(angle);
+			Quaternionf rotation = axisRotation(normalAxis, (float) bend);
+			block.display.setInterpolationDelay(0);
+			block.display.setInterpolationDuration(duration);
+			block.display.setTransformation(formationTransformation(anchor.getX(), anchor.getY(), anchor.getZ(), target[0], target[1], target[2], scale, rotation));
+		}
+	}
+
+	private void applyVortexKeyframeUnlessClosing(List<VortexBlock> vortex, Location anchor, double[] center, int normalAxis, int planeA, int planeB,
+			double radiusFactor, float scale, double bend, int duration)
+	{
+		if(!closing)
+		{
+			applyVortexKeyframe(vortex, anchor, center, normalAxis, planeA, planeB, radiusFactor, scale, bend, duration);
+		}
+	}
+
+	private static Transformation formationTransformation(double anchorX, double anchorY, double anchorZ, double targetX, double targetY, double targetZ, float scale, Quaternionf rotation)
+	{
+		float half = 0.5f * scale;
+		Vector3f pivot = rotation.transform(new Vector3f(half, half, half));
+		Vector3f translation = new Vector3f((float) (targetX - anchorX) - pivot.x, (float) (targetY - anchorY) - pivot.y, (float) (targetZ - anchorZ) - pivot.z);
+		return new Transformation(translation, rotation, new Vector3f(scale, scale, scale), new Quaternionf());
+	}
+
+	private static double coordinate(Location location, int axis)
+	{
+		return switch(axis)
+		{
+			case 0 -> location.getX();
+			case 1 -> location.getY();
+			default -> location.getZ();
+		};
 	}
 
 
-	private static final int CLOSE_CRACK_TICKS = 9;
-	private static final int CLOSE_CRACK_BRANCHES = 6;
+	private static final int CLOSE_CRACK_TICKS = 7;
+
+	static CloseEffectPlan closeEffectPlan(VisualQualityProfile profile)
+	{
+		return switch(profile)
+		{
+			case PERFORMANCE -> new CloseEffectPlan(3, 1, 6);
+			case BALANCED -> new CloseEffectPlan(4, 2, 8);
+			case AUTO -> new CloseEffectPlan(4, 2, 10);
+			case CINEMATIC -> new CloseEffectPlan(5, 3, 12);
+		};
+	}
+
+	static double ellipseRadius(double halfA, double halfB, double angle)
+	{
+		double cos = Math.cos(angle);
+		double sin = Math.sin(angle);
+		return 1.0D / Math.sqrt((cos * cos) / (halfA * halfA) + (sin * sin) / (halfB * halfB));
+	}
+
+	record CloseEffectPlan(int branches, int segments, int shards)
+	{
+	}
 
 	public void playPortalClose(World world, Location corner, double sx, double sy, double sz, BooleanSupplier active)
 	{
-		if(world == null || corner == null || active == null || !active.getAsBoolean())
+		if(closing || world == null || corner == null || active == null || !active.getAsBoolean())
 		{
 			return;
 		}
@@ -471,38 +692,37 @@ public class EffectManager implements Listener
 		final int planeB = normalAxis == 2 ? 1 : 2;
 		final double[] cc = new double[] { corner.getX() + (sx / 2.0D), corner.getY() + (sy / 2.0D), corner.getZ() + (sz / 2.0D) };
 		Location center = new Location(world, cc[0], cc[1], cc[2]);
-		final double maxR = Math.max(0.6D, Math.max(ext[planeA], ext[planeB]) / 2.0D);
-		world.playSound(center, MSound.ECHEST_CLOSE.bukkitSound(), 1.2f, 0.55f);
+		final double halfA = Math.max(0.3D, ext[planeA] / 2.0D);
+		final double halfB = Math.max(0.3D, ext[planeB] / 2.0D);
+		CloseEffectPlan effectPlan = closeEffectPlan(Settings.VISUAL_QUALITY_PROFILE);
+		world.playSound(center, Sound.BLOCK_AMETHYST_BLOCK_HIT, SoundCategory.BLOCKS, 0.35f, 0.65f);
 		if(!Settings.ENABLE_PARTICLES)
 		{
 			return;
 		}
 
-		float thickness = 0.2f;
-		float[] scale = new float[3];
-		scale[normalAxis] = thickness;
-		scale[planeA] = (float) Math.max(0.25D, ext[planeA]);
-		scale[planeB] = (float) Math.max(0.25D, ext[planeB]);
-		float[] tr = new float[3];
-		tr[normalAxis] = 0.5f - (thickness / 2f);
-		tr[planeA] = (float) ((ext[planeA] / 2.0D) - (scale[planeA] / 2.0D));
-		tr[planeB] = (float) ((ext[planeB] / 2.0D) - (scale[planeB] / 2.0D));
+		float thickness = 0.16f;
+		float paneA = (float) Math.max(0.25D, ext[planeA]);
+		float paneB = (float) Math.max(0.25D, ext[planeB]);
 		BlockData glass = Material.TINTED_GLASS.createBlockData();
-		BlockDisplay pane = world.spawn(corner, BlockDisplay.class, e ->
+		BlockDisplay pane = world.spawn(center, BlockDisplay.class, e ->
 		{
 			e.setBlock(glass);
 			e.setBrightness(new Display.Brightness(10, 15));
 			e.setPersistent(false);
 			e.setViewRange(2.5f);
-			e.setTransformation(new Transformation(new Vector3f(tr[0], tr[1], tr[2]), new Quaternionf(), new Vector3f(scale[0], scale[1], scale[2]), new Quaternionf()));
+			e.setTransformation(centeredPaneTransform(normalAxis, planeA, planeB, thickness, paneA, paneB));
 		});
+		trackTemporaryDisplay(pane);
 
-		double[] crackAngle = new double[CLOSE_CRACK_BRANCHES];
-		double[] crackLen = new double[CLOSE_CRACK_BRANCHES];
-		for(int i = 0; i < CLOSE_CRACK_BRANCHES; i++)
+		double[] crackAngle = new double[effectPlan.branches()];
+		double[] crackReach = new double[effectPlan.branches()];
+		double[] crackBend = new double[effectPlan.branches()];
+		for(int i = 0; i < effectPlan.branches(); i++)
 		{
-			crackAngle[i] = Math.random() * Math.PI * 2.0D;
-			crackLen[i] = maxR * (0.6D + (Math.random() * 0.4D));
+			crackAngle[i] = ((Math.PI * 2.0D * i) / effectPlan.branches()) + ((Math.random() - 0.5D) * 0.45D);
+			crackReach[i] = 0.6D + (Math.random() * 0.4D);
+			crackBend[i] = (Math.random() - 0.5D) * 0.7D;
 		}
 
 		Particle.DustOptions crackDust = new Particle.DustOptions(Color.fromRGB(235, 245, 255), 0.7f);
@@ -512,78 +732,99 @@ public class EffectManager implements Listener
 		Runnable[] holder = new Runnable[1];
 		holder[0] = () ->
 		{
-			if(!active.getAsBoolean())
+			if(closing || !active.getAsBoolean())
 			{
-				if(pane.isValid())
-				{
-					pane.remove();
-				}
+				removeTemporaryDisplay(pane);
 				return;
 			}
 			int t = tick[0]++;
 			if(t >= CLOSE_CRACK_TICKS)
 			{
-				if(pane.isValid())
-				{
-					pane.remove();
-				}
-				for(int i = 0; i < 24; i++)
+				removeTemporaryDisplay(pane);
+				for(int i = 0; i < effectPlan.shards(); i++)
 				{
 					double a = Math.random() * Math.PI * 2.0D;
-					double rr = Math.random() * maxR;
+					double radialA = Math.cos(a);
+					double radialB = Math.sin(a);
+					double rr = ellipseRadius(halfA, halfB, a) * (0.2D + (Math.random() * 0.8D));
 					double[] p = new double[] { cc[0], cc[1], cc[2] };
-					p[planeA] = cc[planeA] + (rr * Math.cos(a));
-					p[planeB] = cc[planeB] + (rr * Math.sin(a));
-					world.spawnParticle(Particle.BLOCK, new Location(world, p[0], p[1], p[2]), 1, 0.05, 0.05, 0.05, 0.0, shardData);
+					p[planeA] = cc[planeA] + (rr * radialA);
+					p[planeB] = cc[planeB] + (rr * radialB);
+					double[] velocity = outwardShardVelocity(normalAxis, planeA, planeB, radialA, radialB, (i & 1) == 0 ? 1.0D : -1.0D);
+					world.spawnParticle(Particle.BLOCK, new Location(world, p[0], p[1], p[2]), 0, velocity[0], velocity[1], velocity[2], 0.35D, shardData);
 				}
-				world.spawnParticle(Particle.REVERSE_PORTAL, center, 36, 0.2, 0.3, 0.2, 0.65);
-				world.spawnParticle(Particle.SCULK_SOUL, center, 10, 0.25, 0.35, 0.25, 0.03);
-				world.spawnParticle(Particle.FLASH, center, 1, 0.0, 0.0, 0.0, 0.0, Color.fromRGB(220, 235, 255));
-				world.playSound(center, Sound.BLOCK_GLASS_BREAK, 1.8f, 0.8f);
-				world.playSound(center, Sound.ENTITY_ITEM_BREAK, 1.2f, 0.8f);
+				world.spawnParticle(Particle.REVERSE_PORTAL, center, Math.min(8, effectPlan.shards()), 0.15, 0.22, 0.15, 0.5);
+				world.spawnParticle(Particle.FLASH, center, 1, 0.0, 0.0, 0.0, 0.0);
+				world.playSound(center, Sound.BLOCK_GLASS_BREAK, SoundCategory.BLOCKS, 0.75f, 0.82f);
+				world.playSound(center, Sound.BLOCK_BEACON_DEACTIVATE, SoundCategory.BLOCKS, 0.4f, 0.55f);
 				return;
 			}
 
 			double frac = (double) (t + 1) / (double) CLOSE_CRACK_TICKS;
-			for(int i = 0; i < CLOSE_CRACK_BRANCHES; i++)
+			for(int i = 0; i < effectPlan.branches(); i++)
 			{
-				double len = crackLen[i] * frac;
-				for(int s = 1; s <= 4; s++)
+				for(int segment = 1; segment <= effectPlan.segments(); segment++)
 				{
-					double rr = len * ((double) s / 4.0D);
+					double segmentFraction = (double) segment / effectPlan.segments();
+					double angle = crackAngle[i] + (crackBend[i] * frac * frac * segmentFraction);
+					double len = ellipseRadius(halfA, halfB, angle) * crackReach[i] * frac * segmentFraction;
 					double[] p = new double[] { cc[0], cc[1], cc[2] };
-					p[planeA] = cc[planeA] + (rr * Math.cos(crackAngle[i]));
-					p[planeB] = cc[planeB] + (rr * Math.sin(crackAngle[i]));
+					p[planeA] = cc[planeA] + (len * Math.cos(angle));
+					p[planeB] = cc[planeB] + (len * Math.sin(angle));
 					world.spawnParticle(Particle.DUST, new Location(world, p[0], p[1], p[2]), 1, 0.0, 0.0, 0.0, 0.0, crackDust);
 				}
 			}
-			if(t == 0)
+			if(t == CLOSE_CRACK_TICKS - 2 && pane.isValid())
 			{
-				world.playSound(center, Sound.BLOCK_GLASS_BREAK, 0.6f, 1.6f);
+				boolean collapseA = planeA == 1 || planeB != 1;
+				float collapsedA = collapseA ? 0.06f : paneA;
+				float collapsedB = collapseA ? paneB : 0.06f;
+				pane.setInterpolationDelay(0);
+				pane.setInterpolationDuration(2);
+				pane.setTransformation(centeredPaneTransform(normalAxis, planeA, planeB, thickness, collapsedA, collapsedB));
 			}
-			if((t & 1) == 0)
+			if(!FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L))
 			{
-				world.playSound(center, Sound.BLOCK_AMETHYST_BLOCK_HIT, 0.5f, 0.7f);
+				removeTemporaryDisplay(pane);
 			}
-			FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
 		};
-		FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
+		if(!FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L))
+		{
+			removeTemporaryDisplay(pane);
+		}
+	}
+
+	private static Transformation centeredPaneTransform(int normalAxis, int planeA, int planeB, float thickness, float scaleA, float scaleB)
+	{
+		float[] scale = new float[3];
+		scale[normalAxis] = thickness;
+		scale[planeA] = scaleA;
+		scale[planeB] = scaleB;
+		return new Transformation(new Vector3f(-scale[0] / 2.0f, -scale[1] / 2.0f, -scale[2] / 2.0f), new Quaternionf(), new Vector3f(scale[0], scale[1], scale[2]), new Quaternionf());
+	}
+
+	static double[] outwardShardVelocity(int normalAxis, int planeA, int planeB, double radialA, double radialB, double normalDirection)
+	{
+		double[] velocity = new double[3];
+		velocity[normalAxis] = normalDirection * 0.65D;
+		velocity[planeA] = radialA;
+		velocity[planeB] = radialB;
+		return velocity;
 	}
 
 	public void playPortalOpen(World world, Location center, double sx, double sy, double sz, BooleanSupplier active)
 	{
-		if(world == null || center == null || active == null || !active.getAsBoolean())
+		if(closing || world == null || center == null || active == null || !active.getAsBoolean())
 		{
 			return;
 		}
-		world.playSound(center, MSound.FRAME_SPAWN.bukkitSound(), 1.4f, 0.35f);
 		playPortalOpenClimaxIfActive(world, center, sx, sy, sz, active);
-		final int afterglowTicks = 6;
+		final int afterglowTicks = 3;
 		int[] tick = new int[] { 0 };
 		Runnable[] holder = new Runnable[1];
 		holder[0] = () ->
 		{
-			if(!active.getAsBoolean())
+			if(closing || !active.getAsBoolean())
 			{
 				return;
 			}
@@ -594,9 +835,9 @@ public class EffectManager implements Listener
 			}
 			if(Settings.ENABLE_PARTICLES)
 			{
-				double spread = Math.max(0.15D, 0.9D - (((double) t / afterglowTicks) * 0.7D));
-				world.spawnParticle(Particle.REVERSE_PORTAL, center, 8, spread, spread, spread, 0.25);
-				world.spawnParticle(Particle.ENCHANT, center, 4, spread, spread, spread, 0.05);
+				double spread = Math.max(0.12D, 0.45D - (((double) t / afterglowTicks) * 0.25D));
+				world.spawnParticle(Particle.REVERSE_PORTAL, center, 3, spread, spread, spread, 0.18);
+				world.spawnParticle(Particle.ENCHANT, center, 1, spread, spread, spread, 0.03);
 			}
 			FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
 		};
@@ -610,30 +851,18 @@ public class EffectManager implements Listener
 
 	private void playPortalOpenClimaxIfActive(World world, Location center, double sx, double sy, double sz, BooleanSupplier active)
 	{
-		if(world == null || center == null || active == null || !active.getAsBoolean())
+		if(closing || world == null || center == null || active == null || !active.getAsBoolean())
 		{
 			return;
 		}
 		if(Settings.ENABLE_PARTICLES)
 		{
-			world.spawnParticle(Particle.FLASH, center, 1, 0.0, 0.0, 0.0, 0.0, Color.fromRGB(190, 130, 255));
-			world.spawnParticle(Particle.REVERSE_PORTAL, center, 48, 0.25, 0.45, 0.25, 0.75);
-			world.spawnParticle(Particle.END_ROD, center, 24, 0.15, 0.15, 0.15, 0.3);
-			for(int i = 0; i < 8; i++)
-			{
-				Location spark = center.clone().add((Math.random() - 0.5) * 2.0, (Math.random() - 0.5) * 2.0, (Math.random() - 0.5) * 2.0);
-				ParticleEffect.REDSTONE.display(new ParticleEffect.OrdinaryColor(150, 80, 255), spark, 32);
-			}
+			world.spawnParticle(Particle.FLASH, center, 1, 0.0, 0.0, 0.0, 0.0);
+			world.spawnParticle(Particle.REVERSE_PORTAL, center, 16, 0.18, 0.28, 0.18, 0.55);
+			world.spawnParticle(Particle.END_ROD, center, 6, 0.1, 0.1, 0.1, 0.18);
 		}
-		world.playSound(center, Sound.BLOCK_BEACON_ACTIVATE, 2.0f, 0.55f);
-		world.playSound(center, Sound.BLOCK_END_PORTAL_SPAWN, 1.8f, 0.85f);
-		FoliaScheduler.runRegion(Wormholes.instance, center, () ->
-		{
-			if(active.getAsBoolean())
-			{
-				world.playSound(center, Sound.ENTITY_WARDEN_SONIC_BOOM, 1.0f, 0.8f);
-			}
-		}, 6L);
+		world.playSound(center, Sound.BLOCK_END_PORTAL_SPAWN, SoundCategory.BLOCKS, 0.75f, 0.88f);
+		world.playSound(center, Sound.BLOCK_BEACON_ACTIVATE, SoundCategory.BLOCKS, 0.4f, 0.62f);
 		if(Settings.ENABLE_PARTICLES)
 		{
 			playPortalRipple(world, center, sx, sy, sz, active);
@@ -659,19 +888,14 @@ public class EffectManager implements Listener
 		double extB = planeB == 0 ? sx : (planeB == 1 ? sy : sz);
 		final double maxR = Math.max(1.0D, (Math.max(extA, extB) * 0.5D) + 0.75D);
 		final double[] cc = new double[] { center.getX(), center.getY(), center.getZ() };
-		final int ripTicks = 12;
-		final int maxPointsPerTick = switch(Settings.VISUAL_QUALITY_PROFILE)
-		{
-			case PERFORMANCE -> 16;
-			case BALANCED -> 24;
-			case AUTO -> 32;
-			case CINEMATIC -> 48;
-		};
+		final int ripTicks = 5;
+		final int points = openingRingPoints(Settings.VISUAL_QUALITY_PROFILE);
+		final Particle.DustTransition ringDust = new Particle.DustTransition(Color.fromRGB(185, 105, 255), Color.fromRGB(20, 5, 35), 0.85f);
 		final int[] rt = new int[] { 0 };
 		final Runnable[] holder = new Runnable[1];
 		holder[0] = () ->
 		{
-			if(!active.getAsBoolean())
+			if(closing || !active.getAsBoolean())
 			{
 				return;
 			}
@@ -681,152 +905,39 @@ public class EffectManager implements Listener
 				return;
 			}
 			double frac = (double) (t + 1) / (double) ripTicks;
-			double radius = maxR * frac;
-			int points = Math.min(maxPointsPerTick, Math.max(10, (int) (radius * 9.0D)));
-			double twist = frac * Math.PI * 1.25D;
+			double radius = 0.12D + (maxR * Math.pow(1.0D - frac, 1.35D));
+			double twist = frac * Math.PI * 0.85D;
 			for(int i = 0; i < points; i++)
 			{
 				double a = ((Math.PI * 2.0D * i) / points) + twist;
 				double[] p = new double[] { cc[0], cc[1], cc[2] };
 				p[planeA] = cc[planeA] + (radius * Math.cos(a));
 				p[planeB] = cc[planeB] + (radius * Math.sin(a));
-				world.spawnParticle(Particle.END_ROD, new Location(world, p[0], p[1], p[2]), 1, 0.0, 0.0, 0.0, 0.0);
+				world.spawnParticle(Particle.DUST_COLOR_TRANSITION, new Location(world, p[0], p[1], p[2]), 1, 0.0, 0.0, 0.0, 0.0, ringDust);
+			}
+			if(t == ripTicks - 1)
+			{
+				world.spawnParticle(Particle.SONIC_BOOM, center, 1, 0.0, 0.0, 0.0, 0.0);
 			}
 			FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
 		};
 		FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
 	}
 
-	private static final int DELETION_STATIC_TICKS = 6;
+	static int openingRingPoints(VisualQualityProfile profile)
+	{
+		return switch(profile)
+		{
+			case PERFORMANCE -> 6;
+			case BALANCED -> 8;
+			case AUTO -> 10;
+			case CINEMATIC -> 12;
+		};
+	}
 
 	public void playPortalDeletion(World world, Location corner, double sx, double sy, double sz)
 	{
-		if(world == null || corner == null)
-		{
-			return;
-		}
-
-		double[] ext = new double[] { Math.max(0.25D, sx), Math.max(0.25D, sy), Math.max(0.25D, sz) };
-		int normalAxis = 1;
-		double min = ext[1];
-		if(ext[0] <= min)
-		{
-			min = ext[0];
-			normalAxis = 0;
-		}
-		if(ext[2] < min)
-		{
-			normalAxis = 2;
-		}
-		final int fNormalAxis = normalAxis;
-		final int planeA = normalAxis == 0 ? 1 : 0;
-		final int planeB = normalAxis == 2 ? 1 : 2;
-		final int upAxis = planeA == 1 ? planeA : (planeB == 1 ? planeB : planeA);
-		final int horizAxis = upAxis == planeA ? planeB : planeA;
-		final float thickness = 0.2f;
-		BlockData panel = Material.TINTED_GLASS.createBlockData();
-		Location center = corner.clone().add(sx / 2.0D, sy / 2.0D, sz / 2.0D);
-
-		BlockDisplay display = world.spawn(corner, BlockDisplay.class, e ->
-		{
-			e.setBlock(panel);
-			e.setBrightness(new Display.Brightness(15, 15));
-			e.setPersistent(false);
-			e.setViewRange(2.5f);
-			e.setTransformation(crtTransform(fNormalAxis, upAxis, horizAxis, ext, thickness, (float) ext[upAxis], (float) ext[horizAxis]));
-		});
-		world.playSound(center, Sound.BLOCK_BEACON_DEACTIVATE, 2.0f, 1.2f);
-		double scanSpan = ext[horizAxis];
-
-		int[] staticTick = new int[] { 0 };
-		Runnable[] staticHolder = new Runnable[1];
-		staticHolder[0] = () ->
-		{
-			if(staticTick[0]++ >= DELETION_STATIC_TICKS)
-			{
-				return;
-			}
-			for(int i = 0; i < 5; i++)
-			{
-				Location p = corner.clone().add(Math.random() * sx, Math.random() * sy, Math.random() * sz);
-				world.spawnParticle(Particle.END_ROD, p, 1, 0.0, 0.0, 0.0, 0.0);
-			}
-			world.playSound(center, Sound.BLOCK_FIRE_EXTINGUISH, 0.5f, 2.0f);
-			FoliaScheduler.runRegion(Wormholes.instance, center, staticHolder[0], 1L);
-		};
-		FoliaScheduler.runRegion(Wormholes.instance, center, staticHolder[0], 1L);
-
-		FoliaScheduler.runRegion(Wormholes.instance, center, () ->
-		{
-			if(!display.isValid())
-			{
-				return;
-			}
-			display.setInterpolationDelay(0);
-			display.setInterpolationDuration(4);
-			display.setTransformation(crtTransform(fNormalAxis, upAxis, horizAxis, ext, thickness, 0.06f, (float) ext[horizAxis]));
-			world.playSound(center, Sound.BLOCK_BEACON_DEACTIVATE, 1.6f, 0.9f);
-		}, DELETION_STATIC_TICKS + 1L);
-
-		FoliaScheduler.runRegion(Wormholes.instance, center, () ->
-		{
-			for(int i = 0; i <= 8; i++)
-			{
-				double off = ((i / 8.0D) - 0.5D) * scanSpan;
-				double[] p = new double[] { center.getX(), center.getY(), center.getZ() };
-				p[horizAxis] += off;
-				world.spawnParticle(Particle.END_ROD, new Location(world, p[0], p[1], p[2]), 1, 0.0, 0.0, 0.0, 0.0);
-			}
-		}, DELETION_STATIC_TICKS + 5L);
-
-		long slamAt = DELETION_STATIC_TICKS + 6L;
-		FoliaScheduler.runRegion(Wormholes.instance, center, () ->
-		{
-			if(!display.isValid())
-			{
-				return;
-			}
-			display.setInterpolationDelay(0);
-			display.setInterpolationDuration(2);
-			display.setTransformation(crtTransform(fNormalAxis, upAxis, horizAxis, ext, thickness, 0.06f, 0.12f));
-			world.playSound(center, MSound.GLASS.bukkitSound(), 1.6f, 0.6f);
-			world.playSound(center, Sound.ENTITY_ENDERMAN_TELEPORT, 1.4f, 0.6f);
-			world.playSound(center, Sound.BLOCK_BEACON_DEACTIVATE, 2.0f, 0.4f);
-		}, slamAt);
-
-		FoliaScheduler.runRegion(Wormholes.instance, center, () ->
-		{
-			if(!display.isValid())
-			{
-				return;
-			}
-			display.setInterpolationDelay(0);
-			display.setInterpolationDuration(3);
-			display.setTransformation(crtTransform(fNormalAxis, upAxis, horizAxis, ext, thickness, 0.02f, 0.02f));
-		}, slamAt + 5L);
-
-		FoliaScheduler.runRegion(Wormholes.instance, center, () ->
-		{
-			if(display.isValid())
-			{
-				display.remove();
-			}
-			world.spawnParticle(Particle.FLASH, center, 1, 0.0, 0.0, 0.0, 0.0, Color.fromRGB(230, 230, 255));
-			world.spawnParticle(Particle.END_ROD, center, 10, 0.05, 0.05, 0.05, 0.3);
-		}, slamAt + 9L);
-	}
-
-	private static Transformation crtTransform(int normalAxis, int upAxis, int horizAxis, double[] ext, float thickness, float sUp, float sHoriz)
-	{
-		float[] scale = new float[3];
-		scale[normalAxis] = thickness;
-		scale[upAxis] = sUp;
-		scale[horizAxis] = sHoriz;
-		float[] tr = new float[3];
-		tr[normalAxis] = (float) ((ext[normalAxis] - thickness) / 2.0D);
-		tr[upAxis] = (float) ((ext[upAxis] - sUp) / 2.0D);
-		tr[horizAxis] = (float) ((ext[horizAxis] - sHoriz) / 2.0D);
-		return new Transformation(new Vector3f(tr[0], tr[1], tr[2]), new Quaternionf(), new Vector3f(scale[0], scale[1], scale[2]), new Quaternionf());
+		playPortalClose(world, corner, sx, sy, sz, () -> true);
 	}
 
 	private static Quaternionf axisRotation(int axis, float angle)

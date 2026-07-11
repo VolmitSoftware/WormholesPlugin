@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StatusBridgeCompressionTest {
@@ -39,7 +40,7 @@ class StatusBridgeCompressionTest {
 
         MinecraftStatusBridge.StatusPacket packet = MinecraftStatusBridge.create(
             "alpha", "beta", "26.2", "1.0.0", "10.0.0.5", 25565,
-            keyPair.getPublic().getEncoded(), keyPair.getPrivate(), messages);
+            keyPair.getPublic().getEncoded(), keyPair.getPrivate(), 77L, messages);
 
         byte[] plainUnsigned = unsignedBytes(packet);
         String encoded = packet.encode(encodeSide);
@@ -58,6 +59,8 @@ class StatusBridgeCompressionTest {
         assertEquals("1.0.0", decoded.pluginVersion());
         assertEquals("10.0.0.5", decoded.replyHost());
         assertEquals(25565, decoded.replyPort());
+        assertNotEquals(0L, decoded.nonce());
+        assertEquals(77L, decoded.ackNonce());
         assertArrayEquals(keyPair.getPublic().getEncoded(), decoded.publicKey());
 
         assertEquals(messages.size(), decoded.messages().size());
@@ -84,7 +87,7 @@ class StatusBridgeCompressionTest {
         }
         MinecraftStatusBridge.StatusPacket packet = MinecraftStatusBridge.create(
             "alpha", "beta", "26.2", "1.0.0", "10.0.0.5", 25565,
-            keyPair.getPublic().getEncoded(), keyPair.getPrivate(), messages);
+            keyPair.getPublic().getEncoded(), keyPair.getPrivate(), 77L, messages);
 
         byte[] unsigned = unsignedBytes(packet);
         byte[] actualTransport = transportBlob(packet.encode(compression));
@@ -114,7 +117,7 @@ class StatusBridgeCompressionTest {
 
         MinecraftStatusBridge.StatusPacket packet = MinecraftStatusBridge.create(
             "alpha", "beta", "26.2", "1.0.0", "10.0.0.5", 25565,
-            keyPair.getPublic().getEncoded(), keyPair.getPrivate(), fragments);
+            keyPair.getPublic().getEncoded(), keyPair.getPrivate(), 77L, fragments);
 
         String encoded = packet.encode(encodeSide);
         MinecraftStatusBridge.StatusPacket decoded = MinecraftStatusBridge.StatusPacket.decode(encoded, decodeSide);
@@ -148,7 +151,7 @@ class StatusBridgeCompressionTest {
 
         MinecraftStatusBridge.StatusPacket packet = MinecraftStatusBridge.create(
             "alpha", "beta", "26.2", "1.0.0", "10.0.0.5", 25565,
-            keyPair.getPublic().getEncoded(), keyPair.getPrivate(), messages);
+            keyPair.getPublic().getEncoded(), keyPair.getPrivate(), 77L, messages);
 
         String encoded = packet.encode(encodeSide);
         assertTrue(encoded.length() < MinecraftStatusBridge.MAX_ENCODED_CHARS, "a full 64-message packet must stay under the encoded cap, got " + encoded.length());

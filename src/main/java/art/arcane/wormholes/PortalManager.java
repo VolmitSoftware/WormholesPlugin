@@ -15,6 +15,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
+import java.util.stream.Stream;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -27,16 +29,17 @@ import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.world.WorldLoadEvent;
 
+import art.arcane.wormholes.portal.DimensionalTunnel;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.IPortal;
 import art.arcane.wormholes.portal.LocalPortal;
 import art.arcane.wormholes.portal.PortalStructure;
 import art.arcane.wormholes.portal.PortalType;
 import art.arcane.wormholes.portal.PortalUpdateGate;
-import art.arcane.volmlib.util.collection.KMap;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.network.view.ViewServer;
 import art.arcane.wormholes.util.AxisAlignedBB;
+import art.arcane.wormholes.util.Direction;
 import art.arcane.wormholes.util.J;
 import art.arcane.wormholes.util.JSONObject;
 import art.arcane.wormholes.util.VIO;
@@ -48,7 +51,7 @@ public class PortalManager implements Listener
 	private static final int ATTENDANCE_REFRESH_INTERVAL_TICKS = 5;
 	private static final double ATTENDANCE_BASE_RANGE = 64.0D;
 
-	private KMap<UUID, ILocalPortal> portals;
+	private final Map<UUID, ILocalPortal> portals;
 	private volatile List<ILocalPortal> portalSnapshot = List.of();
 	private final Map<UUID, PlayerPosition> playerPositions = new ConcurrentHashMap<UUID, PlayerPosition>();
 	private final List<File> pendingPortalFiles;
@@ -63,7 +66,7 @@ public class PortalManager implements Listener
 	public PortalManager()
 	{
 		Wormholes.v("Starting Portal Manager");
-		portals = new KMap<>();
+		portals = new ConcurrentHashMap<UUID, ILocalPortal>();
 		pendingPortalFiles = new ArrayList<File>();
 		foliaRuntime = FoliaScheduler.isFoliaThreading(Bukkit.getServer());
 		initialLoadComplete = false;
@@ -177,7 +180,7 @@ public class PortalManager implements Listener
 		Wormholes.v("Portal load complete: " + loaded + " loaded, " + skipped + " skipped (of " + found + " files), pending=" + pendingPortalFiles.size());
 	}
 
-	private PortalLoadResult loadPortal(File k)
+	private synchronized PortalLoadResult loadPortal(File k)
 	{
 		try
 		{
@@ -218,7 +221,7 @@ public class PortalManager implements Listener
 		}
 	}
 
-	private void queuePendingPortal(File file)
+	private synchronized void queuePendingPortal(File file)
 	{
 		if(pendingPortalFiles.contains(file))
 		{
@@ -228,7 +231,7 @@ public class PortalManager implements Listener
 		pendingPortalFiles.add(file);
 	}
 
-	private void loadPendingPortals()
+	private synchronized void loadPendingPortals()
 	{
 		if(pendingPortalFiles.isEmpty())
 		{
@@ -432,7 +435,7 @@ public class PortalManager implements Listener
 				Wormholes.portalSyncService.broadcastPortal(portal);
 			}
 
-			FoliaScheduler.runAsync(Wormholes.instance, () ->
+			boolean scheduled = FoliaScheduler.runAsync(Wormholes.instance, () ->
 			{
 				try
 				{
@@ -443,6 +446,17 @@ public class PortalManager implements Listener
 					e.printStackTrace();
 				}
 			});
+			if(!scheduled)
+			{
+				try
+				{
+					portal.saveNow();
+				}
+				catch(IOException e)
+				{
+					e.printStackTrace();
+				}
+			}
 		}
 	}
 
@@ -466,11 +480,10 @@ public class PortalManager implements Listener
 		return hasLocalPortal(portal.getId());
 	}
 
-	public void addLocalPortal(ILocalPortal portal)
+	public synchronized void addLocalPortal(ILocalPortal portal)
 	{
-		if(!hasLocalPortal(portal))
+		if(portals.putIfAbsent(portal.getId(), portal) == null)
 		{
-			portals.put(portal.getId(), portal);
 			refreshPortalSnapshot();
 			Wormholes.instance.registerListener(portal);
 
@@ -482,11 +495,12 @@ public class PortalManager implements Listener
 		}
 	}
 
-	public void removeLocalPortal(UUID portal)
+	public synchronized void removeLocalPortal(UUID portal)
 	{
-		if(portals.containsKey(portal))
+		ILocalPortal removed = portals.remove(portal);
+		if(removed != null)
 		{
-			Wormholes.instance.unregisterListener(portals.get(portal));
+			Wormholes.instance.unregisterListener(removed);
 
 			if(Wormholes.portalSyncService != null)
 			{
@@ -494,7 +508,6 @@ public class PortalManager implements Listener
 			}
 		}
 
-		portals.remove(portal);
 		refreshPortalSnapshot();
 		syncGatewayTickets();
 	}
@@ -576,7 +589,7 @@ public class PortalManager implements Listener
 			{
 				continue;
 			}
-			art.arcane.wormholes.util.Direction normal = portal.getFrame() == null ? null : portal.getFrame().getNormal();
+			Direction normal = portal.getFrame() == null ? null : portal.getFrame().getNormal();
 			double nx = normal == null ? 0.0D : normal.x();
 			double ny = normal == null ? 0.0D : normal.y();
 			double nz = normal == null ? 0.0D : normal.z();
@@ -607,6 +620,131 @@ public class PortalManager implements Listener
 	public File getSaveFile(UUID id)
 	{
 		return new File(new File(new File(new File(Wormholes.instance.getDataFolder(), "portals"), id.toString().split("-")[1]), id.toString().split("-")[0]), id.toString() + ".json");
+	}
+
+	public synchronized boolean deletePersistedPairedPortal(UUID portalId, UUID expectedCounterpartId)
+	{
+		if(portalId == null || expectedCounterpartId == null)
+		{
+			return false;
+		}
+		File file = getSaveFile(portalId);
+		ILocalPortal loaded = portals.get(portalId);
+		if(loaded != null)
+		{
+			if(expectedCounterpartId.equals(loaded.getDimensionalCounterpartId()))
+			{
+				loaded.destroy();
+				return true;
+			}
+			return false;
+		}
+		if(!file.isFile())
+		{
+			pendingPortalFiles.remove(file);
+			return false;
+		}
+		try
+		{
+			JSONObject json = new JSONObject(VIO.readAll(file));
+			boolean reciprocal = expectedCounterpartId.toString().equals(json.optString("dimensionalCounterpartId", ""));
+			if(!reciprocal && json.has("tunnel"))
+			{
+				JSONObject tunnel = json.getJSONObject("tunnel");
+				reciprocal = "DIMENSIONAL".equals(tunnel.optString("type", ""))
+						&& expectedCounterpartId.toString().equals(tunnel.optString("destination", ""));
+			}
+			if(!reciprocal)
+			{
+				return false;
+			}
+			pendingPortalFiles.remove(file);
+			Files.deleteIfExists(file.toPath());
+			deleteDirectoryIfEmpty(file.getParentFile());
+			deleteDirectoryIfEmpty(file.getParentFile().getParentFile());
+			return true;
+		}
+		catch(IOException | RuntimeException e)
+		{
+			Wormholes.instance.getLogger().log(Level.WARNING,
+					"Could not delete unloaded dimensional counterpart " + portalId + " paired with " + expectedCounterpartId, e);
+			return false;
+		}
+	}
+
+	public synchronized boolean clearPersistedPairedPortalReference(UUID portalId, UUID expectedCounterpartId)
+	{
+		if(portalId == null || expectedCounterpartId == null)
+		{
+			return false;
+		}
+		ILocalPortal loaded = portals.get(portalId);
+		if(loaded != null)
+		{
+			boolean reciprocal = expectedCounterpartId.equals(loaded.getDimensionalCounterpartId());
+			if(!reciprocal && loaded.getTunnel() instanceof DimensionalTunnel dimensionalTunnel)
+			{
+				reciprocal = expectedCounterpartId.equals(dimensionalTunnel.getDestinationId());
+			}
+			if(reciprocal)
+			{
+				loaded.unlink();
+				return true;
+			}
+			return false;
+		}
+		File file = getSaveFile(portalId);
+		if(!file.isFile())
+		{
+			return false;
+		}
+		try
+		{
+			JSONObject json = new JSONObject(VIO.readAll(file));
+			boolean changed = false;
+			if(expectedCounterpartId.toString().equals(json.optString("dimensionalCounterpartId", "")))
+			{
+				json.remove("dimensionalCounterpartId");
+				changed = true;
+			}
+			if(json.has("tunnel"))
+			{
+				JSONObject tunnel = json.getJSONObject("tunnel");
+				if("DIMENSIONAL".equals(tunnel.optString("type", ""))
+						&& expectedCounterpartId.toString().equals(tunnel.optString("destination", "")))
+				{
+					json.remove("tunnel");
+					changed = true;
+				}
+			}
+			if(!changed)
+			{
+				return false;
+			}
+			VIO.writeAll(file, json.toString(2));
+			return true;
+		}
+		catch(IOException | RuntimeException e)
+		{
+			Wormholes.instance.getLogger().log(Level.WARNING,
+					"Could not clear unloaded dimensional counterpart " + portalId + " paired with " + expectedCounterpartId, e);
+			return false;
+		}
+	}
+
+	private static void deleteDirectoryIfEmpty(File directory) throws IOException
+	{
+		if(directory == null || !directory.isDirectory())
+		{
+			return;
+		}
+		try(Stream<Path> entries = Files.list(directory.toPath()))
+		{
+			if(entries.findAny().isEmpty())
+			{
+				Files.deleteIfExists(directory.toPath());
+			}
+		}
 	}
 
 	public void shutDown()

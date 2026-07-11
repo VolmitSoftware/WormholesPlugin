@@ -227,6 +227,10 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
     }
 
     public boolean sendBulk(String peerName, UUID portalId, long chunkKey, byte[] payload, long contentHash) {
+        return sendBulk(peerName, portalId, chunkKey, payload, contentHash, -1L);
+    }
+
+    public boolean sendBulk(String peerName, UUID portalId, long chunkKey, byte[] payload, long contentHash, long expectedGeneration) {
         synchronized (peerGate(peerName)) {
             SubscriptionRef subscription = new SubscriptionRef(portalId, false);
             if (!hasSubscriptionLocked(peerName, subscription, chunkKey)) {
@@ -236,15 +240,22 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
             if (state == null) {
                 return false;
             }
+            if (expectedGeneration >= 0L && state.bulkGeneration() != expectedGeneration) {
+                return false;
+            }
+            if (state.isBulkSent()) {
+                return false;
+            }
             long sequence = state.nextBroadcastSeq();
             WireMessage.ChunkBulkBatch batch = new WireMessage.ChunkBulkBatch(List.of(new ChunkBulk(chunkKey, sequence, payload)));
             if (!network.send(peerName, batch)) {
-                invalidateForBulkResend(peerName, state);
                 return false;
             }
             state.markBulkSent();
             bulkSent.incrementAndGet();
-            cacheCanonicalHash(peerName, chunkKey, contentHash);
+            if (!state.hasPendingBlocks()) {
+                cacheCanonicalHash(peerName, chunkKey, contentHash);
+            }
             return true;
         }
     }
@@ -277,6 +288,11 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
         return cache.hash;
     }
 
+    public long bulkGeneration(String peerName, long chunkKey) {
+        ChunkReplicationState state = stateFor(peerName, chunkKey, false);
+        return state == null ? -1L : state.bulkGeneration();
+    }
+
     public void requestResync(String peerName, long chunkKey) {
         synchronized (peerGate(peerName)) {
             ChunkReplicationState state = stateFor(peerName, chunkKey, false);
@@ -288,6 +304,25 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
             Map<Long, CanonicalHashCache> hashMap = peerHashes.get(peerName);
             if (hashMap != null) {
                 hashMap.remove(chunkKey);
+            }
+        }
+    }
+
+    public void forceResync(World world, long chunkKey) {
+        ConcurrentHashMap<String, ChunkReplicationState> subscribers = subscribersFor(world, chunkKey);
+        if (subscribers == null || subscribers.isEmpty()) {
+            return;
+        }
+        for (ChunkReplicationState candidate : subscribers.values()) {
+            String peerName = candidate.peerName();
+            synchronized (peerGate(peerName)) {
+                ChunkReplicationState state = stateFor(peerName, chunkKey, false);
+                if (state != candidate) {
+                    continue;
+                }
+                invalidateForBulkResend(peerName, state);
+                resyncRequests.incrementAndGet();
+                notifyBulkRetry(peerName, chunkKey);
             }
         }
     }
@@ -305,21 +340,43 @@ public final class ChunkReplicationManager implements BlockChangeFeed {
         if (!hasBlocks && !hasLights && !hasEntities) {
             return;
         }
-        for (ChunkReplicationState state : subscribers.values()) {
-            if (hasBlocks) {
-                for (int i = 0; i < blocks.size(); i++) {
-                    state.appendBlock(blocks.get(i), capacity);
+        for (ChunkReplicationState candidate : subscribers.values()) {
+            String peerName = candidate.peerName();
+            synchronized (peerGate(peerName)) {
+                ChunkReplicationState state = stateFor(peerName, chunkKey, false);
+                if (state != candidate) {
+                    continue;
                 }
-                markHashDirty(state.peerName(), chunkKey);
-            }
-            if (hasLights) {
-                for (int i = 0; i < lights.size(); i++) {
-                    state.appendLight(lights.get(i), capacity);
+                boolean overflowed = false;
+                if (hasBlocks) {
+                    for (int i = 0; i < blocks.size(); i++) {
+                        if (!state.appendBlock(blocks.get(i), capacity)) {
+                            overflowed = true;
+                            break;
+                        }
+                    }
+                    markHashDirty(peerName, chunkKey);
                 }
-            }
-            if (hasEntities) {
-                for (int i = 0; i < entities.size(); i++) {
-                    state.appendBlockEntity(entities.get(i), capacity);
+                if (!overflowed && hasLights) {
+                    for (int i = 0; i < lights.size(); i++) {
+                        if (!state.appendLight(lights.get(i), capacity)) {
+                            overflowed = true;
+                            break;
+                        }
+                    }
+                }
+                if (!overflowed && hasEntities) {
+                    for (int i = 0; i < entities.size(); i++) {
+                        if (!state.appendBlockEntity(entities.get(i), capacity)) {
+                            overflowed = true;
+                            break;
+                        }
+                    }
+                }
+                if (overflowed) {
+                    invalidateForBulkResend(peerName, state);
+                    resyncRequests.incrementAndGet();
+                    notifyBulkRetry(peerName, chunkKey);
                 }
             }
         }

@@ -1,7 +1,11 @@
 package art.arcane.wormholes.network;
 
+import art.arcane.wormholes.network.view.EntityDeltaCodec;
+import art.arcane.wormholes.network.view.EntityVisual;
+
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
 
@@ -151,6 +155,79 @@ class SidebandOutboxTest {
     }
 
     @Test
+    void fullEntitySnapshotsAndEmptyRostersCannotBeSilentlyShed() {
+        WireMessage.ViewEntities full = new WireMessage.ViewEntities(
+            UUID.randomUUID(),
+            List.of(fullVisual(new UUID(0L, 1L))),
+            List.of(new UUID(0L, 1L))
+        );
+        WireMessage.ViewEntities empty = new WireMessage.ViewEntities(UUID.randomUUID(), List.of(), List.of());
+        WireMessage.ViewEntities delta = new WireMessage.ViewEntities(
+            UUID.randomUUID(),
+            List.of(deltaVisual(new UUID(0L, 2L))),
+            List.of(new UUID(0L, 2L))
+        );
+
+        assertEquals(SidebandOutbox.TIER_BULK, SidebandOutbox.tierOf(full));
+        assertEquals(SidebandOutbox.TIER_BULK, SidebandOutbox.tierOf(empty));
+        assertEquals(SidebandOutbox.TIER_BEST_EFFORT, SidebandOutbox.tierOf(delta));
+    }
+
+    @Test
+    void routedEntityFramesRetainFullVersusDeltaPriority() throws IOException {
+        WireMessage.ViewEntities full = new WireMessage.ViewEntities(
+            UUID.randomUUID(),
+            List.of(fullVisual(new UUID(0L, 1L))),
+            List.of(new UUID(0L, 1L))
+        );
+        WireMessage.ViewEntities delta = new WireMessage.ViewEntities(
+            UUID.randomUUID(),
+            List.of(deltaVisual(new UUID(0L, 2L))),
+            List.of(new UUID(0L, 2L))
+        );
+        WireMessage.Routed routedFull = routed(full);
+        WireMessage.Routed routedDelta = routed(delta);
+        WireMessage.Routed malformed = new WireMessage.Routed("alpha", "beta", 4, WireMessageType.VIEW_ENTITIES, new byte[]{1});
+
+        assertEquals(SidebandOutbox.TIER_BULK, SidebandOutbox.tierOf(routedFull));
+        assertEquals(SidebandOutbox.TIER_BEST_EFFORT, SidebandOutbox.tierOf(routedDelta));
+        assertEquals(SidebandOutbox.TIER_BULK, SidebandOutbox.tierOf(malformed));
+    }
+
+    @Test
+    void reliableFullSnapshotShedsDeltaAndSurvivesLaterPressure() {
+        SidebandOutbox outbox = new SidebandOutbox(100L, 20L);
+        MinecraftStatusBridge.EncodedMessage delta = encoded(
+            new WireMessage.ViewEntities(
+                UUID.randomUUID(),
+                List.of(deltaVisual(new UUID(0L, 1L))),
+                List.of(new UUID(0L, 1L))
+            ),
+            50
+        );
+        MinecraftStatusBridge.EncodedMessage full = encoded(
+            new WireMessage.ViewEntities(
+                UUID.randomUUID(),
+                List.of(fullVisual(new UUID(0L, 1L))),
+                List.of(new UUID(0L, 1L))
+            ),
+            60
+        );
+
+        assertTrue(outbox.offer(List.of(delta)));
+        assertTrue(outbox.offer(List.of(full)));
+        assertFalse(outbox.offer(List.of(control(9L, 50))));
+
+        assertEquals(60L, outbox.queuedBytes());
+        assertEquals(1L, outbox.queuedCount());
+        assertEquals(100L, outbox.droppedBytes());
+        assertEquals(2L, outbox.droppedCount());
+        SidebandOutbox.DrainBatch batch = outbox.drain(100, 64);
+        assertEquals(List.of(full), batch.messages());
+        batch.commit();
+    }
+
+    @Test
     void failedBatchRequeuesAtFrontInOriginalPerTierOrder() {
         SidebandOutbox outbox = new SidebandOutbox(200L, 40L);
         MinecraftStatusBridge.EncodedMessage controlOne = control(1L, 10);
@@ -205,6 +282,33 @@ class SidebandOutboxTest {
         retried.commit();
     }
 
+    @Test
+    void discardClearsQueuedAndInFlightMessagesWithoutResurrectingTheBatch() {
+        SidebandOutbox outbox = new SidebandOutbox(200L, 40L);
+        MinecraftStatusBridge.EncodedMessage inFlight = control(1L, 20);
+        MinecraftStatusBridge.EncodedMessage queued = control(2L, 20);
+        assertTrue(outbox.offer(List.of(inFlight)));
+        SidebandOutbox.DrainBatch batch = outbox.drain(20, 64);
+        assertEquals(List.of(inFlight), batch.messages());
+        assertTrue(outbox.offer(List.of(queued)));
+
+        outbox.discardAll();
+
+        assertEquals(0L, outbox.queuedBytes());
+        assertEquals(0L, outbox.queuedCount());
+        assertEquals(40L, outbox.droppedBytes());
+        assertEquals(2L, outbox.droppedCount());
+        batch.requeue();
+        batch.commit();
+        assertTrue(outbox.drain(200, 64).messages().isEmpty());
+
+        MinecraftStatusBridge.EncodedMessage afterDiscard = control(3L, 20);
+        assertTrue(outbox.offer(List.of(afterDiscard)));
+        SidebandOutbox.DrainBatch next = outbox.drain(200, 64);
+        assertEquals(List.of(afterDiscard), next.messages());
+        next.commit();
+    }
+
     private static MinecraftStatusBridge.EncodedMessage control(long id, int frameBytes) {
         return encoded(new WireMessage.Ping(id), frameBytes);
     }
@@ -214,7 +318,37 @@ class SidebandOutboxTest {
     }
 
     private static MinecraftStatusBridge.EncodedMessage bestEffort(long id, int frameBytes) {
-        return encoded(new WireMessage.ViewEntities(new UUID(0L, id), List.of(), List.of()), frameBytes);
+        return encoded(new WireMessage.ViewEntityAnimation(new UUID(0L, id), new UUID(0L, id), false, 0, 0.0F), frameBytes);
+    }
+
+    private static EntityVisual fullVisual(UUID id) {
+        return EntityVisual.full(
+            id,
+            "minecraft:zombie",
+            0.0D, 64.0D, 0.0D,
+            1.95D,
+            0.0D, 0.0D, 1.0D,
+            0.0F, 0.0F,
+            0.0D, 0.0D, 0.0D,
+            true,
+            "",
+            "",
+            "",
+            null,
+            null,
+            new byte[0],
+            new byte[0],
+            0
+        );
+    }
+
+    private static EntityVisual deltaVisual(UUID id) {
+        EntityVisual full = fullVisual(id);
+        return EntityDeltaCodec.buildDelta(full, full, 1, EntityVisual.FIELD_POSITION);
+    }
+
+    private static WireMessage.Routed routed(WireMessage.ViewEntities message) throws IOException {
+        return new WireMessage.Routed("alpha", "beta", 4, WireMessageType.VIEW_ENTITIES, WireCodec.encodePayload(message));
     }
 
     private static MinecraftStatusBridge.EncodedMessage fragment(long id, int index, int total, int frameBytes) {

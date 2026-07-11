@@ -84,7 +84,12 @@ public enum ProjectionMode
 		{
 			return next();
 		}
-		return this == OFF ? ON : OFF;
+		return switch(this)
+		{
+			case OFF -> ON;
+			case ON -> MIRROR;
+			case ONE_WAY, MIRROR -> OFF;
+		};
 	}
 
 	public boolean isAllowedFor(PortalType type)
@@ -93,7 +98,12 @@ public enum ProjectionMode
 		{
 			return true;
 		}
-		return this == OFF || this == ON;
+		return this != ONE_WAY;
+	}
+
+	public boolean allowsTraversal()
+	{
+		return this != MIRROR;
 	}
 
 	public static ProjectionMode fromName(String name)

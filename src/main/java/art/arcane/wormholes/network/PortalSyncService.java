@@ -4,6 +4,7 @@ import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.ITunnel;
 import art.arcane.wormholes.portal.LocalPortal;
+import art.arcane.wormholes.portal.MirrorRotation;
 import art.arcane.wormholes.portal.PortalFrame;
 import art.arcane.wormholes.portal.PortalPermissionMode;
 import art.arcane.wormholes.portal.ProjectionMode;
@@ -21,6 +22,7 @@ import java.util.function.Supplier;
 
 public final class PortalSyncService {
     public static final String KEY_PROJECTION_MODE = "projectionMode";
+    public static final String KEY_MIRROR_ROTATION = "mirrorRotationDegrees";
     public static final String KEY_PERMISSION_MODE = "permissionMode";
     public static final String KEY_OUTGOING_TRAVERSALS = "outgoingTraversalsEnabled";
     public static final String KEY_INCOMING_TRAVERSALS = "incomingTraversalsEnabled";
@@ -31,6 +33,7 @@ public final class PortalSyncService {
     public static final String KEY_VIEW_UNSUBSCRIBE_GRACE = "networkViewUnsubscribeGraceSeconds";
     public static final String KEY_VIEW_FALLBACK_BLOCK = "networkViewFallbackBlock";
     public static final String KEY_SETTINGS_SYNC = "settingsSyncEnabled";
+    static final String KEY_REMOTE_CACHE_ONLY = "remoteCacheOnly";
 
     private static final ThreadLocal<Boolean> APPLYING_REMOTE = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
@@ -53,12 +56,19 @@ public final class PortalSyncService {
 
     public void sendDirectory(String peerName) {
         List<PortalInfo> shared = new ArrayList<>();
+        List<LocalPortal> settingsSources = new ArrayList<>();
         for (ILocalPortal portal : portalSource.get()) {
             if (isShareable(portal)) {
                 shared.add(toInfo(portal));
+                if (portal instanceof LocalPortal local) {
+                    settingsSources.add(local);
+                }
             }
         }
         network.send(peerName, new WireMessage.PortalDirectory(shared));
+        for (LocalPortal local : settingsSources) {
+            network.send(peerName, settingsUpdate(local, true));
+        }
     }
 
     public void broadcastPortal(ILocalPortal portal) {
@@ -66,7 +76,11 @@ public final class PortalSyncService {
             return;
         }
         if (isShareable(portal)) {
-            network.sendToPeers(peerNames(), new WireMessage.PortalUpsert(toInfo(portal)));
+            List<String> peers = peerNames();
+            network.sendToPeers(peers, new WireMessage.PortalUpsert(toInfo(portal)));
+            if (portal instanceof LocalPortal local) {
+                network.sendToPeers(peers, settingsUpdate(local, true));
+            }
         } else {
             broadcastRemove(portal.getId());
         }
@@ -105,8 +119,7 @@ public final class PortalSyncService {
 
     private void sendSettings(LocalPortal local) {
         String linkedPeer = linkedPeerName(local);
-        Map<String, String> settings = collectSettings(local);
-        WireMessage.PortalSettingsUpdate update = new WireMessage.PortalSettingsUpdate(local.getId(), settings);
+        WireMessage.PortalSettingsUpdate update = settingsUpdate(local, false);
         if (linkedPeer != null) {
             network.send(linkedPeer, update);
             return;
@@ -129,19 +142,29 @@ public final class PortalSyncService {
         }
         UUID portalId = update.portalId();
         Map<String, String> settings = update.settings();
+        RemotePortalRegistry registry = Wormholes.remotePortalRegistry;
+        if (registry != null) {
+            RemotePortal remote = registry.get(peerName, portalId);
+            if (remote != null) {
+                applyToRemote(remote, settings);
+            }
+        }
+        if (Boolean.parseBoolean(settings.get(KEY_REMOTE_CACHE_ONLY))) {
+            return;
+        }
         LocalPortal target = findLinkedLocal(peerName, portalId);
         if (target != null) {
             applyToLocal(target, settings);
             target.refreshOpenMenus();
-            return;
         }
-        if (Wormholes.remotePortalRegistry == null) {
-            return;
+    }
+
+    private static WireMessage.PortalSettingsUpdate settingsUpdate(LocalPortal local, boolean remoteCacheOnly) {
+        Map<String, String> settings = collectSettings(local);
+        if (remoteCacheOnly) {
+            settings.put(KEY_REMOTE_CACHE_ONLY, Boolean.TRUE.toString());
         }
-        RemotePortal remote = Wormholes.remotePortalRegistry.get(peerName, portalId);
-        if (remote != null) {
-            applyToRemote(remote, settings);
-        }
+        return new WireMessage.PortalSettingsUpdate(local.getId(), settings);
     }
 
     private static LocalPortal findLinkedLocal(String peerName, UUID senderPortalId) {
@@ -163,9 +186,10 @@ public final class PortalSyncService {
         return null;
     }
 
-    private static Map<String, String> collectSettings(LocalPortal portal) {
+    static Map<String, String> collectSettings(LocalPortal portal) {
         Map<String, String> settings = new LinkedHashMap<>();
         settings.put(KEY_PROJECTION_MODE, portal.getProjectionMode().name());
+        settings.put(KEY_MIRROR_ROTATION, Integer.toString(portal.getMirrorRotation().getDegrees()));
         settings.put(KEY_PERMISSION_MODE, portal.getPermissionMode().name());
         settings.put(KEY_OUTGOING_TRAVERSALS, Boolean.toString(portal.isOutgoingTraversalsEnabled()));
         settings.put(KEY_INCOMING_TRAVERSALS, Boolean.toString(portal.isIncomingTraversalsEnabled()));
@@ -201,6 +225,8 @@ public final class PortalSyncService {
                     portal.setProjectionMode(mode);
                 }
             }
+            case KEY_MIRROR_ROTATION -> portal.setMirrorRotation(
+                MirrorRotation.fromDegrees(parseIntOr(value, portal.getMirrorRotation().getDegrees())));
             case KEY_PERMISSION_MODE -> {
                 PortalPermissionMode mode = parsePermissionMode(value);
                 if (mode != null) {
@@ -221,7 +247,7 @@ public final class PortalSyncService {
         }
     }
 
-    private static void applyToRemote(RemotePortal remote, Map<String, String> settings) {
+    static void applyToRemote(RemotePortal remote, Map<String, String> settings) {
         for (Map.Entry<String, String> entry : settings.entrySet()) {
             String key = entry.getKey();
             String value = entry.getValue();
@@ -235,6 +261,8 @@ public final class PortalSyncService {
                         remote.setMirroredProjectionMode(mode);
                     }
                 }
+                case KEY_MIRROR_ROTATION -> remote.setMirroredProjectionRotation(
+                    MirrorRotation.fromDegrees(parseIntOr(value, remote.getMirroredProjectionRotation().getDegrees())));
                 case KEY_PERMISSION_MODE -> {
                     PortalPermissionMode mode = parsePermissionMode(value);
                     if (mode != null) {

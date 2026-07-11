@@ -1,5 +1,8 @@
 package art.arcane.wormholes.network;
 
+import art.arcane.wormholes.network.view.EntityVisual;
+
+import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
@@ -158,9 +161,37 @@ final class SidebandOutbox {
         return droppedCount;
     }
 
+    synchronized void discardAll() {
+        long discardedBytes = queuedBytes;
+        long discardedCount = queuedCount;
+        for (ArrayDeque<MinecraftStatusBridge.EncodedMessage> queue : queues) {
+            queue.clear();
+        }
+        for (int tier = 0; tier < TIER_COUNT; tier++) {
+            queuedBytesByTier[tier] = 0L;
+            inFlightBytesByTier[tier] = 0L;
+        }
+        queuedBytes = 0L;
+        queuedCount = 0L;
+        if (activeBatch != null) {
+            discardedBytes += activeBatch.totalBytes;
+            discardedCount += activeBatch.messages.size();
+            activeBatch.discarded = true;
+            activeBatch.completed = true;
+            activeBatch = null;
+        }
+        recordDropped(discardedCount, discardedBytes);
+    }
+
     static int tierOf(WireMessage message) {
         if (message instanceof WireMessage.SidebandFragment) {
             return TIER_BULK;
+        }
+        if (message instanceof WireMessage.ViewEntities entities && requiresReliableDelivery(entities)) {
+            return TIER_BULK;
+        }
+        if (message instanceof WireMessage.Routed routed && routed.innerType() == WireMessageType.VIEW_ENTITIES) {
+            return requiresReliableDelivery(routed) ? TIER_BULK : TIER_BEST_EFFORT;
         }
         WireMessageType type = message instanceof WireMessage.Routed routed ? routed.innerType() : message.type();
         return switch (type) {
@@ -176,6 +207,27 @@ final class SidebandOutbox {
             throw new IllegalArgumentException("invalid sideband tier " + tier);
         }
         return tier;
+    }
+
+    private static boolean requiresReliableDelivery(WireMessage.ViewEntities entities) {
+        if (entities.entities().isEmpty()) {
+            return true;
+        }
+        for (EntityVisual entity : entities.entities()) {
+            if (entity.isFull()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean requiresReliableDelivery(WireMessage.Routed routed) {
+        try {
+            WireMessage decoded = WireCodec.decodePayload(WireMessageType.VIEW_ENTITIES, routed.payload());
+            return !(decoded instanceof WireMessage.ViewEntities entities) || requiresReliableDelivery(entities);
+        } catch (IOException | RuntimeException ignored) {
+            return true;
+        }
     }
 
     private boolean fits(int tier, long additionalBytes) {
@@ -224,10 +276,16 @@ final class SidebandOutbox {
     }
 
     private synchronized void commit(DrainBatch batch) {
+        if (batch != null && batch.owner == this && batch.discarded) {
+            return;
+        }
         finish(batch);
     }
 
     private synchronized void requeue(DrainBatch batch) {
+        if (batch != null && batch.owner == this && batch.discarded) {
+            return;
+        }
         validateBatch(batch);
         for (int tier = 0; tier < TIER_COUNT; tier++) {
             List<MinecraftStatusBridge.EncodedMessage> tierEntries = batch.messagesByTier.get(tier);
@@ -272,6 +330,7 @@ final class SidebandOutbox {
         private final long[] bytesByTier;
         private final long totalBytes;
         private boolean completed;
+        private boolean discarded;
 
         private DrainBatch(SidebandOutbox owner, List<MinecraftStatusBridge.EncodedMessage> messages,
                            List<List<MinecraftStatusBridge.EncodedMessage>> messagesByTier,

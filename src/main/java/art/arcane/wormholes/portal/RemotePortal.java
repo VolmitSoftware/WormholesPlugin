@@ -2,6 +2,8 @@ package art.arcane.wormholes.portal;
 
 import java.util.UUID;
 
+import org.bukkit.entity.Entity;
+import org.bukkit.entity.Player;
 import org.bukkit.util.Vector;
 
 import art.arcane.wormholes.network.PortalInfo;
@@ -15,6 +17,7 @@ public class RemotePortal extends Portal implements IRemotePortal {
     private final boolean open;
     private final AxisAlignedBB area;
     private volatile ProjectionMode mirroredProjectionMode;
+    private volatile MirrorRotation mirroredProjectionRotation;
     private volatile PortalPermissionMode mirroredPermissionMode;
     private volatile boolean mirroredOutgoingTraversalsEnabled;
     private volatile boolean mirroredIncomingTraversalsEnabled;
@@ -32,6 +35,7 @@ public class RemotePortal extends Portal implements IRemotePortal {
         this.open = open;
         this.area = area;
         this.mirroredProjectionMode = ProjectionMode.ON;
+        this.mirroredProjectionRotation = MirrorRotation.DEGREES_0;
         this.mirroredPermissionMode = PortalPermissionMode.BLACKLIST;
         this.mirroredOutgoingTraversalsEnabled = true;
         this.mirroredIncomingTraversalsEnabled = true;
@@ -87,6 +91,14 @@ public class RemotePortal extends Portal implements IRemotePortal {
         this.mirroredProjectionMode = mode == null ? ProjectionMode.ON : mode;
     }
 
+    public MirrorRotation getMirroredProjectionRotation() {
+        return mirroredProjectionRotation;
+    }
+
+    public void setMirroredProjectionRotation(MirrorRotation rotation) {
+        this.mirroredProjectionRotation = (rotation == null ? MirrorRotation.DEGREES_0 : rotation).coherentFor(getFrame());
+    }
+
     public PortalPermissionMode getMirroredPermissionMode() {
         return mirroredPermissionMode;
     }
@@ -105,6 +117,21 @@ public class RemotePortal extends Portal implements IRemotePortal {
 
     public boolean isMirroredIncomingTraversalsEnabled() {
         return mirroredIncomingTraversalsEnabled;
+    }
+
+    public boolean acceptsInboundTraversal() {
+        return acceptsInboundTraversal(null);
+    }
+
+    public boolean acceptsInboundTraversal(Entity entity) {
+        if (!open || !mirroredProjectionMode.allowsTraversal() || !mirroredIncomingTraversalsEnabled) {
+            return false;
+        }
+        if (!(entity instanceof Player player) || player.isOp()) {
+            return true;
+        }
+        String node = "wormholes.portal." + LocalPortal.sanitizePermissionName(getName());
+        return mirroredPermissionMode.allows(player, node);
     }
 
     public void setMirroredIncomingTraversalsEnabled(boolean enabled) {

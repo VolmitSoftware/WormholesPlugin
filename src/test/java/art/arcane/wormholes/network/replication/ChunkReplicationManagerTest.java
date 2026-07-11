@@ -248,8 +248,36 @@ class ChunkReplicationManagerTest {
         assertEquals(0L, manager.canonicalHash(PEER, chunkKey));
         byte[] updated = withFlippedBlock(initial);
         long updatedHash = contentHashOf(updated);
-        manager.sendBulk(PEER, world.getUID(), chunkKey, updated, updatedHash);
+        manager.requestResync(PEER, chunkKey);
+        assertTrue(manager.sendBulk(PEER, world.getUID(), chunkKey, updated, updatedHash));
         assertEquals(updatedHash, manager.canonicalHash(PEER, chunkKey));
+    }
+
+    @Test
+    void rejectedRecoveryBulkPreservesGenerationAndQueuedDiffs(@TempDir Path dir) {
+        TestNetworkSink sink = new TestNetworkSink(dir);
+        ChunkReplicationManager manager = sink.getReplicationManager();
+        World world = StubWorld.create(UUID.randomUUID());
+        long chunkKey = ViewSlice.columnKey(3, 5);
+        manager.subscribe(PEER, world.getUID(), world, chunkKey);
+        BlockChange queued = new BlockChange(BlockChange.pack(2, 64, 4), "minecraft:stone", BlockChange.FLAG_NONE);
+        manager.onChunkDrain(world, chunkKey, List.of(queued), List.of(), List.of());
+        long generation = manager.bulkGeneration(PEER, chunkKey);
+        byte[] payload = synthesizeBulkPayload(3, 5);
+
+        sink.setAccepting(false);
+        assertFalse(manager.sendBulk(PEER, world.getUID(), chunkKey, payload, contentHashOf(payload), generation));
+        assertEquals(generation, manager.bulkGeneration(PEER, chunkKey));
+
+        sink.setAccepting(true);
+        assertTrue(manager.sendBulk(PEER, world.getUID(), chunkKey, payload, contentHashOf(payload), generation));
+        assertEquals(0L, manager.canonicalHash(PEER, chunkKey));
+        sink.clear();
+        manager.flushTick();
+
+        assertEquals(1, sink.sentCount(PEER));
+        WireMessage.ChunkDiff diff = (WireMessage.ChunkDiff) sink.sentTo(PEER).get(0);
+        assertEquals(List.of(queued), diff.batches().get(0).blocks());
     }
 
     @Test
@@ -280,6 +308,51 @@ class ChunkReplicationManagerTest {
         manager.requestResync(PEER, chunkKey);
         assertFalse(manager.isBulked(PEER, chunkKey));
         assertEquals(0L, manager.canonicalHash(PEER, chunkKey));
+        assertEquals(1L, manager.statsSnapshot().resyncRequests());
+    }
+
+    @Test
+    void canonicalResyncRejectsSnapshotFromPriorGeneration(@TempDir Path dir) {
+        TestNetworkSink sink = new TestNetworkSink(dir);
+        ChunkReplicationManager manager = sink.getReplicationManager();
+        World world = StubWorld.create(UUID.randomUUID());
+        long chunkKey = ViewSlice.columnKey(9, 7);
+        manager.subscribe(PEER, world.getUID(), world, chunkKey);
+        long initialGeneration = manager.bulkGeneration(PEER, chunkKey);
+        byte[] payload = synthesizeBulkPayload(9, 7);
+        assertTrue(manager.sendBulk(PEER, world.getUID(), chunkKey, payload, contentHashOf(payload), initialGeneration));
+        List<Long> retries = new ArrayList<>();
+        manager.setBulkRetryListener((peerName, key) -> retries.add(key));
+
+        manager.forceResync(world, chunkKey);
+
+        long recoveryGeneration = manager.bulkGeneration(PEER, chunkKey);
+        assertTrue(recoveryGeneration > initialGeneration);
+        assertFalse(manager.sendBulk(PEER, world.getUID(), chunkKey, payload, contentHashOf(payload), initialGeneration));
+        assertTrue(manager.sendBulk(PEER, world.getUID(), chunkKey, payload, contentHashOf(payload), recoveryGeneration));
+        assertEquals(List.of(chunkKey), retries);
+    }
+
+    @Test
+    void peerDiffOverflowFallsBackToCanonicalBulk(@TempDir Path dir) {
+        TestNetworkSink sink = new TestNetworkSink(dir);
+        ChunkReplicationManager manager = sink.getReplicationManager();
+        manager.applyConfig(new ChunkReplicationManager.ReplicationConfig(1L));
+        World world = StubWorld.create(UUID.randomUUID());
+        long chunkKey = ViewSlice.columnKey(6, 8);
+        manager.subscribe(PEER, world.getUID(), world, chunkKey);
+        byte[] payload = synthesizeBulkPayload(6, 8);
+        assertTrue(manager.sendBulk(PEER, world.getUID(), chunkKey, payload, contentHashOf(payload)));
+        List<Long> retries = new ArrayList<>();
+        manager.setBulkRetryListener((peerName, key) -> retries.add(key));
+
+        manager.onChunkDrain(world, chunkKey, List.of(
+            new BlockChange(BlockChange.pack(1, 70, 1), "minecraft:dirt", BlockChange.FLAG_NONE),
+            new BlockChange(BlockChange.pack(2, 70, 1), "minecraft:stone", BlockChange.FLAG_NONE)
+        ), List.of(), List.of());
+
+        assertFalse(manager.isBulked(PEER, chunkKey));
+        assertEquals(List.of(chunkKey), retries);
         assertEquals(1L, manager.statsSnapshot().resyncRequests());
     }
 

@@ -2,18 +2,23 @@ package art.arcane.wormholes.portal;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.IntConsumer;
 import java.util.function.IntSupplier;
+import java.util.logging.Level;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -34,13 +39,13 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.title.Title;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 
-import java.time.Duration;
-
+import art.arcane.wormholes.PortalManager;
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.geometry.Raycast;
 import art.arcane.wormholes.network.PortalSyncService;
 import art.arcane.wormholes.service.WormholesAudience;
+import art.arcane.wormholes.service.WormholesTelemetry;
 import art.arcane.volmlib.util.scheduling.AR;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.volmlib.util.inventorygui.Element;
@@ -86,7 +91,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private PortalStructure structure;
 	private PortalType type;
 	private UUID owner;
-	private ITunnel tunnel;
+	private volatile ITunnel tunnel;
+	private volatile UUID dimensionalCounterpartId;
+	private volatile DimensionalPortalKind dimensionalPortalKind;
 	private volatile boolean open;
 	private volatile boolean ambientAttended = true;
 	private boolean progressing;
@@ -94,8 +101,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private Player directionChanger;
 	private Direction chosenDirection;
 	private Vector chosenLook;
-	private boolean needsSaving;
+	private final AtomicLong dirtyGeneration = new AtomicLong();
+	private final AtomicBoolean saveInFlight = new AtomicBoolean();
+	private volatile long savedGeneration;
 	private ProjectionMode projectionMode;
+	private MirrorRotation mirrorRotation;
 	private AxisAlignedBB view;
 	private double viewRange;
 	private PortalPermissionMode permissionMode;
@@ -109,7 +119,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private String networkViewFallbackBlock;
 	private boolean settingsSyncEnabled;
 	private final Map<UUID, UIWindow> openMenus = new ConcurrentHashMap<UUID, UIWindow>();
+	private final AtomicBoolean destructionStarted = new AtomicBoolean();
 	private final AtomicLong effectSequence = new AtomicLong();
+	private final Object persistenceLock = new Object();
 
 	public LocalPortal(UUID id, PortalType type, PortalStructure structure)
 	{
@@ -122,12 +134,15 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		progressing = false;
 		progress = "Idle";
 		tunnel = null;
+		dimensionalCounterpartId = null;
+		dimensionalPortalKind = DimensionalPortalKind.NONE;
 		directionChanger = null;
 		chosenDirection = null;
 		chosenLook = null;
 		setName(F.capitalize(getType().name().toLowerCase()) + " " + id.toString().substring(0, 4));
-		needsSaving = false;
+		savedGeneration = dirtyGeneration.get();
 		projectionMode = ProjectionMode.ON;
+		mirrorRotation = MirrorRotation.DEGREES_0;
 			permissionMode = PortalPermissionMode.BLACKLIST;
 			outgoingTraversalsEnabled = true;
 			incomingTraversalsEnabled = true;
@@ -149,6 +164,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		j.put("type", type.name());
 		j.put("owner", getOwner().toString());
 		j.put("projectionMode", projectionMode.name());
+		j.put("mirrorRotationDegrees", mirrorRotation.getDegrees());
 			j.put("permissionMode", permissionMode.name());
 			j.put("outgoingTraversalsEnabled", outgoingTraversalsEnabled);
 			j.put("incomingTraversalsEnabled", incomingTraversalsEnabled);
@@ -167,6 +183,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		{
 			j.put("tunnel", getTunnel().toJSON());
 		}
+		if(dimensionalCounterpartId != null)
+		{
+			j.put("dimensionalCounterpartId", dimensionalCounterpartId.toString());
+		}
+		if(dimensionalPortalKind != DimensionalPortalKind.NONE)
+		{
+			j.put("dimensionalPortalKind", dimensionalPortalKind.name());
+		}
 	}
 
 	@Override
@@ -182,6 +206,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		type = PortalType.valueOf(j.getString("type"));
 		owner = UUID.fromString(j.getString("owner"));
 		projectionMode = resolveProjectionMode(j);
+		MirrorRotation storedMirrorRotation = resolveMirrorRotation(j);
+		mirrorRotation = storedMirrorRotation.coherentFor(getFrame());
 			permissionMode = resolvePermissionMode(j);
 			outgoingTraversalsEnabled = !j.has("outgoingTraversalsEnabled") || j.getBoolean("outgoingTraversalsEnabled");
 			incomingTraversalsEnabled = !j.has("incomingTraversalsEnabled") || j.getBoolean("incomingTraversalsEnabled");
@@ -197,6 +223,13 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		if(j.has("tunnel"))
 		{
 			tunnel = ITunnel.createTunnel(j.getJSONObject("tunnel"));
+		}
+		dimensionalCounterpartId = resolveOptionalUuid(j.optString("dimensionalCounterpartId", ""));
+		dimensionalPortalKind = DimensionalPortalKind.fromName(j.optString("dimensionalPortalKind", ""));
+		boolean dimensionalStateNormalized = normalizeDimensionalState();
+		if(storedMirrorRotation != mirrorRotation || dimensionalStateNormalized)
+		{
+			save();
 		}
 	}
 
@@ -224,6 +257,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void setType(PortalType type)
 	{
+		if(dimensionalPortalKind.isManagedPortal())
+		{
+			return;
+		}
 		if(this.type == type)
 		{
 			return;
@@ -234,6 +271,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 		if(wasGateway != isGateway())
 		{
+			detachDimensionalPairIdentity();
 			tunnel = null;
 		}
 
@@ -433,6 +471,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		if(destination instanceof ILocalPortal localDestination)
 		{
 			return localDestination.canArrive(entity);
+		}
+		if(destination instanceof RemotePortal remoteDestination)
+		{
+			return remoteDestination.acceptsInboundTraversal(entity);
 		}
 		return true;
 	}
@@ -880,7 +922,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	public void setDirection(Direction d)
 	{
 		applyFrame(getFrame().withNormal(d));
+		boolean mirrorRotationChanged = normalizeMirrorRotationForFrame();
+		invalidateProjection();
 		save();
+		if(mirrorRotationChanged)
+		{
+			broadcastSettingsIfEnabled();
+			refreshOpenMenusUnlessApplyingRemote();
+		}
 		syncGatewayTickets();
 	}
 
@@ -888,7 +937,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	public void setFrame(PortalFrame frame)
 	{
 		applyFrame(frame);
+		boolean mirrorRotationChanged = normalizeMirrorRotationForFrame();
+		invalidateProjection();
 		save();
+		if(mirrorRotationChanged)
+		{
+			broadcastSettingsIfEnabled();
+			refreshOpenMenusUnlessApplyingRemote();
+		}
 		syncGatewayTickets();
 	}
 
@@ -937,7 +993,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				FoliaScheduler.runEntity(Wormholes.instance, p, () ->
 				{
 					p.setVelocity(outVelocity);
-					art.arcane.wormholes.service.WormholesTelemetry.countTraversal();
+					WormholesTelemetry.countTraversal();
 					markTeleportCooldown(entityId, System.currentTimeMillis());
 					latchReentry(entityId, getId());
 					playEffect(PortalEffect.PUSH, exit);
@@ -990,7 +1046,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		entity.setVelocity(outVelocity);
 		markTeleportCooldown(entity.getUniqueId(), System.currentTimeMillis());
 		latchReentry(entity.getUniqueId(), getId());
-		art.arcane.wormholes.service.WormholesTelemetry.countTraversal();
+		WormholesTelemetry.countTraversal();
 		Wormholes.v("[arrival] completeRemoteArrival " + entity.getName() + " settled near portal " + getId() + ", latched + cooldown set");
 		playEffect(PortalEffect.PUSH, entity.getLocation());
 		if(entity instanceof Player && Wormholes.projectionManager != null)
@@ -1040,13 +1096,13 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public boolean canDepart(Entity entity)
 	{
-		return outgoingTraversalsEnabled && allowsPortalPermission(entity);
+		return projectionMode.allowsTraversal() && outgoingTraversalsEnabled && allowsPortalPermission(entity);
 	}
 
 	@Override
 	public boolean canArrive(Entity entity)
 	{
-		return incomingTraversalsEnabled && allowsPortalPermission(entity);
+		return projectionMode.allowsTraversal() && incomingTraversalsEnabled && allowsPortalPermission(entity);
 	}
 
 	static boolean isTeleportCoolingDown(UUID entityId, long now)
@@ -1185,6 +1241,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void setDestination(IPortal portal)
 	{
+		if(dimensionalPortalKind.isReceiverOnly()
+				|| (dimensionalPortalKind.isManagedPortal() && dimensionalCounterpartId != null))
+		{
+			return;
+		}
+		detachDimensionalPairIdentity();
 		if(portal instanceof ILocalPortal)
 		{
 			ILocalPortal p = (ILocalPortal) portal;
@@ -1217,6 +1279,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void linkRemote(String serverName, UUID portalId)
 	{
+		if(dimensionalPortalKind.isManagedPortal())
+		{
+			return;
+		}
+		detachDimensionalPairIdentity();
 		tunnel = new UniversalTunnel(serverName, portalId);
 		save();
 	}
@@ -1224,6 +1291,15 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void destroy()
 	{
+		if(!destructionStarted.compareAndSet(false, true))
+		{
+			return;
+		}
+
+		UUID destructionCounterpartId = resolveDimensionalCounterpartId();
+		boolean explicitDimensionalCounterpart = dimensionalCounterpartId != null;
+		ILocalPortal dimensionalCounterpart = destructionCounterpartId == null || Wormholes.portalManager == null
+				? null : Wormholes.portalManager.getLocalPortal(destructionCounterpartId);
 		effectSequence.incrementAndGet();
 		tunnel = null;
 
@@ -1232,25 +1308,82 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		Location deletionCenter = getStructure().getCenter();
 		Location anchor = deletionCenter != null ? deletionCenter : getCenter();
 
-		if(deletionArea != null && deletionWorld != null)
+		if(Wormholes.projectionManager != null)
 		{
-			Location deletionCorner = new Location(deletionWorld, Math.min(deletionArea.getXa(), deletionArea.getXb()), Math.min(deletionArea.getYa(), deletionArea.getYb()), Math.min(deletionArea.getZa(), deletionArea.getZb()));
-			double sx = Math.abs(deletionArea.getXb() - deletionArea.getXa());
-			double sy = Math.abs(deletionArea.getYb() - deletionArea.getYa());
-			double sz = Math.abs(deletionArea.getZb() - deletionArea.getZa());
-			Wormholes.effectManager.playPortalDeletion(deletionWorld, deletionCorner, sx, sy, sz);
+			Wormholes.projectionManager.removeProjector(this);
 		}
+		if(Wormholes.portalManager != null)
+		{
+			Wormholes.portalManager.removeLocalPortal(LocalPortal.this);
+			deleteData();
+		}
+		playDeletionEffect(deletionArea, deletionWorld, deletionCenter, anchor);
 
+		if(dimensionalCounterpart != null && (explicitDimensionalCounterpart || isReciprocalDimensionalCounterpart(dimensionalCounterpart)))
+		{
+			dimensionalCounterpart.destroy();
+		}
+		else if(dimensionalCounterpart == null && destructionCounterpartId != null && Wormholes.portalManager != null)
+		{
+			Wormholes.portalManager.deletePersistedPairedPortal(destructionCounterpartId, getId());
+		}
+	}
+
+	@Override
+	public boolean isDestroyed()
+	{
+		return destructionStarted.get();
+	}
+
+	private UUID resolveDimensionalCounterpartId()
+	{
+		if(dimensionalCounterpartId != null)
+		{
+			return dimensionalCounterpartId;
+		}
+		if(tunnel instanceof DimensionalTunnel dimensionalTunnel)
+		{
+			return dimensionalTunnel.getDestinationId();
+		}
+		return null;
+	}
+
+	private boolean isReciprocalDimensionalCounterpart(ILocalPortal counterpart)
+	{
+		if(counterpart == this)
+		{
+			return false;
+		}
+		if(getId().equals(counterpart.getDimensionalCounterpartId()))
+		{
+			return true;
+		}
+		ITunnel counterpartTunnel = counterpart.getTunnel();
+		return counterpartTunnel instanceof DimensionalTunnel dimensionalTunnel
+				&& getId().equals(dimensionalTunnel.getDestinationId());
+	}
+
+	private void playDeletionEffect(AxisAlignedBB deletionArea, World deletionWorld, Location deletionCenter, Location anchor)
+	{
+		if(anchor == null || anchor.getWorld() == null)
+		{
+			return;
+		}
 		FoliaScheduler.runRegion(Wormholes.instance, anchor, () ->
 		{
-			if(Wormholes.projectionManager != null)
+			if(deletionArea != null && deletionWorld != null && Wormholes.effectManager != null)
 			{
-				Wormholes.projectionManager.removeProjector(LocalPortal.this);
+				Location deletionCorner = new Location(deletionWorld, Math.min(deletionArea.getXa(), deletionArea.getXb()), Math.min(deletionArea.getYa(), deletionArea.getYb()), Math.min(deletionArea.getZa(), deletionArea.getZb()));
+				double sx = Math.abs(deletionArea.getXb() - deletionArea.getXa());
+				double sy = Math.abs(deletionArea.getYb() - deletionArea.getYa());
+				double sz = Math.abs(deletionArea.getZb() - deletionArea.getZa());
+				Wormholes.effectManager.playPortalDeletion(deletionWorld, deletionCorner, sx, sy, sz);
 			}
-			Wormholes.portalManager.removeLocalPortal(LocalPortal.this);
-			Wormholes.effectManager.playNotificationFail(ChatColor.RED + getName() + " Deleted", deletionCenter);
-			deleteData();
-		}, 20L);
+			if(deletionCenter != null && Wormholes.effectManager != null)
+			{
+				Wormholes.effectManager.playNotificationFail(ChatColor.RED + getName() + " Deleted", deletionCenter);
+			}
+		});
 	}
 
 	@Override
@@ -1262,12 +1395,184 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void unlink()
 	{
-		if(tunnel == null)
+		if(tunnel == null && dimensionalCounterpartId == null)
+		{
+			return;
+		}
+		detachDimensionalPairIdentity();
+		tunnel = null;
+		save();
+	}
+
+	private void detachDimensionalPairIdentity()
+	{
+		UUID previousId = resolveDimensionalCounterpartId();
+		if(previousId == null)
+		{
+			return;
+		}
+		dimensionalCounterpartId = null;
+		if(Wormholes.portalManager != null)
+		{
+			ILocalPortal previous = Wormholes.portalManager.getLocalPortal(previousId);
+			if(previous instanceof LocalPortal localPrevious)
+			{
+				localPrevious.clearDimensionalCounterpartReference(getId());
+				localPrevious.clearDimensionalTunnelReference(getId());
+			}
+			else if(previous == null)
+			{
+				PortalManager manager = Wormholes.portalManager;
+				boolean scheduled = FoliaScheduler.runAsync(Wormholes.instance,
+						() -> manager.clearPersistedPairedPortalReference(previousId, getId()));
+				if(!scheduled)
+				{
+					manager.clearPersistedPairedPortalReference(previousId, getId());
+				}
+			}
+		}
+		save();
+	}
+
+	private void clearDimensionalCounterpartReference(UUID expectedId)
+	{
+		if(!Objects.equals(dimensionalCounterpartId, expectedId))
+		{
+			return;
+		}
+		dimensionalCounterpartId = null;
+		save();
+	}
+
+	private void clearDimensionalTunnelReference(UUID expectedId)
+	{
+		ITunnel activeTunnel = tunnel;
+		if(!(activeTunnel instanceof DimensionalTunnel dimensionalTunnel)
+				|| !Objects.equals(dimensionalTunnel.getDestinationId(), expectedId))
 		{
 			return;
 		}
 		tunnel = null;
 		save();
+	}
+
+	@Override
+	public UUID getDimensionalCounterpartId()
+	{
+		return dimensionalCounterpartId;
+	}
+
+	@Override
+	public void setDimensionalCounterpartId(UUID counterpartId)
+	{
+		if(Objects.equals(dimensionalCounterpartId, counterpartId))
+		{
+			return;
+		}
+		dimensionalCounterpartId = counterpartId;
+		save();
+	}
+
+	@Override
+	public DimensionalPortalKind getDimensionalPortalKind()
+	{
+		return dimensionalPortalKind;
+	}
+
+	@Override
+	public void setDimensionalPortalKind(DimensionalPortalKind kind)
+	{
+		DimensionalPortalKind normalized = kind == null ? DimensionalPortalKind.NONE : kind;
+		boolean kindChanged = dimensionalPortalKind != normalized;
+		dimensionalPortalKind = normalized;
+		boolean stateChanged = normalizeDimensionalState();
+		if(!kindChanged && !stateChanged)
+		{
+			return;
+		}
+		if(stateChanged)
+		{
+			invalidateProjection();
+		}
+		save();
+	}
+
+	private boolean normalizeDimensionalState()
+	{
+		if(!dimensionalPortalKind.isManagedPortal())
+		{
+			return false;
+		}
+		boolean changed = false;
+		if(type != PortalType.PORTAL)
+		{
+			type = PortalType.PORTAL;
+			changed = true;
+		}
+		if(dimensionalPortalKind == DimensionalPortalKind.NETHER)
+		{
+			if(!outgoingTraversalsEnabled)
+			{
+				outgoingTraversalsEnabled = true;
+				changed = true;
+			}
+			if(!incomingTraversalsEnabled)
+			{
+				incomingTraversalsEnabled = true;
+				changed = true;
+			}
+			if(projectionMode == ProjectionMode.MIRROR || !projectionMode.isAllowedFor(PortalType.PORTAL))
+			{
+				projectionMode = ProjectionMode.ON;
+				changed = true;
+			}
+			return changed;
+		}
+		if(dimensionalPortalKind == DimensionalPortalKind.END_SOURCE)
+		{
+			if(!outgoingTraversalsEnabled)
+			{
+				outgoingTraversalsEnabled = true;
+				changed = true;
+			}
+			if(incomingTraversalsEnabled)
+			{
+				incomingTraversalsEnabled = false;
+				changed = true;
+			}
+			if(projectionMode == ProjectionMode.MIRROR || !projectionMode.isAllowedFor(PortalType.PORTAL))
+			{
+				projectionMode = ProjectionMode.ON;
+				changed = true;
+			}
+			return changed;
+		}
+		if(dimensionalCounterpartId == null && tunnel instanceof DimensionalTunnel dimensionalTunnel)
+		{
+			dimensionalCounterpartId = dimensionalTunnel.getDestinationId();
+			changed = dimensionalCounterpartId != null;
+		}
+		if(tunnel != null)
+		{
+			tunnel = null;
+			changed = true;
+		}
+		if(projectionMode != ProjectionMode.OFF)
+		{
+			projectionMode = ProjectionMode.OFF;
+			changed = true;
+		}
+		if(outgoingTraversalsEnabled)
+		{
+			outgoingTraversalsEnabled = false;
+			changed = true;
+		}
+		if(!incomingTraversalsEnabled)
+		{
+			incomingTraversalsEnabled = true;
+			changed = true;
+		}
+		return changed;
 	}
 
 	@Override
@@ -1317,6 +1622,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					.setCount(Math.max(1, Wormholes.portalManager.getAccessableCount(getType()) - 1))
 					.onLeftClick((e) ->
 					{
+						if(dimensionalPortalKind.isManagedPortal())
+						{
+								notifySetting(p, "This dimensional portal keeps its generated link.");
+							return;
+						}
 						if(isGateway())
 						{
 							window.close();
@@ -1447,6 +1757,16 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		UIElement element = new UIElement("travel-direction");
 		element.onLeftClick((e) ->
 		{
+			if(dimensionalPortalKind.isManagedPortal())
+			{
+				notifySetting(viewer, "Dimensional portal travel is managed automatically.");
+				return;
+			}
+			if(getProjectionMode() == ProjectionMode.MIRROR)
+			{
+				notifySetting(viewer, "Mirror mode never allows travel.");
+				return;
+			}
 			PortalTravelMode mode = getTravelMode().next();
 			setTravelMode(mode);
 			applyTravelDirectionElement(element);
@@ -1464,6 +1784,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private void setTravelMode(PortalTravelMode mode)
 	{
+		if(dimensionalPortalKind.isManagedPortal())
+		{
+			return;
+		}
 		boolean nextOutgoing = mode.allowsOutgoing();
 		boolean nextIncoming = mode.allowsIncoming();
 		if(outgoingTraversalsEnabled == nextOutgoing && incomingTraversalsEnabled == nextIncoming)
@@ -1481,6 +1805,31 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private void applyTravelDirectionElement(Element element)
 	{
+		if(dimensionalPortalKind.isManagedPortal())
+		{
+			boolean receiver = dimensionalPortalKind.isReceiverOnly();
+			String direction = dimensionalPortalKind == DimensionalPortalKind.NETHER ? "Both Ways" : receiver ? "Arrival Only" : "Departure Only";
+			element.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Travel: " + direction);
+			element.setEnchanted(true);
+			element.setMaterial(new MaterialBlock(dimensionalPortalKind == DimensionalPortalKind.NETHER ? Material.OBSIDIAN
+					: receiver ? Material.ENDER_EYE : Material.ENDER_PEARL));
+			KList<String> endLore = element.getLore();
+			endLore.clear();
+			endLore.add(ChatColor.GRAY + "Managed dimensional portal direction.");
+			endLore.add(ChatColor.GRAY + (dimensionalPortalKind == DimensionalPortalKind.NETHER ? "Both linked halves stay active." : "The return path stays disabled."));
+			return;
+		}
+		if(getProjectionMode() == ProjectionMode.MIRROR)
+		{
+			element.setName(ChatColor.RED + "" + ChatColor.BOLD + "Travel: Mirror Locked");
+			element.setEnchanted(false);
+			element.setMaterial(new MaterialBlock(Material.BARRIER));
+			KList<String> mirrorLore = element.getLore();
+			mirrorLore.clear();
+			mirrorLore.add(ChatColor.GRAY + "Mirror mode is visual only.");
+			mirrorLore.add(ChatColor.GRAY + "Entities cannot enter or leave through it.");
+			return;
+		}
 		PortalTravelMode mode = getTravelMode();
 		boolean locked = mode == PortalTravelMode.LOCKED;
 		element.setName((locked ? ChatColor.RED : ChatColor.GREEN) + "" + ChatColor.BOLD + "Travel: " + mode.getDisplayName());
@@ -1808,6 +2157,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void uiChooseMode(Player p)
 	{
+		if(dimensionalPortalKind.isManagedPortal())
+		{
+			notifySetting(p, "Managed dimensional portals stay in portal mode.");
+			return;
+		}
 		UIWindow window = new UIWindow(Wormholes.instance, p);
 		window.setTitle(getRouter(true));
 		window.setResolution(WindowResolution.W9_H6);
@@ -1993,13 +2347,33 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		element.onLeftClick((e) ->
 		{
 			ProjectionMode previous = getProjectionMode();
-			setProjectionMode(getProjectionMode().nextFor(getType()));
+			if(dimensionalPortalKind.isReceiverOnly())
+			{
+				notifySetting(viewer, "The End arrival stays visually inactive.");
+				return;
+			}
+			if(dimensionalPortalKind.isManagedPortal())
+			{
+				setProjectionMode(previous == ProjectionMode.OFF ? ProjectionMode.ON : ProjectionMode.OFF);
+			}
+			else
+			{
+				setProjectionMode(getProjectionMode().nextFor(getType()));
+			}
 			applyProjectionMode(element);
 			window.updateInventory();
 			if(previous != getProjectionMode())
 			{
 				notifySetting(viewer, "Projections: " + ChatColor.AQUA + getProjectionMode().getDisplayName());
 			}
+		});
+		element.onRightClick((e) ->
+		{
+			rotateMirrorImage(element, window, viewer, getMirrorRotation().clockwiseFor(getFrame()));
+		});
+		element.onShiftRightClick((e) ->
+		{
+			rotateMirrorImage(element, window, viewer, getMirrorRotation().counterClockwiseFor(getFrame()));
 		});
 		applyProjectionMode(element);
 		return element;
@@ -2024,8 +2398,36 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 		else
 		{
-			lore.add(ChatColor.DARK_GRAY + "Click to toggle: Off / On");
+			lore.add(ChatColor.DARK_GRAY + "Click to cycle: Off > On > Mirror");
 		}
+		if(mode == ProjectionMode.MIRROR)
+		{
+			lore.add(ChatColor.GRAY + "Image rotation: " + ChatColor.AQUA + getMirrorRotation().getDegrees() + " degrees");
+			if(MirrorRotation.supportsQuarterTurns(getFrame()))
+			{
+				lore.add(ChatColor.DARK_GRAY + "Right click: rotate clockwise.");
+				lore.add(ChatColor.DARK_GRAY + "Shift + right click: rotate counterclockwise.");
+			}
+			else
+			{
+				lore.add(ChatColor.GRAY + "Wall mirrors flip in 180 degree steps");
+				lore.add(ChatColor.GRAY + "so reflected entities stay aligned.");
+				lore.add(ChatColor.DARK_GRAY + "Right click: flip the reflected image.");
+			}
+		}
+	}
+
+	private void rotateMirrorImage(Element element, Window window, Player viewer, MirrorRotation rotation)
+	{
+		if(getProjectionMode() != ProjectionMode.MIRROR)
+		{
+			notifySetting(viewer, "Choose Mirror before rotating the image.");
+			return;
+		}
+		setMirrorRotation(rotation);
+		applyProjectionMode(element);
+		window.updateInventory();
+		notifySetting(viewer, "Mirror Rotation " + ChatColor.AQUA + getMirrorRotation().getDegrees() + " degrees");
 	}
 
 	private Element settingsOpenerElement(Window window, Player viewer)
@@ -2179,6 +2581,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void uiChooseDestination(Player p)
 	{
+		if(dimensionalPortalKind.isManagedPortal())
+		{
+			notifySetting(p, "This dimensional portal keeps its generated link.");
+			return;
+		}
 		//@builder
 		Window window = new UIWindow(Wormholes.instance, p)
 				.setTitle(getRouter(true))
@@ -2197,6 +2604,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			}
 
 			if(i.isGateway() != isGateway())
+			{
+				continue;
+			}
+
+			if(!i.getDimensionalPortalKind().isGenericDestination())
 			{
 				continue;
 			}
@@ -2227,8 +2639,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 						if(isLinkedToLocal(target))
 						{
-							tunnel = null;
-							save();
+							unlink();
 							Wormholes.effectManager.playNotificationSuccess(ChatColor.YELLOW + getName() + " unlinked from " + target.getName() + ".", getStructure().getCenter());
 						}
 						else
@@ -2275,8 +2686,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 							if(isLinkedToRemote(target))
 							{
-								tunnel = null;
-								save();
+								unlink();
 								Wormholes.effectManager.playNotificationSuccess(ChatColor.YELLOW + getName() + " unlinked from " + target.getName() + ".", getStructure().getCenter());
 							}
 							else
@@ -2468,18 +2878,60 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	public void setProjectionMode(ProjectionMode mode)
 	{
 		ProjectionMode normalized = mode == null ? ProjectionMode.ON : mode;
+		if(dimensionalPortalKind.isReceiverOnly())
+		{
+			normalized = ProjectionMode.OFF;
+		}
+		else if(dimensionalPortalKind.isManagedPortal()
+				&& (normalized == ProjectionMode.MIRROR || !normalized.isAllowedFor(PortalType.PORTAL)))
+		{
+			normalized = ProjectionMode.ON;
+		}
+		if(!normalized.isAllowedFor(getType()))
+		{
+			normalized = ProjectionMode.ON;
+		}
 		if(this.projectionMode == normalized)
 		{
 			return;
 		}
 		this.projectionMode = normalized;
-		if(Wormholes.projectionManager != null)
-		{
-			Wormholes.projectionManager.removeProjector(this);
-		}
+		invalidateProjection();
 		save();
 		broadcastSettingsIfEnabled();
 		refreshOpenMenusUnlessApplyingRemote();
+	}
+
+	@Override
+	public MirrorRotation getMirrorRotation()
+	{
+		return mirrorRotation;
+	}
+
+	@Override
+	public void setMirrorRotation(MirrorRotation rotation)
+	{
+		MirrorRotation normalized = (rotation == null ? MirrorRotation.DEGREES_0 : rotation).coherentFor(getFrame());
+		if(mirrorRotation == normalized)
+		{
+			return;
+		}
+		mirrorRotation = normalized;
+		invalidateProjection();
+		save();
+		broadcastSettingsIfEnabled();
+		refreshOpenMenusUnlessApplyingRemote();
+	}
+
+	private boolean normalizeMirrorRotationForFrame()
+	{
+		MirrorRotation normalized = (mirrorRotation == null ? MirrorRotation.DEGREES_0 : mirrorRotation).coherentFor(getFrame());
+		if(mirrorRotation == normalized)
+		{
+			return false;
+		}
+		mirrorRotation = normalized;
+		return true;
 	}
 
 	private static ProjectionMode resolveProjectionMode(JSONObject j)
@@ -2489,6 +2941,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			return ProjectionMode.fromName(j.getString("projectionMode"));
 		}
 		return ProjectionMode.ON;
+	}
+
+	static MirrorRotation resolveMirrorRotation(JSONObject j)
+	{
+		return MirrorRotation.fromDegrees(j.optInt("mirrorRotationDegrees", 0));
 	}
 
 	private static PortalPermissionMode resolvePermissionMode(JSONObject j)
@@ -2535,11 +2992,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void setOutgoingTraversalsEnabled(boolean enabled)
 	{
-		if(outgoingTraversalsEnabled == enabled)
+		boolean normalized = dimensionalPortalKind == DimensionalPortalKind.NETHER
+				|| dimensionalPortalKind == DimensionalPortalKind.END_SOURCE
+				|| (!dimensionalPortalKind.isReceiverOnly() && enabled);
+		if(outgoingTraversalsEnabled == normalized)
 		{
 			return;
 		}
-		outgoingTraversalsEnabled = enabled;
+		outgoingTraversalsEnabled = normalized;
 		save();
 		broadcastSettingsIfEnabled();
 		refreshOpenMenusUnlessApplyingRemote();
@@ -2554,11 +3014,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void setIncomingTraversalsEnabled(boolean enabled)
 	{
-		if(incomingTraversalsEnabled == enabled)
+		boolean normalized = dimensionalPortalKind == DimensionalPortalKind.NETHER
+				|| dimensionalPortalKind.isReceiverOnly()
+				|| (dimensionalPortalKind != DimensionalPortalKind.END_SOURCE && enabled);
+		if(incomingTraversalsEnabled == normalized)
 		{
 			return;
 		}
-		incomingTraversalsEnabled = enabled;
+		incomingTraversalsEnabled = normalized;
 		save();
 		broadcastSettingsIfEnabled();
 		refreshOpenMenusUnlessApplyingRemote();
@@ -2835,6 +3298,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 	}
 
+	private void invalidateProjection()
+	{
+		if(Wormholes.projectionManager != null)
+		{
+			Wormholes.projectionManager.removeProjector(this);
+		}
+	}
+
 	public boolean isInboundDisabledByOneWay()
 	{
 		ITunnel activeTunnel = tunnel;
@@ -2951,35 +3422,57 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void save()
 	{
-		needsSaving = true;
+		if(destructionStarted.get())
+		{
+			return;
+		}
+		dirtyGeneration.incrementAndGet();
 	}
 
 	@Override
 	public boolean needsSaving()
 	{
-		return needsSaving;
+		return !saveInFlight.get() && dirtyGeneration.get() != savedGeneration;
 	}
 
 	@Override
 	public void saveNow() throws IOException
 	{
-		doSave();
-		needsSaving = false;
+		try
+		{
+			if(destructionStarted.get())
+			{
+				return;
+			}
+			doSave();
+		}
+		finally
+		{
+			saveInFlight.set(false);
+		}
 	}
 
 	private void doSave() throws IOException
 	{
-		willSave();
-		File f = Wormholes.portalManager.getSaveFile(getId());
-		f.getParentFile().mkdirs();
-		VIO.writeAll(f, toJSON().toString(2));
-		Wormholes.v("Saved Portal " + getId().toString() + " (" + getName() + ")");
+		synchronized(persistenceLock)
+		{
+			if(destructionStarted.get())
+			{
+				return;
+			}
+			long generation = dirtyGeneration.get();
+			File f = Wormholes.portalManager.getSaveFile(getId());
+			f.getParentFile().mkdirs();
+			VIO.writeAll(f, toJSON().toString(2));
+			savedGeneration = generation;
+			Wormholes.v("Saved Portal " + getId().toString() + " (" + getName() + ")");
+		}
 	}
 
 	@Override
 	public void willSave()
 	{
-		needsSaving = false;
+		saveInFlight.compareAndSet(false, true);
 	}
 
 	@Override
@@ -2992,17 +3485,45 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void deleteData()
 	{
-		File f = Wormholes.portalManager.getSaveFile(getId());
-		f.delete();
-
-		if(f.getParentFile().listFiles().length == 0)
+		synchronized(persistenceLock)
 		{
-			f.getParentFile().delete();
+			File f = Wormholes.portalManager.getSaveFile(getId());
+			try
+			{
+				Files.deleteIfExists(f.toPath());
+			}
+			catch(IOException e)
+			{
+				Wormholes.instance.getLogger().log(Level.WARNING, "Could not delete portal data for " + getId(), e);
+				return;
+			}
+			deleteDirectoryIfEmpty(f.getParentFile());
+			deleteDirectoryIfEmpty(f.getParentFile().getParentFile());
 		}
+	}
 
-		if(f.getParentFile().getParentFile().listFiles().length == 0)
+	private static void deleteDirectoryIfEmpty(File directory)
+	{
+		File[] contents = directory == null ? null : directory.listFiles();
+		if(contents != null && contents.length == 0)
 		{
-			f.getParentFile().getParentFile().delete();
+			directory.delete();
+		}
+	}
+
+	static UUID resolveOptionalUuid(String value)
+	{
+		if(value == null || value.isBlank())
+		{
+			return null;
+		}
+		try
+		{
+			return UUID.fromString(value);
+		}
+		catch(IllegalArgumentException ignored)
+		{
+			return null;
 		}
 	}
 

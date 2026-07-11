@@ -1,27 +1,35 @@
 package art.arcane.wormholes.network;
 
+import art.arcane.wormholes.PortalManager;
+import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.portal.PortalPermissionMode;
 import art.arcane.wormholes.portal.PortalType;
 import art.arcane.wormholes.portal.ProjectionMode;
 import art.arcane.wormholes.portal.RemotePortal;
+import art.arcane.wormholes.portal.MirrorRotation;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PortalSettingsSyncTest {
     private static RemotePortal newRemotePortal(String peer, UUID id) {
-        PortalInfo info = new PortalInfo(id, "Remote Gate", "world", PortalType.GATEWAY.name(), true,
+        return RemotePortal.fromInfo(peer, portalInfo(id, true));
+    }
+
+    private static PortalInfo portalInfo(UUID id, boolean open) {
+        return new PortalInfo(id, "Remote Gate", "world", PortalType.GATEWAY.name(), open,
             "E", "S", "U",
             100.0D, 64.0D, 100.0D,
             99.0D, 63.0D, 99.0D,
             101.0D, 65.0D, 101.0D);
-        return RemotePortal.fromInfo(peer, info);
     }
 
     @Test
@@ -29,6 +37,7 @@ class PortalSettingsSyncTest {
         RemotePortal remote = newRemotePortal("alpha", UUID.randomUUID());
         Map<String, String> settings = new LinkedHashMap<>();
         settings.put(PortalSyncService.KEY_PROJECTION_MODE, "MIRROR");
+        settings.put(PortalSyncService.KEY_MIRROR_ROTATION, "270");
         settings.put(PortalSyncService.KEY_PERMISSION_MODE, "WHITELIST");
         settings.put(PortalSyncService.KEY_OUTGOING_TRAVERSALS, "false");
         settings.put(PortalSyncService.KEY_INCOMING_TRAVERSALS, "false");
@@ -39,9 +48,10 @@ class PortalSettingsSyncTest {
         settings.put(PortalSyncService.KEY_VIEW_UNSUBSCRIBE_GRACE, "45");
         settings.put(PortalSyncService.KEY_VIEW_FALLBACK_BLOCK, "minecraft:stone");
 
-        applyDirectlyToRemoteMirror(remote, settings);
+        PortalSyncService.applyToRemote(remote, settings);
 
         assertEquals(ProjectionMode.MIRROR, remote.getMirroredProjectionMode());
+        assertEquals(MirrorRotation.DEGREES_180, remote.getMirroredProjectionRotation());
         assertEquals(PortalPermissionMode.WHITELIST, remote.getMirroredPermissionMode());
         assertFalse(remote.isMirroredOutgoingTraversalsEnabled());
         assertFalse(remote.isMirroredIncomingTraversalsEnabled());
@@ -63,7 +73,7 @@ class PortalSettingsSyncTest {
         settings.put("anotherFutureField", "1234");
         settings.put(PortalSyncService.KEY_PROJECTION_MODE, "ONE_WAY");
 
-        applyDirectlyToRemoteMirror(remote, settings);
+        PortalSyncService.applyToRemote(remote, settings);
 
         assertEquals(ProjectionMode.ONE_WAY, remote.getMirroredProjectionMode());
         assertEquals(originalDepth, remote.getMirroredNetworkViewDepth());
@@ -79,38 +89,51 @@ class PortalSettingsSyncTest {
         assertFalse(PortalSyncService.isApplyingRemote());
     }
 
-    private static void applyDirectlyToRemoteMirror(RemotePortal remote, Map<String, String> settings) {
-        WireMessage.PortalSettingsUpdate update = new WireMessage.PortalSettingsUpdate(remote.getId(), settings);
-        for (Map.Entry<String, String> entry : update.settings().entrySet()) {
-            applyKeyForTest(remote, entry.getKey(), entry.getValue());
+    @Test
+    void malformedMirrorRotationPreservesPreviousValue() {
+        RemotePortal remote = newRemotePortal("alpha", UUID.randomUUID());
+        remote.setMirroredProjectionRotation(MirrorRotation.DEGREES_180);
+
+        PortalSyncService.applyToRemote(remote, Map.of(PortalSyncService.KEY_MIRROR_ROTATION, "not-a-number"));
+
+        assertEquals(MirrorRotation.DEGREES_180, remote.getMirroredProjectionRotation());
+    }
+
+    @Test
+    void productionUpdatePopulatesRemotePreflightAndSurvivesRegistryRefresh() {
+        RemotePortalRegistry previousRegistry = Wormholes.remotePortalRegistry;
+        PortalManager previousPortalManager = Wormholes.portalManager;
+        RemotePortalRegistry registry = new RemotePortalRegistry();
+        UUID portalId = UUID.randomUUID();
+        try {
+            Wormholes.remotePortalRegistry = registry;
+            Wormholes.portalManager = null;
+            registry.applyUpsert("alpha", portalInfo(portalId, true));
+            PortalSyncService sync = new PortalSyncService(null, List::of, Runnable::run);
+            Map<String, String> settings = new LinkedHashMap<>();
+            settings.put(PortalSyncService.KEY_PROJECTION_MODE, ProjectionMode.MIRROR.name());
+            settings.put(PortalSyncService.KEY_MIRROR_ROTATION, "180");
+            settings.put(PortalSyncService.KEY_INCOMING_TRAVERSALS, "false");
+
+            sync.applySettingsUpdate("alpha", new WireMessage.PortalSettingsUpdate(portalId, settings));
+
+            assertMirrorPreflight(registry.get("alpha", portalId));
+            registry.applyUpsert("alpha", portalInfo(portalId, false));
+            assertMirrorPreflight(registry.get("alpha", portalId));
+            registry.applyDirectory("alpha", List.of(portalInfo(portalId, true)));
+            assertMirrorPreflight(registry.get("alpha", portalId));
+        } finally {
+            Wormholes.remotePortalRegistry = previousRegistry;
+            Wormholes.portalManager = previousPortalManager;
         }
     }
 
-    private static void applyKeyForTest(RemotePortal remote, String key, String value) {
-        switch (key) {
-            case PortalSyncService.KEY_PROJECTION_MODE -> {
-                try {
-                    remote.setMirroredProjectionMode(ProjectionMode.valueOf(value));
-                } catch (IllegalArgumentException ignored) {
-                }
-            }
-            case PortalSyncService.KEY_PERMISSION_MODE -> {
-                try {
-                    remote.setMirroredPermissionMode(PortalPermissionMode.valueOf(value));
-                } catch (IllegalArgumentException ignored) {
-                }
-            }
-            case PortalSyncService.KEY_OUTGOING_TRAVERSALS -> remote.setMirroredOutgoingTraversalsEnabled(Boolean.parseBoolean(value));
-            case PortalSyncService.KEY_INCOMING_TRAVERSALS -> remote.setMirroredIncomingTraversalsEnabled(Boolean.parseBoolean(value));
-            case PortalSyncService.KEY_VIEW_DEPTH -> remote.setMirroredNetworkViewDepth(Integer.parseInt(value));
-            case PortalSyncService.KEY_VIEW_LATERAL_PAD -> remote.setMirroredNetworkViewLateralPad(Integer.parseInt(value));
-            case PortalSyncService.KEY_VIEW_HEARTBEAT -> remote.setMirroredNetworkViewHeartbeatTicks(Integer.parseInt(value));
-            case PortalSyncService.KEY_VIEW_ENTITY_INTERVAL -> remote.setMirroredNetworkViewEntityIntervalTicks(Integer.parseInt(value));
-            case PortalSyncService.KEY_VIEW_UNSUBSCRIBE_GRACE -> remote.setMirroredNetworkViewUnsubscribeGraceSeconds(Integer.parseInt(value));
-            case PortalSyncService.KEY_VIEW_FALLBACK_BLOCK -> remote.setMirroredNetworkViewFallbackBlock(value);
-            default -> {
-            }
-        }
+    private static void assertMirrorPreflight(RemotePortal remote) {
+        assertNotNull(remote);
+        assertEquals(ProjectionMode.MIRROR, remote.getMirroredProjectionMode());
+        assertEquals(MirrorRotation.DEGREES_180, remote.getMirroredProjectionRotation());
+        assertFalse(remote.isMirroredIncomingTraversalsEnabled());
+        assertFalse(remote.acceptsInboundTraversal());
     }
 
     private static void runWithReentryGuard(Runnable inside) {

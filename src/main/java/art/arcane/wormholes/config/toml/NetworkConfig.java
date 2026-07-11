@@ -33,8 +33,6 @@ public class NetworkConfig {
     @ConfigAdvanced
     public long handoffTimeoutMs = 5000L;
     @ConfigAdvanced
-    public boolean optimisticHandoff = true;
-    @ConfigAdvanced
     public boolean autoAcceptTransfers = true;
 
     @ConfigAdvanced

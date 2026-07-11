@@ -5,6 +5,7 @@ import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import com.github.retrooper.packetevents.PacketEvents;
 import com.github.retrooper.packetevents.protocol.player.TextureProperty;
 import com.github.retrooper.packetevents.protocol.player.UserProfile;
+import art.arcane.wormholes.EffectManager;
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.config.toml.NetworkConfig;
@@ -16,6 +17,7 @@ import art.arcane.wormholes.network.replication.ChunkResyncRequest;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.util.AxisAlignedBB;
 
+import org.bukkit.Bukkit;
 import org.bukkit.ChunkSnapshot;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -32,17 +34,20 @@ import org.bukkit.util.Vector;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 public final class ViewServer implements Listener {
     public record Stats(int subscriptions, int trackedEntities, long chunkBulkSentCount, long chunkDiffSentCount, long entitySendCount, long timeSendCount) {
@@ -50,6 +55,7 @@ public final class ViewServer implements Listener {
 
     private static final long DIRTY_DRAIN_INTERVAL_TICKS = 2L;
     private static final int MAX_BULK_SNAPSHOTS_PER_TICK = 8;
+    private static final int MAX_CAPTURED_ENTITIES = 64;
     private static final int SIDEBAND_MAX_ENTITIES = 24;
     private static final long SIDEBAND_ENTITY_INTERVAL_TICKS = 2L;
     private static final long SIDEBAND_FULL_RESYNC_TICKS = 80L;
@@ -75,7 +81,7 @@ public final class ViewServer implements Listener {
     private volatile EntityRateScheduler.Bands lastBands;
     private volatile NetworkConfig.ViewConfig cachedPreShipView;
     private volatile PreShipPredictor.Settings cachedPreShipSettings;
-    private long tickCounter;
+    private volatile long tickCounter;
 
     private static final class Session {
         private final UUID portalId;
@@ -99,6 +105,7 @@ public final class ViewServer implements Listener {
         private final Map<UUID, EntityVisual> lastCapturedSnapshots = new ConcurrentHashMap<>();
         private final Map<UUID, BlobCaptureState> blobCaptureStates = new ConcurrentHashMap<>();
         private final AtomicBoolean entityCaptureRunning = new AtomicBoolean(false);
+        private final AtomicBoolean captureFailureLogged = new AtomicBoolean(false);
         private volatile TicketLease ticketLease;
         private volatile int lastSkyDarken = -1;
 
@@ -130,7 +137,7 @@ public final class ViewServer implements Listener {
     private record ChunkTicketKey(UUID worldId, int chunkX, int chunkZ) {
     }
 
-    private record BulkRetryKey(UUID subscriptionId, String peerName, long chunkKey) {
+    record BulkRetryKey(UUID subscriptionId, String peerName, long chunkKey, long bulkGeneration) {
     }
 
     private record BulkCompleteKey(UUID subscriptionId, String peerName) {
@@ -393,7 +400,12 @@ public final class ViewServer implements Listener {
             }
             boolean entitiesDue = isIntervalDue(portal.getNetworkViewEntityIntervalTicks());
             if (entitiesDue && session.entityCaptureRunning.compareAndSet(false, true)) {
-                FoliaScheduler.runRegion(Wormholes.instance, session.world, session.centerChunkX, session.centerChunkZ, () -> captureEntities(session));
+                boolean scheduled = FoliaScheduler.runRegion(Wormholes.instance, session.world, session.centerChunkX, session.centerChunkZ,
+                    () -> captureEntities(session));
+                if (!scheduled) {
+                    publishEmptyEntityPresence(session, new IllegalStateException("Entity capture center region rejected scheduling"));
+                    session.entityCaptureRunning.set(false);
+                }
             }
         }
     }
@@ -505,115 +517,260 @@ public final class ViewServer implements Listener {
             NetworkConfig.ViewConfig viewConfig = activeViewConfig();
             EntityRateScheduler scheduler = ensureScheduler(viewConfig);
             boolean deltaEnabled = viewConfig.entityDeltaEnabled;
-
-            List<EntityVisual> visuals = new ArrayList<>(16);
-            Set<UUID> presentIds = new HashSet<>(32);
-            for (Entity entity : session.world.getNearbyEntities(session.bounds)) {
-                if (visuals.size() >= 64) {
-                    break;
+            if (!FoliaScheduler.isFoliaThreading(Bukkit.getServer())) {
+                EntityAdmission<Entity> admission = new EntityAdmission<>(MAX_CAPTURED_ENTITIES);
+                for (Entity entity : session.world.getNearbyEntities(session.bounds)) {
+                    if (entity.isDead() || !entity.isValid() || EffectManager.isPortalEffectEntity(entity)) {
+                        continue;
+                    }
+                    admission.admit(entityRank(session, entity), entity);
                 }
-                if (entity.isDead() || !entity.isValid()) {
+                Map<UUID, EntityVisual> captured = new HashMap<>();
+                for (Entity entity : admission.selectedEntities()) {
+                    if (entity.isDead() || !entity.isValid() || EffectManager.isPortalEffectEntity(entity)) {
+                        continue;
+                    }
+                    EntityVisual currentFull = captureEntityVisualFull(session, entity, entityTick);
+                    captured.put(currentFull.id(), currentFull);
+                    session.lastCapturedSnapshots.put(currentFull.id(), currentFull);
+                }
+                publishEntityCapture(session, entityTick, scheduler, deltaEnabled, captured);
+                session.entityCaptureRunning.set(false);
+                return;
+            }
+            EntityAdmission<Entity> admission = new EntityAdmission<>(MAX_CAPTURED_ENTITIES);
+            List<CompletableFuture<Void>> partitions = new ArrayList<>(session.columns.size());
+            for (long[] column : session.columns) {
+                int chunkX = (int) column[0];
+                int chunkZ = (int) column[1];
+                BoundingBox partitionBounds = captureBoundsForChunk(session.bounds, chunkX, chunkZ);
+                if (partitionBounds == null) {
                     continue;
                 }
-                EntityVisual currentFull = captureEntityVisualFull(session, entity, entityTick);
-                visuals.add(currentFull);
-                presentIds.add(currentFull.id());
-                session.lastCapturedSnapshots.put(currentFull.id(), currentFull);
-            }
-            session.sentProfiles.retainAll(presentIds);
-            session.lastCapturedSnapshots.keySet().retainAll(presentIds);
-            session.blobCaptureStates.keySet().retainAll(presentIds);
-
-            Set<UUID> sidebandAllowed = null;
-            for (String peerName : session.peers) {
-                boolean sideband = network.isSidebandOnlyPeer(peerName);
-                if (sideband) {
-                    Long nextTick = session.sidebandEntityNextTick.get(peerName);
-                    if (nextTick != null && entityTick < nextTick.longValue()) {
-                        continue;
-                    }
-                    session.sidebandEntityNextTick.put(peerName, entityTick + SIDEBAND_ENTITY_INTERVAL_TICKS);
-                    if (sidebandAllowed == null) {
-                        sidebandAllowed = nearestEntityIds(session, visuals, SIDEBAND_MAX_ENTITIES);
-                    }
-                } else {
-                    session.sidebandEntityNextTick.remove(peerName);
-                }
-                Map<UUID, EntitySendState> peerStates = session.sendStatesFor(peerName);
-                Set<UUID> peerPresentIds = presentIdsForPeer(sideband, presentIds, sidebandAllowed);
-                peerStates.keySet().retainAll(peerPresentIds);
-                Boolean previousSideband = session.lastPeerSideband.put(peerName, Boolean.valueOf(sideband));
-                if (previousSideband != null && previousSideband.booleanValue() != sideband) {
-                    for (EntitySendState transitioned : peerStates.values()) {
-                        transitioned.requestFull();
-                    }
-                }
-                List<EntityVisual> outbound = new ArrayList<>(visuals.size());
-                for (EntityVisual currentFull : visuals) {
-                    if (sideband && !sidebandAllowed.contains(currentFull.id())) {
-                        continue;
-                    }
-                    EntitySendState state = peerStates.computeIfAbsent(currentFull.id(), EntitySendState::new);
-                    boolean rateAllowsSend = entityTick >= state.getNextEligibleTick();
-                    if (rateAllowsSend) {
-                        double dx = currentFull.x() - session.portalCenterX;
-                        double dy = currentFull.y() - session.portalCenterY;
-                        double dz = currentFull.z() - session.portalCenterZ;
-                        state.setNextEligibleTick(entityTick + scheduler.claimSendInterval((dx * dx) + (dy * dy) + (dz * dz)));
-                    }
-                    boolean forceFull = !deltaEnabled
-                        || state.isForceFullNext()
-                        || state.getLastSentSnapshot() == null
-                        || (sideband && state.isSidebandFullDue(entityTick, SIDEBAND_FULL_RESYNC_TICKS, SIDEBAND_FULL_RESYNC_JITTER_TICKS));
-                    if (!rateAllowsSend && !forceFull) {
-                        continue;
-                    }
-                    if (forceFull) {
-                        int sequence = state.allocateSequence();
-                        outbound.add(withSequenceAndMode(currentFull, sequence, EntityVisual.MODE_FULL));
-                        state.recordSent(currentFull, true, entityTick);
-                    } else {
-                        int mask = EntityDeltaCodec.computeMask(currentFull, state.getLastSentSnapshot());
-                        if (mask == 0) {
-                            continue;
+                CompletableFuture<Void> partition = new CompletableFuture<>();
+                partitions.add(partition);
+                boolean scheduled = FoliaScheduler.runRegion(Wormholes.instance, session.world, chunkX, chunkZ, () -> {
+                    try {
+                        for (Entity entity : session.world.getNearbyEntities(partitionBounds)) {
+                            if (!FoliaScheduler.isOwnedByCurrentRegion(entity)
+                                || entity.isDead()
+                                || !entity.isValid()
+                                || EffectManager.isPortalEffectEntity(entity)) {
+                                continue;
+                            }
+                            EntityRank rank = entityRank(session, entity);
+                            admission.admit(rank, entity);
                         }
-                        int sequence = state.allocateSequence();
-                        outbound.add(EntityDeltaCodec.buildDelta(currentFull, state.getLastSentSnapshot(), sequence, mask));
-                        state.recordSent(currentFull, false, entityTick);
+                        partition.complete(null);
+                    } catch (Throwable error) {
+                        partition.completeExceptionally(error);
                     }
-                }
-                Set<UUID> previousPresent = session.lastSentPresentIds.get(peerName);
-                boolean presentChanged = previousPresent == null || !previousPresent.equals(peerPresentIds);
-                if (Settings.DEBUG && presentChanged && previousPresent != null) {
-                    Set<UUID> left = new HashSet<>(previousPresent);
-                    left.removeAll(peerPresentIds);
-                    Set<UUID> joined = new HashSet<>(peerPresentIds);
-                    joined.removeAll(previousPresent);
-                    if (!left.isEmpty() || !joined.isEmpty()) {
-                        Wormholes.v("[stream] portal=" + session.portalId + " peer=" + peerName + " present=" + peerPresentIds.size() + (left.isEmpty() ? "" : " LEFT=" + left) + (joined.isEmpty() ? "" : " JOINED=" + joined));
-                    }
-                }
-                if (outbound.isEmpty() && !presentChanged) {
-                    continue;
-                }
-                WireMessage.ViewEntities message = new WireMessage.ViewEntities(session.portalId, outbound, new ArrayList<>(peerPresentIds));
-                boolean sent = network.send(peerName, message);
-                if (sent) {
-                    session.lastSentPresentIds.put(peerName, new HashSet<>(peerPresentIds));
-                    entitySendCount.addAndGet(outbound.size());
-                } else {
-                    for (EntityVisual failedVisual : outbound) {
-                        EntitySendState failedState = peerStates.get(failedVisual.id());
-                        if (failedState != null) {
-                            failedState.requestFull();
-                        }
-                    }
+                });
+                if (!scheduled) {
+                    partition.completeExceptionally(new IllegalStateException("Entity capture partition rejected scheduling for " + chunkX + "," + chunkZ));
                 }
             }
+            CompletableFuture.allOf(partitions.toArray(CompletableFuture[]::new)).whenComplete((ignored, error) -> {
+                if (error != null) {
+                    publishEmptyEntityPresence(session, error);
+                    session.entityCaptureRunning.set(false);
+                } else {
+                    captureAdmittedEntities(session, admission.selectedEntities(), entityTick, scheduler, deltaEnabled);
+                }
+            });
         } catch (Throwable e) {
-            Wormholes.v("net: entity view capture failed for portal " + session.portalId + ": " + e.getMessage());
-        } finally {
+            publishEmptyEntityPresence(session, e);
             session.entityCaptureRunning.set(false);
+        }
+    }
+
+    private void captureAdmittedEntities(Session session, List<Entity> entities, long entityTick,
+                                          EntityRateScheduler scheduler, boolean deltaEnabled) {
+        Map<UUID, EntityVisual> captured = new ConcurrentHashMap<>();
+        List<CompletableFuture<Void>> captures = new ArrayList<>(entities.size());
+        for (Entity entity : entities) {
+            CompletableFuture<Void> capture = new CompletableFuture<>();
+            captures.add(capture);
+            boolean scheduled = FoliaScheduler.runEntity(Wormholes.instance, entity, () -> {
+                try {
+                    Location location = entity.getLocation();
+                    if (entity.isDead()
+                        || !entity.isValid()
+                        || EffectManager.isPortalEffectEntity(entity)
+                        || !session.bounds.contains(location.getX(), location.getY(), location.getZ())) {
+                        capture.complete(null);
+                        return;
+                    }
+                    EntityVisual visual = captureEntityVisualFull(session, entity, entityTick);
+                    captured.put(visual.id(), visual);
+                    capture.complete(null);
+                } catch (Throwable error) {
+                    capture.completeExceptionally(error);
+                }
+            });
+            if (!scheduled) {
+                capture.complete(null);
+            }
+        }
+        CompletableFuture.allOf(captures.toArray(CompletableFuture[]::new)).whenComplete((ignored, error) -> {
+            try {
+                if (error != null) {
+                    publishEmptyEntityPresence(session, error);
+                    return;
+                }
+                for (EntityVisual visual : captured.values()) {
+                    session.lastCapturedSnapshots.put(visual.id(), visual);
+                }
+                publishEntityCapture(session, entityTick, scheduler, deltaEnabled, captured);
+            } finally {
+                session.entityCaptureRunning.set(false);
+            }
+        });
+    }
+
+    static BoundingBox captureBoundsForChunk(BoundingBox bounds, int chunkX, int chunkZ) {
+        double chunkMinX = (double) chunkX * 16.0D;
+        double chunkMinZ = (double) chunkZ * 16.0D;
+        double chunkMaxX = Math.nextDown(chunkMinX + 16.0D);
+        double chunkMaxZ = Math.nextDown(chunkMinZ + 16.0D);
+        double minX = Math.max(bounds.getMinX(), chunkMinX);
+        double minZ = Math.max(bounds.getMinZ(), chunkMinZ);
+        double maxX = Math.min(bounds.getMaxX(), chunkMaxX);
+        double maxZ = Math.min(bounds.getMaxZ(), chunkMaxZ);
+        if (maxX <= minX || maxZ <= minZ) {
+            return null;
+        }
+        return new BoundingBox(minX, bounds.getMinY(), minZ, maxX, bounds.getMaxY(), maxZ);
+    }
+
+    private static EntityRank entityRank(Session session, Entity entity) {
+        Location location = entity.getLocation();
+        double dx = location.getX() - session.portalCenterX;
+        double dy = location.getY() - session.portalCenterY;
+        double dz = location.getZ() - session.portalCenterZ;
+        return new EntityRank(entity.getUniqueId(), entity instanceof Player, (dx * dx) + (dy * dy) + (dz * dz));
+    }
+
+    private void publishEntityCapture(Session session, long entityTick, EntityRateScheduler scheduler,
+                                      boolean deltaEnabled, Map<UUID, EntityVisual> captured) {
+        if (!active.get() || sessions.get(session.portalId) != session) {
+            return;
+        }
+        session.captureFailureLogged.set(false);
+        List<EntityVisual> visuals = new ArrayList<>(captured.values());
+        Set<UUID> presentIds = new HashSet<>(captured.keySet());
+        session.sentProfiles.retainAll(presentIds);
+        session.lastCapturedSnapshots.keySet().retainAll(presentIds);
+        session.blobCaptureStates.keySet().retainAll(presentIds);
+
+        Set<UUID> sidebandAllowed = null;
+        for (String peerName : session.peers) {
+            boolean sideband = network.isSidebandOnlyPeer(peerName);
+            if (sideband) {
+                Long nextTick = session.sidebandEntityNextTick.get(peerName);
+                if (nextTick != null && entityTick < nextTick.longValue()) {
+                    continue;
+                }
+                session.sidebandEntityNextTick.put(peerName, entityTick + SIDEBAND_ENTITY_INTERVAL_TICKS);
+                if (sidebandAllowed == null) {
+                    sidebandAllowed = nearestEntityIds(session, visuals, SIDEBAND_MAX_ENTITIES);
+                }
+            } else {
+                session.sidebandEntityNextTick.remove(peerName);
+            }
+            Map<UUID, EntitySendState> peerStates = session.sendStatesFor(peerName);
+            Set<UUID> peerPresentIds = presentIdsForPeer(sideband, presentIds, sidebandAllowed);
+            peerStates.keySet().retainAll(peerPresentIds);
+            Boolean previousSideband = session.lastPeerSideband.put(peerName, Boolean.valueOf(sideband));
+            if (previousSideband != null && previousSideband.booleanValue() != sideband) {
+                for (EntitySendState transitioned : peerStates.values()) {
+                    transitioned.requestFull();
+                }
+            }
+            List<EntityVisual> outbound = new ArrayList<>(visuals.size());
+            for (EntityVisual currentFull : visuals) {
+                if (sideband && !sidebandAllowed.contains(currentFull.id())) {
+                    continue;
+                }
+                EntitySendState state = peerStates.computeIfAbsent(currentFull.id(), EntitySendState::new);
+                boolean rateAllowsSend = entityTick >= state.getNextEligibleTick();
+                if (rateAllowsSend) {
+                    double dx = currentFull.x() - session.portalCenterX;
+                    double dy = currentFull.y() - session.portalCenterY;
+                    double dz = currentFull.z() - session.portalCenterZ;
+                    state.setNextEligibleTick(entityTick + scheduler.claimSendInterval((dx * dx) + (dy * dy) + (dz * dz)));
+                }
+                boolean forceFull = !deltaEnabled
+                    || state.isForceFullNext()
+                    || state.getLastSentSnapshot() == null
+                    || (sideband && state.isSidebandFullDue(entityTick, SIDEBAND_FULL_RESYNC_TICKS, SIDEBAND_FULL_RESYNC_JITTER_TICKS));
+                if (!rateAllowsSend && !forceFull) {
+                    continue;
+                }
+                if (forceFull) {
+                    int sequence = state.allocateSequence();
+                    outbound.add(withSequenceAndMode(currentFull, sequence, EntityVisual.MODE_FULL));
+                    state.recordSent(currentFull, true, entityTick);
+                } else {
+                    int mask = EntityDeltaCodec.computeMask(currentFull, state.getLastSentSnapshot());
+                    if (mask == 0) {
+                        continue;
+                    }
+                    int sequence = state.allocateSequence();
+                    outbound.add(EntityDeltaCodec.buildDelta(currentFull, state.getLastSentSnapshot(), sequence, mask));
+                    state.recordSent(currentFull, false, entityTick);
+                }
+            }
+            Set<UUID> previousPresent = session.lastSentPresentIds.get(peerName);
+            boolean presentChanged = previousPresent == null || !previousPresent.equals(peerPresentIds);
+            if (Settings.DEBUG && presentChanged && previousPresent != null) {
+                Set<UUID> left = new HashSet<>(previousPresent);
+                left.removeAll(peerPresentIds);
+                Set<UUID> joined = new HashSet<>(peerPresentIds);
+                joined.removeAll(previousPresent);
+                if (!left.isEmpty() || !joined.isEmpty()) {
+                    Wormholes.v("[stream] portal=" + session.portalId + " peer=" + peerName + " present=" + peerPresentIds.size()
+                        + (left.isEmpty() ? "" : " LEFT=" + left) + (joined.isEmpty() ? "" : " JOINED=" + joined));
+                }
+            }
+            if (outbound.isEmpty() && !presentChanged) {
+                continue;
+            }
+            WireMessage.ViewEntities message = new WireMessage.ViewEntities(session.portalId, outbound, new ArrayList<>(peerPresentIds));
+            boolean sent = network.send(peerName, message);
+            if (sent) {
+                session.lastSentPresentIds.put(peerName, new HashSet<>(peerPresentIds));
+                entitySendCount.addAndGet(outbound.size());
+            } else {
+                for (EntityVisual failedVisual : outbound) {
+                    EntitySendState failedState = peerStates.get(failedVisual.id());
+                    if (failedState != null) {
+                        failedState.requestFull();
+                    }
+                }
+            }
+        }
+    }
+
+    private void publishEmptyEntityPresence(Session session, Throwable error) {
+        if (!active.get() || sessions.get(session.portalId) != session) {
+            return;
+        }
+        if (session.captureFailureLogged.compareAndSet(false, true)) {
+            Wormholes.instance.getLogger().log(Level.WARNING, "Entity view capture failed for portal " + session.portalId, error);
+        }
+        session.sentProfiles.clear();
+        session.lastCapturedSnapshots.clear();
+        session.blobCaptureStates.clear();
+        session.sidebandEntityNextTick.clear();
+        for (String peerName : session.peers) {
+            session.sendStatesFor(peerName).clear();
+            boolean sent = network.send(peerName, new WireMessage.ViewEntities(session.portalId, List.of(), List.of()));
+            if (sent) {
+                session.lastSentPresentIds.put(peerName, Set.of());
+            } else {
+                session.lastSentPresentIds.remove(peerName);
+            }
         }
     }
 
@@ -752,7 +909,7 @@ public final class ViewServer implements Listener {
             return nearest;
         }
         List<EntityVisual> sorted = new ArrayList<>(visuals);
-        sorted.sort(java.util.Comparator.comparingDouble(visual -> {
+        sorted.sort(Comparator.comparingDouble(visual -> {
             double dx = visual.x() - session.portalCenterX;
             double dy = visual.y() - session.portalCenterY;
             double dz = visual.z() - session.portalCenterZ;
@@ -843,21 +1000,66 @@ public final class ViewServer implements Listener {
     }
 
     private CompletableFuture<Boolean> sendInitialBulkWithRetry(Session session, String peerName, int chunkX, int chunkZ) {
-        long chunkKey = ViewSlice.columnKey(chunkX, chunkZ);
-        BulkRetryKey key = new BulkRetryKey(session.subscriptionId, peerName, chunkKey);
-        return bulkRetryCoordinator.run(
-            key,
-            () -> isSessionChunkActive(session, peerName, chunkKey),
-            () -> sendInitialBulk(session, peerName, chunkX, chunkZ),
-            (retry, delayTicks) -> FoliaScheduler.runAsync(Wormholes.instance, retry, delayTicks)
-        );
+        CompletableFuture<Boolean> result = new CompletableFuture<>();
+        continueInitialBulkRetry(session, peerName, chunkX, chunkZ, result);
+        return result;
     }
 
-    private CompletableFuture<Boolean> sendInitialBulk(Session session, String peerName, int chunkX, int chunkZ) {
+    private void continueInitialBulkRetry(Session session, String peerName, int chunkX, int chunkZ, CompletableFuture<Boolean> result) {
+        if (result.isDone()) {
+            return;
+        }
+        ChunkReplicationManager replication = network.getReplicationManager();
+        long chunkKey = ViewSlice.columnKey(chunkX, chunkZ);
+        if (!isSessionChunkActive(session, peerName, chunkKey)) {
+            result.complete(false);
+            return;
+        }
+        if (replication.isBulked(peerName, chunkKey)) {
+            result.complete(true);
+            return;
+        }
+        long bulkGeneration = replication.bulkGeneration(peerName, chunkKey);
+        if (bulkGeneration < 0L) {
+            result.complete(false);
+            return;
+        }
+        BulkRetryKey key = new BulkRetryKey(session.subscriptionId, peerName, chunkKey, bulkGeneration);
+        CompletableFuture<Boolean> generationResult = bulkRetryCoordinator.run(
+            key,
+            () -> isSessionChunkActive(session, peerName, chunkKey)
+                && replication.bulkGeneration(peerName, chunkKey) == bulkGeneration
+                && !replication.isBulked(peerName, chunkKey),
+            () -> sendInitialBulk(session, peerName, chunkX, chunkZ, bulkGeneration),
+            (retry, delayTicks) -> FoliaScheduler.runAsync(Wormholes.instance, retry, delayTicks)
+        );
+        generationResult.whenComplete((accepted, error) -> {
+            if (result.isDone()) {
+                return;
+            }
+            if (!isSessionChunkActive(session, peerName, chunkKey)) {
+                result.complete(false);
+                return;
+            }
+            if (replication.isBulked(peerName, chunkKey)) {
+                result.complete(true);
+                return;
+            }
+            long currentGeneration = replication.bulkGeneration(peerName, chunkKey);
+            if (currentGeneration != bulkGeneration && currentGeneration >= 0L) {
+                continueInitialBulkRetry(session, peerName, chunkX, chunkZ, result);
+                return;
+            }
+            result.complete(false);
+        });
+    }
+
+    private CompletableFuture<Boolean> sendInitialBulk(Session session, String peerName, int chunkX, int chunkZ, long bulkGeneration) {
         ChunkReplicationManager replication = network.getReplicationManager();
         long chunkKey = ViewSlice.columnKey(chunkX, chunkZ);
         CompletableFuture<Boolean> done = new CompletableFuture<>();
-        if (!isSessionChunkActive(session, peerName, chunkKey)) {
+        if (!isSessionChunkActive(session, peerName, chunkKey)
+            || replication.bulkGeneration(peerName, chunkKey) != bulkGeneration) {
             done.complete(false);
             return done;
         }
@@ -895,7 +1097,7 @@ public final class ViewServer implements Listener {
                             done.complete(false);
                             return;
                         }
-                        boolean accepted = replication.sendBulk(peerName, session.subscriptionId, chunkKey, payload, slice.contentHash());
+                        boolean accepted = replication.sendBulk(peerName, session.subscriptionId, chunkKey, payload, slice.contentHash(), bulkGeneration);
                         if (accepted && session.lastSkyDarken >= 0 && isSessionChunkActive(session, peerName, chunkKey)) {
                             network.send(peerName, new WireMessage.ViewTime(session.portalId, session.lastSkyDarken));
                             timeSendCount.incrementAndGet();
@@ -1235,5 +1437,62 @@ public final class ViewServer implements Listener {
 
     public int sessionCount() {
         return sessions.size();
+    }
+
+    private static int compareRanks(EntityRank left, EntityRank right) {
+        if (left.player() != right.player()) {
+            return left.player() ? -1 : 1;
+        }
+        int distanceOrder = Double.compare(left.distanceSquared(), right.distanceSquared());
+        if (distanceOrder != 0) {
+            return distanceOrder;
+        }
+        return left.id().compareTo(right.id());
+    }
+
+    record EntityRank(UUID id, boolean player, double distanceSquared) {
+    }
+
+    static final class EntityAdmission<T> {
+        private static final Comparator<EntityRank> RANK_ORDER = ViewServer::compareRanks;
+
+        private final int limit;
+        private final TreeSet<EntityRank> ranks = new TreeSet<>(RANK_ORDER);
+        private final Map<UUID, EntityRank> ranksById = new HashMap<>();
+        private final Map<UUID, T> valuesById = new HashMap<>();
+
+        EntityAdmission(int limit) {
+            if (limit <= 0) {
+                throw new IllegalArgumentException("limit must be positive");
+            }
+            this.limit = limit;
+        }
+
+        synchronized boolean admit(EntityRank rank, T value) {
+            if (ranksById.containsKey(rank.id())) {
+                return false;
+            }
+            if (ranks.size() >= limit) {
+                EntityRank worst = ranks.last();
+                if (RANK_ORDER.compare(rank, worst) >= 0) {
+                    return false;
+                }
+                ranks.remove(worst);
+                ranksById.remove(worst.id());
+                valuesById.remove(worst.id());
+            }
+            ranks.add(rank);
+            ranksById.put(rank.id(), rank);
+            valuesById.put(rank.id(), value);
+            return true;
+        }
+
+        synchronized Set<UUID> admittedIds() {
+            return Set.copyOf(ranksById.keySet());
+        }
+
+        synchronized List<T> selectedEntities() {
+            return List.copyOf(valuesById.values());
+        }
     }
 }

@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BlockChangeCaptureTest {
@@ -65,6 +66,9 @@ class BlockChangeCaptureTest {
         World world = StubWorld.create(UUID.randomUUID());
         long chunkKey = ViewSlice.columnKey(0, 0);
         replication.subscribe(PEER, world.getUID(), world, chunkKey);
+        assertTrue(replication.sendBulk(PEER, world.getUID(), chunkKey, new byte[]{1}, 1L));
+        List<Long> retries = new ArrayList<>();
+        replication.setBulkRetryListener((peerName, key) -> retries.add(key));
         CapturingFeed feed = new CapturingFeed();
         CaptureSettings tight = new CaptureSettings(100, 4, true, true);
         RegionalDiffAccumulator accumulator = new RegionalDiffAccumulator(replication, feed, tight);
@@ -72,8 +76,10 @@ class BlockChangeCaptureTest {
             accumulator.recordBlockChange(world, i, 60, 0, fakeBlockData("minecraft:stone"), BlockChange.FLAG_NONE);
         }
         drainAllSafely(accumulator, world);
-        assertTrue(feed.blocks.size() <= 4);
+        assertTrue(feed.blocks.isEmpty());
         assertTrue(accumulator.stats().overflowDrops() > 0L);
+        assertFalse(replication.isBulked(PEER, chunkKey));
+        assertTrue(retries.contains(chunkKey));
     }
 
     private static void drainAllSafely(RegionalDiffAccumulator accumulator, World world) {

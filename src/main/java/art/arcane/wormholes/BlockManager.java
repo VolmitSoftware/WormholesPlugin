@@ -1,10 +1,18 @@
 package art.arcane.wormholes;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -13,7 +21,9 @@ import org.bukkit.Keyed;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
+import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.block.data.BlockData;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -38,16 +48,17 @@ import art.arcane.wormholes.portal.PortalType;
 import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.wormholes.util.GChunk;
 import art.arcane.volmlib.util.collection.KList;
-import art.arcane.volmlib.util.collection.KMap;
-import art.arcane.volmlib.util.collection.KSet;
 import art.arcane.wormholes.util.J;
 import art.arcane.wormholes.util.M;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
-import art.arcane.wormholes.util.W;
 
 public class BlockManager implements Listener
 {
-	private final KMap<GChunk, KSet<PortalBlock>> blocks;
+	private static final int[][] ADJACENT_OFFSETS = new int[][] {
+			{ 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 }
+	};
+	private final Map<GChunk, Set<PortalBlock>> blocks;
+	private final Object runeMutationLock = new Object();
 	private final ItemStack wandTemplate;
 	private final ItemStack portalRuneTemplate;
 	private final ItemStack wormholeRuneTemplate;
@@ -61,7 +72,7 @@ public class BlockManager implements Listener
 		wormholeRuneTemplate = buildTemplate(Material.DARK_PRISMARINE, ChatColor.GOLD + "" + ChatColor.BOLD + "Wormhole Rune");
 		gatewayRuneTemplate = buildTemplate(Material.BLACK_STAINED_GLASS, ChatColor.RED + "" + ChatColor.BOLD + "Gateway Rune");
 		registerRecipes();
-		blocks = new KMap<>();
+		blocks = new ConcurrentHashMap<GChunk, Set<PortalBlock>>();
 		J.ar(() -> updatePlacedBlocks(), 9);
 	}
 
@@ -78,7 +89,7 @@ public class BlockManager implements Listener
 
 	public void destroyAll()
 	{
-		Wormholes.v("Releasing tracked portal blocks (" + blocks.k() + " chunks)");
+		Wormholes.v("Releasing tracked portal blocks (" + blocks.size() + " chunks)");
 		blocks.clear();
 		unregisterAllRecipes();
 	}
@@ -141,7 +152,7 @@ public class BlockManager implements Listener
 			{
 				for(int dz = -1; dz <= 1; dz++)
 				{
-					KSet<PortalBlock> set = blocks.get(new GChunk(cx + dx, cz + dz, world));
+					Set<PortalBlock> set = blocks.get(new GChunk(cx + dx, cz + dz, world));
 					if(set == null)
 					{
 						continue;
@@ -190,46 +201,180 @@ public class BlockManager implements Listener
 
 	private void construct(Player player, Block clickedBlock)
 	{
-		PortalBlock init = getBlock(clickedBlock);
-		if(init == null)
+		RuneReservation reservation = reserveConnectedRunes(clickedBlock);
+		if(reservation == null)
 		{
 			return;
 		}
-		PortalType type = init.getType();
+		if(!reservation.coplanar())
+		{
+			Wormholes.effectManager.playNotificationFail(ChatColor.RED + "Portal must lie flat on one wall, floor, or ceiling.", clickedBlock.getLocation());
+			return;
+		}
 		Vector look = player.getLocation().getDirection();
+		consumeConnectedRunes(player, player.getUniqueId(), clickedBlock.getWorld(), reservation.blocks(), reservation.type(), look);
+	}
 
-		Set<Block> blocks = new HashSet<>();
-		List<EffectManager.PortalBlockSnapshot> snapshots = new ArrayList<>();
-		KList<Block> search = new KList<>();
-		search.add(clickedBlock);
+	private RuneReservation reserveConnectedRunes(Block clickedBlock)
+	{
+		synchronized(runeMutationLock)
+		{
+			PortalBlock init = findTrackedBlock(clickedBlock.getWorld().getName(), clickedBlock.getX(), clickedBlock.getY(), clickedBlock.getZ());
+			if(init == null)
+			{
+				return null;
+			}
+			PortalType type = init.getType();
+			Set<PortalBlock> connected = connectedRunes(clickedBlock.getWorld().getName(), RuneCoordinate.from(init.getLocation()), type);
+			if(connected.isEmpty())
+			{
+				return null;
+			}
+			if(!isCoplanar(connected))
+			{
+				return new RuneReservation(type, Set.copyOf(connected), false);
+			}
+			for(PortalBlock portalBlock : connected)
+			{
+				Set<PortalBlock> tracked = blocks.get(chunkKey(portalBlock.getLocation()));
+				if(tracked == null || !tracked.contains(portalBlock))
+				{
+					return null;
+				}
+			}
+			for(PortalBlock portalBlock : connected)
+			{
+				unregisterBlockLocked(portalBlock);
+			}
+			return new RuneReservation(type, Set.copyOf(connected), true);
+		}
+	}
 
+	private Set<PortalBlock> connectedRunes(String worldName, RuneCoordinate start, PortalType type)
+	{
+		Set<PortalBlock> connected = new HashSet<PortalBlock>();
+		Set<RuneCoordinate> visited = new HashSet<RuneCoordinate>();
+		ArrayDeque<RuneCoordinate> search = new ArrayDeque<RuneCoordinate>();
+		search.add(start);
 		while(!search.isEmpty())
 		{
-			Block cursor = search.popRandom();
-			PortalBlock pb = getBlock(cursor);
-			if(blocks.contains(cursor) || pb == null)
+			RuneCoordinate coordinate = search.removeFirst();
+			if(!visited.add(coordinate))
 			{
 				continue;
 			}
-			blocks.add(cursor);
-			snapshots.add(new EffectManager.PortalBlockSnapshot(cursor.getLocation(), cursor.getBlockData()));
-			cursor.setType(Material.AIR);
-			removeBlock(pb);
-
-			for(Block i : W.blockFaces(cursor))
+			PortalBlock portalBlock = findTrackedBlock(worldName, coordinate.x(), coordinate.y(), coordinate.z());
+			if(portalBlock == null || portalBlock.getType() != type)
 			{
-				if(!blocks.contains(i) && isBlock(i, type))
+				continue;
+			}
+			connected.add(portalBlock);
+			for(int[] offset : ADJACENT_OFFSETS)
+			{
+				search.addLast(new RuneCoordinate(coordinate.x() + offset[0], coordinate.y() + offset[1], coordinate.z() + offset[2]));
+			}
+		}
+		return connected;
+	}
+
+	private static boolean isCoplanar(Set<PortalBlock> connected)
+	{
+		int minX = Integer.MAX_VALUE;
+		int maxX = Integer.MIN_VALUE;
+		int minY = Integer.MAX_VALUE;
+		int maxY = Integer.MIN_VALUE;
+		int minZ = Integer.MAX_VALUE;
+		int maxZ = Integer.MIN_VALUE;
+		for(PortalBlock portalBlock : connected)
+		{
+			Location location = portalBlock.getLocation();
+			minX = Math.min(minX, location.getBlockX());
+			maxX = Math.max(maxX, location.getBlockX());
+			minY = Math.min(minY, location.getBlockY());
+			maxY = Math.max(maxY, location.getBlockY());
+			minZ = Math.min(minZ, location.getBlockZ());
+			maxZ = Math.max(maxZ, location.getBlockZ());
+		}
+		return ConstructionManager.isCoplanarPortalArea(maxX - minX, maxY - minY, maxZ - minZ);
+	}
+
+	private void consumeConnectedRunes(Player player, UUID ownerId, World world, Set<PortalBlock> connected, PortalType type, Vector look)
+	{
+		Map<ChunkCoordinate, List<PortalBlock>> byChunk = new HashMap<ChunkCoordinate, List<PortalBlock>>();
+		for(PortalBlock portalBlock : connected)
+		{
+			Location location = portalBlock.getLocation();
+			ChunkCoordinate chunk = new ChunkCoordinate(location.getBlockX() >> 4, location.getBlockZ() >> 4);
+			byChunk.computeIfAbsent(chunk, ignored -> new ArrayList<PortalBlock>()).add(portalBlock);
+		}
+		List<EffectManager.PortalBlockSnapshot> snapshots = Collections.synchronizedList(new ArrayList<EffectManager.PortalBlockSnapshot>());
+		Set<Block> consumed = ConcurrentHashMap.newKeySet();
+		AtomicBoolean failed = new AtomicBoolean();
+		AtomicInteger remaining = new AtomicInteger(byChunk.size());
+		Material expectedMaterial = runeMaterial(type);
+		for(Map.Entry<ChunkCoordinate, List<PortalBlock>> entry : byChunk.entrySet())
+		{
+			ChunkCoordinate chunk = entry.getKey();
+			boolean scheduled = FoliaScheduler.runRegion(Wormholes.instance, world, chunk.x(), chunk.z(), () ->
+			{
+				try
 				{
-					search.add(i);
+					for(PortalBlock portalBlock : entry.getValue())
+					{
+						Location location = portalBlock.getLocation();
+						Block block = world.getBlockAt(location.getBlockX(), location.getBlockY(), location.getBlockZ());
+						if(block.getType() != expectedMaterial)
+						{
+							failed.set(true);
+							continue;
+						}
+						EffectManager.PortalBlockSnapshot snapshot = new EffectManager.PortalBlockSnapshot(block.getLocation(), block.getBlockData());
+						block.setType(Material.AIR, false);
+						snapshots.add(snapshot);
+						consumed.add(block);
+					}
+				}
+				catch(Throwable error)
+				{
+					failed.set(true);
+				}
+				finally
+				{
+					if(remaining.decrementAndGet() == 0)
+					{
+						finishRuneConstruction(player, ownerId, world, snapshots, consumed, connected, type, look, failed.get());
+					}
+				}
+			});
+			if(!scheduled)
+			{
+				failed.set(true);
+				if(remaining.decrementAndGet() == 0)
+				{
+					finishRuneConstruction(player, ownerId, world, snapshots, consumed, connected, type, look, true);
 				}
 			}
 		}
+	}
 
+	private void finishRuneConstruction(Player player, UUID ownerId, World world, List<EffectManager.PortalBlockSnapshot> synchronizedSnapshots,
+			Set<Block> consumed, Set<PortalBlock> reserved, PortalType type, Vector look, boolean failed)
+	{
+		List<EffectManager.PortalBlockSnapshot> snapshots;
+		synchronized(synchronizedSnapshots)
+		{
+			snapshots = List.copyOf(synchronizedSnapshots);
+		}
+		if(failed || snapshots.size() != reserved.size() || consumed.size() != reserved.size())
+		{
+			rollbackRuneReservation(world, reserved, snapshots, type);
+			notifyRuneRollback(player);
+			return;
+		}
 		if(snapshots.isEmpty())
 		{
 			return;
 		}
-
 		double sumX = 0.0D;
 		double sumY = 0.0D;
 		double sumZ = 0.0D;
@@ -239,11 +384,104 @@ public class BlockManager implements Listener
 			sumY += snapshot.location().getY() + 0.5D;
 			sumZ += snapshot.location().getZ() + 0.5D;
 		}
-		int n = snapshots.size();
-		Location center = new Location(clickedBlock.getWorld(), sumX / n, sumY / n, sumZ / n);
+		Location center = new Location(world, sumX / snapshots.size(), sumY / snapshots.size(), sumZ / snapshots.size());
+		boolean scheduled = FoliaScheduler.runRegion(Wormholes.instance, center, () ->
+		{
+			if(Wormholes.constructionManager.constructPortal(ownerId, consumed, type, look))
+			{
+				Wormholes.effectManager.playPortalVortex(world, center, snapshots);
+				return;
+			}
+			rollbackRuneReservation(world, reserved, snapshots, type);
+			notifyRuneRollback(player);
+		});
+		if(!scheduled)
+		{
+			rollbackRuneReservation(world, reserved, snapshots, type);
+			notifyRuneRollback(player);
+		}
+	}
 
-		Wormholes.effectManager.playPortalVortex(clickedBlock.getWorld(), center, snapshots);
-		Wormholes.constructionManager.constructPortal(player, blocks, type, look);
+	private void notifyRuneRollback(Player player)
+	{
+		if(player != null)
+		{
+			FoliaScheduler.runEntity(Wormholes.instance, player,
+					() -> WormholesAudience.sendActionBar(player, Component.text("Portal formation was interrupted; the reserved runes were restored.", NamedTextColor.RED)));
+		}
+	}
+
+	private void rollbackRuneReservation(World world, Set<PortalBlock> reserved, List<EffectManager.PortalBlockSnapshot> snapshots, PortalType type)
+	{
+		Map<RuneCoordinate, BlockData> originals = new HashMap<RuneCoordinate, BlockData>();
+		for(EffectManager.PortalBlockSnapshot snapshot : snapshots)
+		{
+			originals.put(RuneCoordinate.from(snapshot.location()), snapshot.data());
+		}
+		Map<ChunkCoordinate, List<PortalBlock>> byChunk = new HashMap<ChunkCoordinate, List<PortalBlock>>();
+		for(PortalBlock portalBlock : reserved)
+		{
+			Location location = portalBlock.getLocation();
+			ChunkCoordinate chunk = new ChunkCoordinate(location.getBlockX() >> 4, location.getBlockZ() >> 4);
+			byChunk.computeIfAbsent(chunk, ignored -> new ArrayList<PortalBlock>()).add(portalBlock);
+		}
+		Material expectedMaterial = runeMaterial(type);
+		for(Map.Entry<ChunkCoordinate, List<PortalBlock>> entry : byChunk.entrySet())
+		{
+			ChunkCoordinate chunk = entry.getKey();
+			Runnable rollback = () ->
+			{
+				for(PortalBlock portalBlock : entry.getValue())
+				{
+					Location location = portalBlock.getLocation();
+					Block block = world.getBlockAt(location.getBlockX(), location.getBlockY(), location.getBlockZ());
+					BlockData original = originals.get(RuneCoordinate.from(location));
+					if(original != null && block.getType().isAir())
+					{
+						block.setBlockData(original, false);
+					}
+					if(block.getType() == expectedMaterial)
+					{
+						registerBlockSilently(portalBlock);
+					}
+				}
+			};
+			boolean scheduled = FoliaScheduler.runRegion(Wormholes.instance, world, chunk.x(), chunk.z(), rollback);
+			if(!scheduled && FoliaScheduler.isOwnedByCurrentRegion(world, chunk.x(), chunk.z()))
+			{
+				rollback.run();
+			}
+			else if(!scheduled)
+			{
+				Wormholes.w("Could not restore reserved portal runes in " + world.getName() + " chunk " + chunk.x() + "," + chunk.z() + " because region scheduling was rejected");
+			}
+		}
+	}
+
+	private static Material runeMaterial(PortalType type)
+	{
+		return switch(type)
+		{
+			case PORTAL -> Material.PRISMARINE;
+			case WORMHOLE -> Material.DARK_PRISMARINE;
+			case GATEWAY -> Material.BLACK_STAINED_GLASS;
+		};
+	}
+
+	private record RuneReservation(PortalType type, Set<PortalBlock> blocks, boolean coplanar)
+	{
+	}
+
+	private record RuneCoordinate(int x, int y, int z)
+	{
+		private static RuneCoordinate from(Location location)
+		{
+			return new RuneCoordinate(location.getBlockX(), location.getBlockY(), location.getBlockZ());
+		}
+	}
+
+	private record ChunkCoordinate(int x, int z)
+	{
 	}
 
 	@EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -337,44 +575,79 @@ public class BlockManager implements Listener
 
 	public PortalBlock getBlock(Block block)
 	{
-		if(blocks.containsKey(new GChunk(block.getLocation().getChunk())))
+		synchronized(runeMutationLock)
 		{
-			for(PortalBlock i : blocks.get(new GChunk(block.getLocation().getChunk())))
-			{
-				if(i.getLocation().equals(block.getLocation()))
-				{
-					return i;
-				}
-			}
+			return findTrackedBlock(block.getWorld().getName(), block.getX(), block.getY(), block.getZ());
 		}
-
-		return null;
 	}
 
 	public void removeBlock(PortalBlock block)
 	{
-		if(blocks.containsKey(new GChunk(block.getLocation().getChunk())))
+		if(unregisterBlock(block))
 		{
-			blocks.get(new GChunk(block.getLocation().getChunk())).remove(block);
-
-			if(blocks.get(new GChunk(block.getLocation().getChunk())).isEmpty())
-			{
-				blocks.remove(new GChunk(block.getLocation().getChunk()));
-			}
-
 			Wormholes.effectManager.playPortalBlockDestroyed(block.getLocation().getBlock());
 		}
 	}
 
+	private boolean unregisterBlock(PortalBlock block)
+	{
+		synchronized(runeMutationLock)
+		{
+			return unregisterBlockLocked(block);
+		}
+	}
+
+	private boolean unregisterBlockLocked(PortalBlock block)
+	{
+		GChunk chunk = chunkKey(block.getLocation());
+		Set<PortalBlock> tracked = blocks.get(chunk);
+		if(tracked == null || !tracked.remove(block))
+		{
+			return false;
+		}
+		if(tracked.isEmpty())
+		{
+			blocks.remove(chunk, tracked);
+		}
+		return true;
+	}
+
 	public void placeBlock(PortalBlock block)
 	{
-		if(!blocks.containsKey(new GChunk(block.getLocation().getChunk())))
-		{
-			blocks.put(new GChunk(block.getLocation().getChunk()), new KSet<>());
-		}
-
-		blocks.get(new GChunk(block.getLocation().getChunk())).add(block);
+		registerBlockSilently(block);
 		Wormholes.effectManager.playPortalBlockPlaced(block.getLocation().getBlock());
+	}
+
+	private void registerBlockSilently(PortalBlock block)
+	{
+		synchronized(runeMutationLock)
+		{
+			GChunk chunk = chunkKey(block.getLocation());
+			blocks.computeIfAbsent(chunk, ignored -> ConcurrentHashMap.newKeySet()).add(block);
+		}
+	}
+
+	private PortalBlock findTrackedBlock(String worldName, int x, int y, int z)
+	{
+		Set<PortalBlock> tracked = blocks.get(new GChunk(x >> 4, z >> 4, worldName));
+		if(tracked == null)
+		{
+			return null;
+		}
+		for(PortalBlock portalBlock : tracked)
+		{
+			Location location = portalBlock.getLocation();
+			if(location.getBlockX() == x && location.getBlockY() == y && location.getBlockZ() == z)
+			{
+				return portalBlock;
+			}
+		}
+		return null;
+	}
+
+	private static GChunk chunkKey(Location location)
+	{
+		return new GChunk(location.getBlockX() >> 4, location.getBlockZ() >> 4, location.getWorld().getName());
 	}
 
 	public void registerRecipes()

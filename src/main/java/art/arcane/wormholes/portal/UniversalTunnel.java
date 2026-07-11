@@ -87,7 +87,7 @@ public class UniversalTunnel extends Tunnel
 	}
 
 	@Override
-	protected UUID getDestinationId()
+	public UUID getDestinationId()
 	{
 		return pendingDestinationId;
 	}

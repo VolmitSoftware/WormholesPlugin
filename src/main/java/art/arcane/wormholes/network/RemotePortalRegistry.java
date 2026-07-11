@@ -12,15 +12,18 @@ public final class RemotePortalRegistry {
     private final Map<String, Map<UUID, RemotePortal>> byPeer = new ConcurrentHashMap<>();
 
     public void applyDirectory(String peerName, List<PortalInfo> portals) {
+        Map<UUID, RemotePortal> previous = byPeer.get(peerName);
         Map<UUID, RemotePortal> fresh = new ConcurrentHashMap<>();
         for (PortalInfo info : portals) {
-            fresh.put(info.id(), RemotePortal.fromInfo(peerName, info));
+            RemotePortal existing = previous == null ? null : previous.get(info.id());
+            fresh.put(info.id(), refreshedPortal(peerName, info, existing));
         }
         byPeer.put(peerName, fresh);
     }
 
     public void applyUpsert(String peerName, PortalInfo info) {
-        byPeer.computeIfAbsent(peerName, key -> new ConcurrentHashMap<>()).put(info.id(), RemotePortal.fromInfo(peerName, info));
+        byPeer.computeIfAbsent(peerName, key -> new ConcurrentHashMap<>())
+            .compute(info.id(), (id, existing) -> refreshedPortal(peerName, info, existing));
     }
 
     public void applyRemove(String peerName, UUID portalId) {
@@ -49,5 +52,24 @@ public final class RemotePortalRegistry {
 
     public void clear() {
         byPeer.clear();
+    }
+
+    private static RemotePortal refreshedPortal(String peerName, PortalInfo info, RemotePortal existing) {
+        RemotePortal refreshed = RemotePortal.fromInfo(peerName, info);
+        if (existing == null) {
+            return refreshed;
+        }
+        refreshed.setMirroredProjectionMode(existing.getMirroredProjectionMode());
+        refreshed.setMirroredProjectionRotation(existing.getMirroredProjectionRotation());
+        refreshed.setMirroredPermissionMode(existing.getMirroredPermissionMode());
+        refreshed.setMirroredOutgoingTraversalsEnabled(existing.isMirroredOutgoingTraversalsEnabled());
+        refreshed.setMirroredIncomingTraversalsEnabled(existing.isMirroredIncomingTraversalsEnabled());
+        refreshed.setMirroredNetworkViewDepth(existing.getMirroredNetworkViewDepth());
+        refreshed.setMirroredNetworkViewLateralPad(existing.getMirroredNetworkViewLateralPad());
+        refreshed.setMirroredNetworkViewHeartbeatTicks(existing.getMirroredNetworkViewHeartbeatTicks());
+        refreshed.setMirroredNetworkViewEntityIntervalTicks(existing.getMirroredNetworkViewEntityIntervalTicks());
+        refreshed.setMirroredNetworkViewUnsubscribeGraceSeconds(existing.getMirroredNetworkViewUnsubscribeGraceSeconds());
+        refreshed.setMirroredNetworkViewFallbackBlock(existing.getMirroredNetworkViewFallbackBlock());
+        return refreshed;
     }
 }

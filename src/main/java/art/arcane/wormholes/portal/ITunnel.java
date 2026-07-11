@@ -1,10 +1,14 @@
 package art.arcane.wormholes.portal;
 
+import java.util.UUID;
+
 import art.arcane.wormholes.util.JSONObject;
 
 public interface ITunnel extends IWritable
 {
 	public IPortal getDestination();
+
+	public UUID getDestinationId();
 
 	public TunnelType getTunnelType();
 

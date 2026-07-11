@@ -68,7 +68,17 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 
 	public void unlink();
 
+	public UUID getDimensionalCounterpartId();
+
+	public void setDimensionalCounterpartId(UUID counterpartId);
+
+	public DimensionalPortalKind getDimensionalPortalKind();
+
+	public void setDimensionalPortalKind(DimensionalPortalKind kind);
+
 	public void destroy();
+
+	public boolean isDestroyed();
 
 	public String getRouter(boolean dark);
 
@@ -95,6 +105,10 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 	public ProjectionMode getProjectionMode();
 
 	public void setProjectionMode(ProjectionMode mode);
+
+	public MirrorRotation getMirrorRotation();
+
+	public void setMirrorRotation(MirrorRotation rotation);
 
 	public PortalPermissionMode getPermissionMode();
 

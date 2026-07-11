@@ -23,15 +23,15 @@ public final class ProjectionModeTest
 	}
 
 	@Test
-	public void portalAndWormholeCycleOffOnOnly()
+	public void portalAndWormholeCycleIncludesMirror()
 	{
 		assertEquals(ProjectionMode.ON, ProjectionMode.OFF.nextFor(PortalType.PORTAL));
-		assertEquals(ProjectionMode.OFF, ProjectionMode.ON.nextFor(PortalType.PORTAL));
+		assertEquals(ProjectionMode.MIRROR, ProjectionMode.ON.nextFor(PortalType.PORTAL));
 		assertEquals(ProjectionMode.OFF, ProjectionMode.ONE_WAY.nextFor(PortalType.PORTAL));
 		assertEquals(ProjectionMode.OFF, ProjectionMode.MIRROR.nextFor(PortalType.PORTAL));
 
 		assertEquals(ProjectionMode.ON, ProjectionMode.OFF.nextFor(PortalType.WORMHOLE));
-		assertEquals(ProjectionMode.OFF, ProjectionMode.ON.nextFor(PortalType.WORMHOLE));
+		assertEquals(ProjectionMode.MIRROR, ProjectionMode.ON.nextFor(PortalType.WORMHOLE));
 		assertEquals(ProjectionMode.OFF, ProjectionMode.ONE_WAY.nextFor(PortalType.WORMHOLE));
 		assertEquals(ProjectionMode.OFF, ProjectionMode.MIRROR.nextFor(PortalType.WORMHOLE));
 	}
@@ -46,16 +46,25 @@ public final class ProjectionModeTest
 	}
 
 	@Test
-	public void allowedForNonGatewayLimitsToOffAndOn()
+	public void allowedForNonGatewayRejectsOnlyOneWay()
 	{
 		assertTrue(ProjectionMode.OFF.isAllowedFor(PortalType.PORTAL));
 		assertTrue(ProjectionMode.ON.isAllowedFor(PortalType.PORTAL));
 		assertFalse(ProjectionMode.ONE_WAY.isAllowedFor(PortalType.PORTAL));
-		assertFalse(ProjectionMode.MIRROR.isAllowedFor(PortalType.PORTAL));
+		assertTrue(ProjectionMode.MIRROR.isAllowedFor(PortalType.PORTAL));
 
 		assertTrue(ProjectionMode.OFF.isAllowedFor(PortalType.WORMHOLE));
 		assertTrue(ProjectionMode.ON.isAllowedFor(PortalType.WORMHOLE));
 		assertFalse(ProjectionMode.ONE_WAY.isAllowedFor(PortalType.WORMHOLE));
-		assertFalse(ProjectionMode.MIRROR.isAllowedFor(PortalType.WORMHOLE));
+		assertTrue(ProjectionMode.MIRROR.isAllowedFor(PortalType.WORMHOLE));
+	}
+
+	@Test
+	public void mirrorIsOnlyNonTraversableProjectionMode()
+	{
+		assertTrue(ProjectionMode.OFF.allowsTraversal());
+		assertTrue(ProjectionMode.ON.allowsTraversal());
+		assertTrue(ProjectionMode.ONE_WAY.allowsTraversal());
+		assertFalse(ProjectionMode.MIRROR.allowsTraversal());
 	}
 }

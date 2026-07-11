@@ -2,16 +2,13 @@ package art.arcane.wormholes;
 
 import java.util.Set;
 import java.util.UUID;
-import java.util.function.Consumer;
 
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.block.Block;
-import org.bukkit.entity.Player;
 import org.bukkit.event.Listener;
 import org.bukkit.util.Vector;
 
-import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.LocalPortal;
 import art.arcane.wormholes.portal.PortalFrame;
 import art.arcane.wormholes.portal.PortalStructure;
@@ -29,26 +26,19 @@ public class ConstructionManager implements Listener
 		Wormholes.v("Starting Construction Manager");
 	}
 
-	public void constructPortal(Player player, Set<Block> blocks, PortalType type, Vector look)
-	{
-		constructPortal(player, blocks, type, look, null);
-	}
-
-	public void constructPortal(Player player, Set<Block> blocks, PortalType type, Vector look, Consumer<ILocalPortal> onCreated)
+	public boolean constructPortal(UUID ownerId, Set<Block> blocks, PortalType type, Vector look)
 	{
 		if(blocks == null || blocks.isEmpty())
 		{
-			return;
+			return false;
 		}
 
 		Block firstBlock = blocks.iterator().next();
 		Location anchor = firstBlock.getLocation();
-		UUID ownerId = player == null ? null : player.getUniqueId();
-
-		FoliaScheduler.runRegion(Wormholes.instance, anchor, () -> performConstruct(blocks, type, look, ownerId, onCreated), 25L);
+		return FoliaScheduler.runRegion(Wormholes.instance, anchor, () -> performConstruct(blocks, type, look, ownerId), 25L);
 	}
 
-	private void performConstruct(Set<Block> blocks, PortalType type, Vector look, UUID ownerId, Consumer<ILocalPortal> onCreated)
+	private void performConstruct(Set<Block> blocks, PortalType type, Vector look, UUID ownerId)
 	{
 		Cuboid c = null;
 
@@ -91,12 +81,7 @@ public class ConstructionManager implements Listener
 			portal.open();
 			portal.save();
 			Wormholes.portalManager.addLocalPortal(portal);
-			if(onCreated != null)
-			{
-				onCreated.accept(portal);
-			}
 			Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + "Portal opened. Hold the wand and CLICK the portal to configure.", center);
-			Wormholes.effectManager.playPortalOpenClimax(center.getWorld(), center, xDepth, yDepth, zDepth);
 			return;
 		}
 

@@ -78,12 +78,15 @@ public final class RegionalDiffAccumulator {
         }
         ChunkDirtySet set = dirtySetFor(world, chunkKey);
         int currentCap = settings.maxQueuedDiffsPerChunk();
-        if (set.blockCount() >= currentCap) {
+        if (!set.putBlockIfBelowCapacity(packed, stateString, flags, currentCap)) {
             overflowDrops.incrementAndGet();
             blocksDropped.incrementAndGet();
+            synchronized (set) {
+                set.drainAll();
+            }
+            replication.forceResync(world, chunkKey);
             return;
         }
-        set.putBlock(packed, stateString, flags);
         blocksCaptured.incrementAndGet();
     }
 
