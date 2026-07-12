@@ -32,11 +32,11 @@ class DimensionalDoorRepositoryTest {
     void completeStateRoundTripsAcrossFreshRepository() throws Exception {
         DoorPairIdentity pair = new DoorPairIdentity(id(1), id(2), id(3));
         PlacedDoorEndpoint endpointA = new PlacedDoorEndpoint(
-            new DoorPosition(id(4), "world", 1, 64, 2),
+            new DoorPosition(id(4), "minecraft:overworld", 1, 64, 2),
             pair.endpoint(PairEndpoint.A)
         );
         PlacedDoorEndpoint personal = new PlacedDoorEndpoint(
-            new DoorPosition(id(5), "world_the_end", -3, 70, 8),
+            new DoorPosition(id(5), "minecraft:the_end", -3, 70, 8),
             DoorItemIdentity.personal(id(6))
         );
         PocketAllocator allocator = new PocketAllocator();
@@ -69,7 +69,7 @@ class DimensionalDoorRepositoryTest {
         DimensionalDoorRepository repository = new DimensionalDoorRepository(stateFile);
         ReturnTicket first = ticket(id(20), id(21));
         ReturnTicket replacement = new ReturnTicket(
-            first.playerId(), id(22), id(23), "world_nether", 9.5, 75, -4.5, 180, -10
+            first.playerId(), id(22), id(23), "minecraft:the_nether", 9.5, 75, -4.5, 180, -10
         );
 
         repository.putReturnTicket(first);
@@ -142,7 +142,7 @@ class DimensionalDoorRepositoryTest {
     void snapshotRejectsCrossRecordIdentityAndAllocationCorruption() {
         DoorPairIdentity pair = new DoorPairIdentity(id(40), id(41), id(42));
         PlacedDoorEndpoint forged = new PlacedDoorEndpoint(
-            new DoorPosition(id(43), "world", 0, 64, 0),
+            new DoorPosition(id(43), "minecraft:overworld", 0, 64, 0),
             DoorItemIdentity.paired(id(44), pair.pairId(), PairEndpoint.A)
         );
         assertThrows(IllegalArgumentException.class, () -> new DoorStoreSnapshot(
@@ -162,18 +162,18 @@ class DimensionalDoorRepositoryTest {
     @Test
     void snapshotDefensivelyCopiesListsAndTicketsValidateCoordinates() {
         ArrayList<ReturnTicket> mutableTickets = new ArrayList<>();
-        DoorStoreSnapshot snapshot = new DoorStoreSnapshot(1, 0, List.of(), List.of(), List.of(), mutableTickets);
+        DoorStoreSnapshot snapshot = new DoorStoreSnapshot(DoorStoreSnapshot.CURRENT_SCHEMA, 0, List.of(), List.of(), List.of(), mutableTickets);
         mutableTickets.add(ticket(id(50), id(51)));
 
         assertTrue(snapshot.returnTickets().isEmpty());
         assertThrows(UnsupportedOperationException.class,
             () -> snapshot.returnTickets().add(ticket(id(52), id(53))));
         assertThrows(IllegalArgumentException.class,
-            () -> new ReturnTicket(id(54), id(55), id(56), "world", Double.NaN, 0, 0, 0, 0));
+            () -> new ReturnTicket(id(54), id(55), id(56), "minecraft:overworld", Double.NaN, 0, 0, 0, 0));
     }
 
     private static ReturnTicket ticket(UUID playerId, UUID sourceEndpointId) {
-        return new ReturnTicket(playerId, sourceEndpointId, id(100), "world", 1.25, 65, -2.75, 90, 5);
+        return new ReturnTicket(playerId, sourceEndpointId, id(100), "minecraft:overworld", 1.25, 65, -2.75, 90, 5);
     }
 
     private static UUID id(long value) {

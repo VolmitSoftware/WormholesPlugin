@@ -1,7 +1,8 @@
 package art.arcane.wormholes.util;
 
+import art.arcane.volmlib.util.bukkit.WorldIdentity;
+
 import java.io.Serializable;
-import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.Location;
 
@@ -12,11 +13,11 @@ import org.bukkit.Location;
  */
 public class GChunk implements Serializable
 {
-	private static final long serialVersionUID = 1L;
+	private static final long serialVersionUID = 2L;
 	
 	private Integer x;
 	private Integer z;
-	private String world;
+	private String worldKey;
 	
 	/**
 	 * Create a gchunk from an existing chunk
@@ -25,7 +26,7 @@ public class GChunk implements Serializable
 	 */
 	public GChunk(Chunk chunk)
 	{
-		this(chunk.getX(), chunk.getZ(), chunk.getWorld().getName());
+		this(chunk.getX(), chunk.getZ(), WorldIdentity.serialize(chunk.getWorld()));
 	}
 	
 	/**
@@ -35,7 +36,7 @@ public class GChunk implements Serializable
 	 */
 	public GChunk(Location location)
 	{
-		this(location.getChunk().getX(), location.getChunk().getZ(), location.getChunk().getWorld().getName());
+		this(location.getChunk().getX(), location.getChunk().getZ(), WorldIdentity.serialize(location.getChunk().getWorld()));
 	}
 	
 	/**
@@ -45,14 +46,14 @@ public class GChunk implements Serializable
 	 *            the x
 	 * @param z
 	 *            the z
-	 * @param world
-	 *            the world (NAME STRING)
+	 * @param worldKey
+	 *            the fully qualified world key
 	 */
-	public GChunk(int x, int z, String world)
+	public GChunk(int x, int z, String worldKey)
 	{
 		this.x = x;
 		this.z = z;
-		this.world = world;
+		this.worldKey = WorldIdentity.parse(worldKey).toString();
 	}
 	
 	@Override
@@ -60,7 +61,7 @@ public class GChunk implements Serializable
 	{
 		final int prime = 31;
 		int result = 1;
-		result = prime * result + ((world == null) ? 0 : world.hashCode());
+		result = prime * result + ((worldKey == null) ? 0 : worldKey.hashCode());
 		result = prime * result + ((x == null) ? 0 : x.hashCode());
 		result = prime * result + ((z == null) ? 0 : z.hashCode());
 		return result;
@@ -86,15 +87,15 @@ public class GChunk implements Serializable
 		
 		GChunk other = (GChunk) obj;
 		
-		if(world == null)
+		if(worldKey == null)
 		{
-			if(other.world != null)
+			if(other.worldKey != null)
 			{
 				return false;
 			}
 		}
 		
-		else if(!world.equals(other.world))
+		else if(!worldKey.equals(other.worldKey))
 		{
 			return false;
 		}
@@ -137,7 +138,7 @@ public class GChunk implements Serializable
 	 */
 	public boolean isChunk(Chunk c)
 	{
-		if(x == c.getX() && z == c.getZ() && world.equals(c.getWorld().getName()))
+		if(x == c.getX() && z == c.getZ() && worldKey.equals(WorldIdentity.serialize(c.getWorld())))
 		{
 			return true;
 		}
@@ -190,22 +191,22 @@ public class GChunk implements Serializable
 	/**
 	 * Get the world
 	 * 
-	 * @return the world name
+	 * @return the world key
 	 */
-	public String getWorld()
+	public String getWorldKey()
 	{
-		return world;
+		return worldKey;
 	}
 	
 	/**
 	 * Set the world
 	 * 
-	 * @param world
-	 *            the world name
+	 * @param worldKey
+	 *            the world key
 	 */
-	public void setWorld(String world)
+	public void setWorldKey(String worldKey)
 	{
-		this.world = world;
+		this.worldKey = WorldIdentity.parse(worldKey).toString();
 	}
 	
 	/**
@@ -215,7 +216,9 @@ public class GChunk implements Serializable
 	 */
 	public Chunk toChunk()
 	{
-		return Bukkit.getServer().getWorld(world).getChunkAt(x, z);
+		return WorldIdentity.resolve(worldKey)
+			.orElseThrow(() -> new IllegalStateException("World is not loaded: " + worldKey))
+			.getChunkAt(x, z);
 	}
 	
 	/**
@@ -224,6 +227,6 @@ public class GChunk implements Serializable
 	@Override
 	public String toString()
 	{
-		return "Chunk: " + world + " @ [" + x + "," + z + "]";
+		return "Chunk: " + worldKey + " @ [" + x + "," + z + "]";
 	}
 }

@@ -104,7 +104,6 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     public Wormholes() {
         getLogger().info("Loading dependencies...");
         new SpigotApplicationBuilder(this)
-            .remap(true)
             .build();
         getLogger().info("Dependencies loaded.");
     }

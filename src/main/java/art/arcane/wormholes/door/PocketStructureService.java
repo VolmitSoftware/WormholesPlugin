@@ -1,5 +1,7 @@
 package art.arcane.wormholes.door;
 
+import art.arcane.volmlib.util.bukkit.WorldIdentity;
+
 import java.util.Objects;
 
 import org.bukkit.Bukkit;
@@ -58,7 +60,7 @@ public final class PocketStructureService {
         PocketLayout layout = layout(space);
         PocketBlockPosition lower = layout.returnDoorLower();
         return new PlacedDoorEndpoint(
-            new DoorPosition(world.getUID(), world.getName(), lower.x(), lower.y(), lower.z()),
+            new DoorPosition(world.getUID(), WorldIdentity.serialize(world), lower.x(), lower.y(), lower.z()),
             layout.returnDoorIdentity()
         );
     }

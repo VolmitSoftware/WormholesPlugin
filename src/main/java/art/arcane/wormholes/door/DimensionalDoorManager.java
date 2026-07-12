@@ -1,5 +1,6 @@
 package art.arcane.wormholes.door;
 
+import art.arcane.volmlib.util.bukkit.WorldIdentity;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.survival.doors.dimension.PocketWorldService;
@@ -68,7 +69,6 @@ import java.util.logging.Level;
  */
 public final class DimensionalDoorManager implements Listener, AutoCloseable
 {
-	private static final double MOVEMENT_PROXIMITY = 2.25D;
 	private static final double ARRIVAL_OFFSET = 1.0D;
 	private static final double PLAYER_HALF_WIDTH = 0.3D;
 	private static final double COLLISION_EPSILON = 1.0E-7D;
@@ -506,17 +506,38 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			event.getTo().getWorld().getUID(), event.getTo().getBlockX(), event.getTo().getBlockZ(), 1))
 		{
 			RuntimeDoor runtime = indexed.value();
-			DoorwayPlane plane = runtime.plane();
-			if(plane == null || !runtime.cycle().physicallyOpen() || !nearThreshold(plane, from, to))
+			Optional<DoorwayCrossing> crossing = DoorTransitGate.detect(runtime.plane(), from, to);
+			if(crossing.isEmpty())
 			{
 				continue;
 			}
-			Optional<DoorwayCrossing> crossing = plane.crossing(from, to);
-			if(crossing.isPresent())
+			PlacedDoorEndpoint endpoint = runtime.endpoint();
+			World sourceWorld = event.getTo().getWorld();
+			if(!Bukkit.isOwnedByCurrentRegion(
+				sourceWorld, endpoint.position().x() >> 4, endpoint.position().z() >> 4))
 			{
-				beginTransit(player, runtime, event.getTo().clone(), crossing.get().direction());
-				return;
+				continue;
 			}
+			Optional<VanillaDoorSnapshot> captured = capture(endpoint, sourceWorld);
+			if(captured.isEmpty())
+			{
+				reconcile(runtime);
+				continue;
+			}
+			VanillaDoorSnapshot crossingSnapshot = captured.get();
+			runtime.update(crossingSnapshot);
+			Optional<DoorwayCrossing> liveCrossing = DoorTransitGate.detect(crossingSnapshot.plane(), from, to);
+			if(liveCrossing.isEmpty() || !crossingSnapshot.open())
+			{
+				continue;
+			}
+			beginTransit(
+				player,
+				runtime,
+				event.getTo().clone(),
+				liveCrossing.get().direction(),
+				crossingSnapshot);
+			return;
 		}
 	}
 
@@ -524,7 +545,8 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		Player player,
 		RuntimeDoor runtime,
 		Location sourceLocation,
-		DoorwayCrossing.Direction direction)
+		DoorwayCrossing.Direction direction,
+		VanillaDoorSnapshot crossingSnapshot)
 	{
 		if(closed.get()
 			|| (!acceptingEntries.get() && runtime.endpoint().identity().kind() != DoorKind.RETURN))
@@ -540,7 +562,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		World world = world(endpoint.position());
 		if(world == null || !FoliaScheduler.runRegion(plugin, world,
 			endpoint.position().x() >> 4, endpoint.position().z() >> 4,
-			() -> claimTransit(player, runtime, sourceLocation, direction)))
+			() -> claimTransit(player, runtime, sourceLocation, direction, crossingSnapshot)))
 		{
 			playersInTransit.remove(playerId, player);
 		}
@@ -550,7 +572,8 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		Player player,
 		RuntimeDoor runtime,
 		Location sourceLocation,
-		DoorwayCrossing.Direction direction)
+		DoorwayCrossing.Direction direction,
+		VanillaDoorSnapshot crossingSnapshot)
 	{
 		if(closed.get())
 		{
@@ -570,13 +593,22 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			return;
 		}
 		Optional<VanillaDoorSnapshot> captured = capture(endpoint, sourceWorld);
-		if(captured.isEmpty() || !captured.get().open() || !runtime.cycle().tryBegin(true))
+		if(captured.isEmpty())
 		{
 			reconcile(runtime);
 			abortUnclaimed(player);
 			return;
 		}
 		VanillaDoorSnapshot sourceSnapshot = captured.get();
+		if(!crossingSnapshot.worldId().equals(sourceSnapshot.worldId())
+			|| !crossingSnapshot.plane().equals(sourceSnapshot.plane())
+			|| !DoorTransitGate.claim(
+				runtime.cycle(), crossingSnapshot.open(), sourceSnapshot.open()))
+		{
+			reconcile(runtime);
+			abortUnclaimed(player);
+			return;
+		}
 		runtime.update(sourceSnapshot);
 		DoorTransit transit = new DoorTransit(
 			sourceSnapshot.plane(), direction, sourceLocation.getYaw(), sourceLocation.getPitch());
@@ -672,7 +704,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 				player.getUniqueId(),
 				source.endpoint().identity().itemId(),
 				savedReturnLocation.getWorld().getUID(),
-				savedReturnLocation.getWorld().getName(),
+				WorldIdentity.serialize(savedReturnLocation.getWorld()),
 				savedReturnLocation.getX(),
 				savedReturnLocation.getY(),
 				savedReturnLocation.getZ(),
@@ -731,7 +763,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		World world = plugin.getServer().getWorld(ticket.sourceWorldId());
 		if(world == null)
 		{
-			world = plugin.getServer().getWorld(ticket.sourceWorldName());
+			world = WorldIdentity.resolve(ticket.sourceWorldKey()).orElse(null);
 		}
 		if(world == null)
 		{
@@ -764,7 +796,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		World world = plugin.getServer().getWorld(ticket.sourceWorldId());
 		if(world == null)
 		{
-			world = plugin.getServer().getWorld(ticket.sourceWorldName());
+			world = WorldIdentity.resolve(ticket.sourceWorldKey()).orElse(null);
 		}
 		if(world == null)
 		{
@@ -783,7 +815,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 				return;
 			}
 			Runnable retired = () -> releasePersonalPocketRescue(player);
-			if(!FoliaScheduler.runEntity(
+			if(!scheduleEntityWithRetirement(
 				plugin,
 				player,
 				() -> teleportPersonalPocketRescue(player, safe.get(), ticket),
@@ -825,7 +857,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			}
 			boolean moved = error == null && Boolean.TRUE.equals(success);
 			Runnable retired = () -> finishRetiredPersonalPocketRescue(player, moved, ticket);
-			boolean scheduled = FoliaScheduler.runEntity(plugin, player, () ->
+			boolean scheduled = scheduleEntityWithRetirement(plugin, player, () ->
 			{
 				if(!isActivePersonalRescue(player))
 				{
@@ -1055,7 +1087,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 				}
 				hideTransitVisual(endpoint.identity().itemId());
 				Runnable retired = () -> retireScheduledTransit(player, source, ticketContext);
-				if(!FoliaScheduler.runEntity(
+				if(!scheduleEntityWithRetirement(
 					plugin,
 					player,
 					() -> teleport(player, source, target, ticketContext),
@@ -1100,7 +1132,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			}
 			boolean moved = error == null && Boolean.TRUE.equals(success);
 			Runnable retired = () -> finishRetiredTransit(player, source, moved, ticketContext);
-			boolean scheduled = FoliaScheduler.runEntity(plugin, player, () ->
+			boolean scheduled = scheduleEntityWithRetirement(plugin, player, () ->
 			{
 				if(closed.get())
 				{
@@ -1166,6 +1198,27 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		if(!FoliaScheduler.runAsync(plugin, () -> removeTicketQuietly(playerId, ticket)))
 		{
 			plugin.getLogger().warning("Could not schedule retired dimensional-door ticket cleanup for " + playerId);
+		}
+	}
+
+	private boolean scheduleEntityWithRetirement(
+		Plugin owner,
+		Player player,
+		Runnable task,
+		Runnable retired)
+	{
+		if(closed.get() || !owner.isEnabled())
+		{
+			return false;
+		}
+		try
+		{
+			return player.getScheduler().execute(owner, task, retired, 0L);
+		}
+		catch(Throwable ex)
+		{
+			plugin.getLogger().log(Level.WARNING, "Could not schedule dimensional-door entity work", ex);
+			return false;
 		}
 	}
 
@@ -1662,13 +1715,13 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 	private World world(DoorPosition position)
 	{
 		World byId = plugin.getServer().getWorld(position.worldId());
-		return byId == null ? plugin.getServer().getWorld(position.worldName()) : byId;
+		return byId == null ? WorldIdentity.resolve(position.worldKey()).orElse(null) : byId;
 	}
 
 	private static DoorPosition position(Block block, int lowerY)
 	{
 		return new DoorPosition(
-			block.getWorld().getUID(), block.getWorld().getName(), block.getX(), lowerY, block.getZ());
+			block.getWorld().getUID(), WorldIdentity.serialize(block.getWorld()), block.getX(), lowerY, block.getZ());
 	}
 
 	private static Material expectedMaterial(DoorKind kind)
@@ -1685,15 +1738,6 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 	private static DoorVec3 vector(Location location)
 	{
 		return new DoorVec3(location.getX(), location.getY(), location.getZ());
-	}
-
-	private static boolean nearThreshold(DoorwayPlane plane, DoorVec3 from, DoorVec3 to)
-	{
-		DoorVec3 center = plane.center();
-		return Math.abs(from.x() - center.x()) <= MOVEMENT_PROXIMITY
-			&& Math.abs(from.z() - center.z()) <= MOVEMENT_PROXIMITY
-			&& Math.abs(to.x() - center.x()) <= MOVEMENT_PROXIMITY
-			&& Math.abs(to.z() - center.z()) <= MOVEMENT_PROXIMITY;
 	}
 
 	private static int floor(double value)

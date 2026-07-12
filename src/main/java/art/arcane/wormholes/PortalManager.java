@@ -37,6 +37,7 @@ import art.arcane.wormholes.portal.PortalStructure;
 import art.arcane.wormholes.portal.PortalType;
 import art.arcane.wormholes.portal.PortalUpdateGate;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
+import art.arcane.volmlib.util.bukkit.WorldIdentity;
 import art.arcane.wormholes.network.view.ViewServer;
 import art.arcane.wormholes.util.AxisAlignedBB;
 import art.arcane.wormholes.util.Direction;
@@ -185,11 +186,11 @@ public class PortalManager implements Listener
 		try
 		{
 			JSONObject j = new JSONObject(VIO.readAll(k));
-			String savedWorldName = j.getJSONObject("structure").getString("world");
+			String savedWorldKey = j.getJSONObject("structure").getString("worldKey");
 
-			if(Bukkit.getWorld(savedWorldName) == null)
+			if(WorldIdentity.resolve(savedWorldKey).isEmpty())
 			{
-				Wormholes.w("Skipping portal " + k.getName() + " - world '" + savedWorldName + "' is not loaded");
+				Wormholes.w("Skipping portal " + k.getName() + " - world '" + savedWorldKey + "' is not loaded");
 				return PortalLoadResult.PENDING_WORLD;
 			}
 
@@ -209,7 +210,7 @@ public class PortalManager implements Listener
 			portal.loadJSON(j);
 			addLocalPortal(portal);
 			loadedPortalFiles++;
-			Wormholes.v("Loaded portal " + portal.getId() + " (" + portal.getName() + ") in " + savedWorldName);
+			Wormholes.v("Loaded portal " + portal.getId() + " (" + portal.getName() + ") in " + savedWorldKey);
 			return PortalLoadResult.LOADED;
 		}
 		catch(Throwable e)

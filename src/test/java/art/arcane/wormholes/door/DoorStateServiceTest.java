@@ -22,12 +22,12 @@ class DoorStateServiceTest {
     @Test
     void loadsAndIndexesCompletePersistedSnapshot() throws Exception {
         DoorPairIdentity pair = pair(1);
-        PlacedDoorEndpoint endpointA = placed(id(10), "world", 1, 64, 2, pair.endpoint(PairEndpoint.A));
+        PlacedDoorEndpoint endpointA = placed(id(10), "minecraft:overworld", 1, 64, 2, pair.endpoint(PairEndpoint.A));
         PocketAllocator allocator = new PocketAllocator();
         PocketSpace pocket = allocator.getOrAllocate(PocketBinding.personal(id(11)));
         ReturnTicket ticket = ticket(id(12), endpointA.identity().itemId());
         DoorStoreSnapshot persisted = new DoorStoreSnapshot(
-            1,
+            DoorStoreSnapshot.CURRENT_SCHEMA,
             allocator.nextSlot(),
             List.of(pair),
             List.of(endpointA),
@@ -51,8 +51,8 @@ class DoorStateServiceTest {
     void pairAndEndpointMutationsPersistAsOneCompleteState() throws Exception {
         DoorStateService service = DoorStateService.load(repository());
         DoorPairIdentity pair = pair(20);
-        PlacedDoorEndpoint endpointA = placed(id(30), "world", 0, 64, 0, pair.endpoint(PairEndpoint.A));
-        PlacedDoorEndpoint endpointB = placed(id(31), "world_nether", 5, 70, 5, pair.endpoint(PairEndpoint.B));
+        PlacedDoorEndpoint endpointA = placed(id(30), "minecraft:overworld", 0, 64, 0, pair.endpoint(PairEndpoint.A));
+        PlacedDoorEndpoint endpointB = placed(id(31), "minecraft:the_nether", 5, 70, 5, pair.endpoint(PairEndpoint.B));
 
         assertTrue(service.registerPair(pair));
         assertFalse(service.registerPair(pair));
@@ -75,7 +75,7 @@ class DoorStateServiceTest {
     void pairedEndpointCannotBeRegisteredBeforeItsPairIdentity() throws Exception {
         DoorStateService service = DoorStateService.load(repository());
         DoorPairIdentity pair = pair(40);
-        PlacedDoorEndpoint endpoint = placed(id(45), "world", 0, 64, 0, pair.endpoint(PairEndpoint.A));
+        PlacedDoorEndpoint endpoint = placed(id(45), "minecraft:overworld", 0, 64, 0, pair.endpoint(PairEndpoint.A));
 
         assertThrows(IllegalArgumentException.class, () -> service.registerEndpoint(endpoint));
         assertTrue(service.endpoints().isEmpty());
@@ -117,7 +117,7 @@ class DoorStateServiceTest {
             PocketAllocator.CHUNK_CENTER_OFFSET
         );
         DoorStoreSnapshot stateWithRetiredGap = new DoorStoreSnapshot(
-            1, 4, List.of(), List.of(), List.of(existing), List.of()
+            DoorStoreSnapshot.CURRENT_SCHEMA, 4, List.of(), List.of(), List.of(existing), List.of()
         );
         DimensionalDoorRepository repository = repository();
         repository.save(stateWithRetiredGap);
@@ -136,7 +136,7 @@ class DoorStateServiceTest {
         DoorStateService service = DoorStateService.load(repository());
         ReturnTicket first = ticket(id(70), id(71));
         ReturnTicket replacement = new ReturnTicket(
-            first.playerId(), id(72), id(73), "world_the_end", 9, 80, -9, 180, 0
+            first.playerId(), id(72), id(73), "minecraft:the_end", 9, 80, -9, 180, 0
         );
 
         service.putReturnTicket(first);
@@ -181,8 +181,8 @@ class DoorStateServiceTest {
     @Test
     void duplicateEndpointFailureLeavesExistingStateIntact() throws Exception {
         DoorStateService service = DoorStateService.load(repository());
-        PlacedDoorEndpoint first = placed(id(100), "world", 0, 64, 0, DoorItemIdentity.iron(id(101)));
-        PlacedDoorEndpoint conflicting = placed(id(100), "world", 0, 64, 0, DoorItemIdentity.iron(id(102)));
+        PlacedDoorEndpoint first = placed(id(100), "minecraft:overworld", 0, 64, 0, DoorItemIdentity.iron(id(101)));
+        PlacedDoorEndpoint conflicting = placed(id(100), "minecraft:overworld", 0, 64, 0, DoorItemIdentity.iron(id(102)));
         service.registerEndpoint(first);
 
         assertThrows(IllegalStateException.class, () -> service.registerEndpoint(conflicting));
@@ -211,7 +211,7 @@ class DoorStateServiceTest {
     }
 
     private static ReturnTicket ticket(UUID playerId, UUID endpointId) {
-        return new ReturnTicket(playerId, endpointId, id(999), "world", 1.5, 65, -2.5, 90, 5);
+        return new ReturnTicket(playerId, endpointId, id(999), "minecraft:overworld", 1.5, 65, -2.5, 90, 5);
     }
 
     private static UUID id(long value) {

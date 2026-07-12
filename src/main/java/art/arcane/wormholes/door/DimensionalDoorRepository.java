@@ -131,7 +131,7 @@ public final class DimensionalDoorRepository {
             }
             endpoints.put(new JSONObject()
                 .put("worldId", position.worldId().toString())
-                .put("worldName", position.worldName())
+                .put("worldKey", position.worldKey())
                 .put("x", position.x())
                 .put("y", position.y())
                 .put("z", position.z())
@@ -158,7 +158,7 @@ public final class DimensionalDoorRepository {
                 .put("playerId", ticket.playerId().toString())
                 .put("sourceEndpointId", ticket.sourceEndpointId().toString())
                 .put("sourceWorldId", ticket.sourceWorldId().toString())
-                .put("sourceWorldName", ticket.sourceWorldName())
+                .put("sourceWorldKey", ticket.sourceWorldKey())
                 .put("x", ticket.x())
                 .put("y", ticket.y())
                 .put("z", ticket.z())
@@ -200,7 +200,7 @@ public final class DimensionalDoorRepository {
             endpoints.add(new PlacedDoorEndpoint(
                 new DoorPosition(
                     uuid(endpoint, "worldId"),
-                    endpoint.getString("worldName"),
+                    endpoint.getString("worldKey"),
                     endpoint.getInt("x"),
                     endpoint.getInt("y"),
                     endpoint.getInt("z")
@@ -234,7 +234,7 @@ public final class DimensionalDoorRepository {
                 uuid(ticket, "playerId"),
                 uuid(ticket, "sourceEndpointId"),
                 uuid(ticket, "sourceWorldId"),
-                ticket.getString("sourceWorldName"),
+                ticket.getString("sourceWorldKey"),
                 ticket.getDouble("x"),
                 ticket.getDouble("y"),
                 ticket.getDouble("z"),

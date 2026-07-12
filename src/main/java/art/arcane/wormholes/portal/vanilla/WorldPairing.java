@@ -1,6 +1,7 @@
 package art.arcane.wormholes.portal.vanilla;
 
-import org.bukkit.Bukkit;
+import art.arcane.volmlib.util.bukkit.WorldIdentity;
+import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 
 public final class WorldPairing
@@ -50,12 +51,7 @@ public final class WorldPairing
 		{
 			return overworld;
 		}
-		World byName = Bukkit.getWorld(overworld.getName() + "_nether");
-		if(byName != null && byName.getEnvironment() == World.Environment.NETHER)
-		{
-			return byName;
-		}
-		return firstOfEnvironment(World.Environment.NETHER);
+		return resolve(pairedNetherKey(WorldIdentity.key(overworld)), World.Environment.NETHER);
 	}
 
 	public static World pairedEnd(World overworld)
@@ -68,12 +64,7 @@ public final class WorldPairing
 		{
 			return overworld;
 		}
-		World byName = Bukkit.getWorld(overworld.getName() + "_the_end");
-		if(byName != null && byName.getEnvironment() == World.Environment.THE_END)
-		{
-			return byName;
-		}
-		return firstOfEnvironment(World.Environment.THE_END);
+		return resolve(pairedEndKey(WorldIdentity.key(overworld)), World.Environment.THE_END);
 	}
 
 	public static World pairedOverworld(World other)
@@ -86,36 +77,54 @@ public final class WorldPairing
 		{
 			return other;
 		}
-		String name = other.getName();
-		String base = null;
-		if(name.endsWith("_nether"))
-		{
-			base = name.substring(0, name.length() - "_nether".length());
-		}
-		else if(name.endsWith("_the_end"))
-		{
-			base = name.substring(0, name.length() - "_the_end".length());
-		}
-		if(base != null && !base.isEmpty())
-		{
-			World resolved = Bukkit.getWorld(base);
-			if(resolved != null && resolved.getEnvironment() == World.Environment.NORMAL)
-			{
-				return resolved;
-			}
-		}
-		return firstOfEnvironment(World.Environment.NORMAL);
+		return resolve(pairedOverworldKey(WorldIdentity.key(other)), World.Environment.NORMAL);
 	}
 
-	private static World firstOfEnvironment(World.Environment environment)
+	static NamespacedKey pairedNetherKey(NamespacedKey overworldKey)
 	{
-		for(World world : Bukkit.getWorlds())
+		if(NamespacedKey.minecraft("overworld").equals(overworldKey))
 		{
-			if(world.getEnvironment() == environment)
-			{
-				return world;
-			}
+			return NamespacedKey.minecraft("the_nether");
 		}
-		return null;
+		return new NamespacedKey(overworldKey.getNamespace(), overworldKey.getKey() + "_nether");
+	}
+
+	static NamespacedKey pairedEndKey(NamespacedKey overworldKey)
+	{
+		if(NamespacedKey.minecraft("overworld").equals(overworldKey))
+		{
+			return NamespacedKey.minecraft("the_end");
+		}
+		return new NamespacedKey(overworldKey.getNamespace(), overworldKey.getKey() + "_the_end");
+	}
+
+	static NamespacedKey pairedOverworldKey(NamespacedKey otherKey)
+	{
+		if(NamespacedKey.minecraft("the_nether").equals(otherKey)
+			|| NamespacedKey.minecraft("the_end").equals(otherKey))
+		{
+			return NamespacedKey.minecraft("overworld");
+		}
+		String key = otherKey.getKey();
+		String base = null;
+		if(key.endsWith("_nether"))
+		{
+			base = key.substring(0, key.length() - "_nether".length());
+		}
+		else if(key.endsWith("_the_end"))
+		{
+			base = key.substring(0, key.length() - "_the_end".length());
+		}
+		return base == null || base.isEmpty() ? null : new NamespacedKey(otherKey.getNamespace(), base);
+	}
+
+	private static World resolve(NamespacedKey key, World.Environment environment)
+	{
+		if(key == null)
+		{
+			return null;
+		}
+		World world = WorldIdentity.resolve(key).orElse(null);
+		return world != null && world.getEnvironment() == environment ? world : null;
 	}
 }

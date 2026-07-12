@@ -8,7 +8,7 @@ import java.util.UUID;
 public record PortalInfo(
     UUID id,
     String name,
-    String worldName,
+    String worldKey,
     String typeName,
     boolean open,
     String frameNormal,
@@ -28,7 +28,7 @@ public record PortalInfo(
         out.writeLong(id.getMostSignificantBits());
         out.writeLong(id.getLeastSignificantBits());
         out.writeUTF(name);
-        out.writeUTF(worldName);
+        out.writeUTF(worldKey);
         out.writeUTF(typeName);
         out.writeBoolean(open);
         WireCodec.writeDirection(out, frameNormal);
@@ -48,7 +48,7 @@ public record PortalInfo(
     public static PortalInfo read(DataInputStream in) throws IOException {
         UUID id = new UUID(in.readLong(), in.readLong());
         String name = in.readUTF();
-        String worldName = in.readUTF();
+        String worldKey = in.readUTF();
         String typeName = in.readUTF();
         boolean open = in.readBoolean();
         String frameNormal = WireCodec.readDirection(in);
@@ -63,6 +63,6 @@ public record PortalInfo(
         double maxX = in.readDouble();
         double maxY = in.readDouble();
         double maxZ = in.readDouble();
-        return new PortalInfo(id, name, worldName, typeName, open, frameNormal, frameRight, frameUp, originX, originY, originZ, minX, minY, minZ, maxX, maxY, maxZ);
+        return new PortalInfo(id, name, worldKey, typeName, open, frameNormal, frameRight, frameUp, originX, originY, originZ, minX, minY, minZ, maxX, maxY, maxZ);
     }
 }

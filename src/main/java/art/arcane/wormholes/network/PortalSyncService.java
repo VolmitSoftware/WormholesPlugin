@@ -1,5 +1,6 @@
 package art.arcane.wormholes.network;
 
+import art.arcane.volmlib.util.bukkit.WorldIdentity;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.ITunnel;
@@ -328,7 +329,7 @@ public final class PortalSyncService {
         return new PortalInfo(
             portal.getId(),
             portal.getName(),
-            portal.getStructure().getWorld().getName(),
+            WorldIdentity.serialize(portal.getStructure().getWorld()),
             portal.getType().name(),
             portal.isOpen(),
             frame.getNormal().name(),

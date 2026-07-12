@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import org.bukkit.World;
+import org.bukkit.NamespacedKey;
 import org.junit.jupiter.api.Test;
 
 import art.arcane.wormholes.util.Cuboid;
@@ -205,6 +206,7 @@ public final class DimensionalPortalPairStateTest
 		return (World) Proxy.newProxyInstance(World.class.getClassLoader(), new Class<?>[] { World.class }, (proxy, method, arguments) -> switch(method.getName())
 		{
 			case "getName" -> "world";
+			case "getKey" -> NamespacedKey.minecraft("overworld");
 			case "toString" -> "DimensionalPortalPairStateWorld";
 			case "hashCode" -> Integer.valueOf(System.identityHashCode(proxy));
 			case "equals" -> Boolean.valueOf(proxy == arguments[0]);
@@ -215,7 +217,7 @@ public final class DimensionalPortalPairStateTest
 	private static Cuboid cuboid()
 	{
 		Map<String, Object> map = new HashMap<String, Object>();
-		map.put("worldName", "world");
+		map.put("worldKey", "minecraft:overworld");
 		map.put("x1", Integer.valueOf(0));
 		map.put("y1", Integer.valueOf(64));
 		map.put("z1", Integer.valueOf(0));

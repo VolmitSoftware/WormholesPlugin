@@ -2,7 +2,7 @@
 shadow = "9.0.0-rc3"
 slimjar = "2.1.9"
 runTask = "2.3.1"
-paper = "26.2.build.25-alpha"
+paper = "26.2.build.60-beta"
 packetevents = "2.13.0"
 bstats = "3.0.2"
 toml4j = "0.7.2"

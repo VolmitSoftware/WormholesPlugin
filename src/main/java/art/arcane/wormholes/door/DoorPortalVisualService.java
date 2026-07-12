@@ -1,5 +1,6 @@
 package art.arcane.wormholes.door;
 
+import art.arcane.volmlib.util.bukkit.WorldIdentity;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
@@ -252,7 +253,7 @@ final class DoorPortalVisualService implements AutoCloseable
 	private World world(DoorPosition position)
 	{
 		World byId = plugin.getServer().getWorld(position.worldId());
-		return byId == null ? plugin.getServer().getWorld(position.worldName()) : byId;
+		return byId == null ? WorldIdentity.resolve(position.worldKey()).orElse(null) : byId;
 	}
 
 	private record Visual(DoorPosition position, BlockDisplay display)

@@ -1,20 +1,17 @@
 package art.arcane.wormholes.door;
 
+import art.arcane.volmlib.util.bukkit.WorldIdentity;
+
 import java.util.Objects;
 import java.util.UUID;
 
 /**
- * The lower block of a placed two-block door. The world name is retained for
- * diagnostics and delayed world lookup; the UUID and block coordinates are
- * the canonical placement key.
+ * The lower block of a placed two-block door.
  */
-public record DoorPosition(UUID worldId, String worldName, int x, int y, int z) {
+public record DoorPosition(UUID worldId, String worldKey, int x, int y, int z) {
     public DoorPosition {
         Objects.requireNonNull(worldId, "worldId");
-        worldName = Objects.requireNonNull(worldName, "worldName").trim();
-        if (worldName.isEmpty()) {
-            throw new IllegalArgumentException("worldName cannot be blank");
-        }
+        worldKey = WorldIdentity.parse(worldKey).toString();
     }
 
     DoorBlockKey blockKey() {

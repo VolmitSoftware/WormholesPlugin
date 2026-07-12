@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PortalSyncWireTest {
     private static PortalInfo sampleInfo(UUID id, boolean open) {
-        return new PortalInfo(id, "Gateway abcd", "world", "GATEWAY", open, "N", "E", "U",
+        return new PortalInfo(id, "Gateway abcd", "minecraft:overworld", "GATEWAY", open, "N", "E", "U",
             100.5D, 64.0D, -200.5D,
             99.5D, 63.5D, -201.5D,
             101.5D, 66.5D, -199.5D);
@@ -37,7 +37,7 @@ class PortalSyncWireTest {
         PortalInfo info = decoded.portals().get(0);
         assertEquals(id, info.id());
         assertEquals("Gateway abcd", info.name());
-        assertEquals("world", info.worldName());
+        assertEquals("minecraft:overworld", info.worldKey());
         assertEquals("GATEWAY", info.typeName());
         assertTrue(info.open());
         assertEquals("N", info.frameNormal());
@@ -68,7 +68,7 @@ class PortalSyncWireTest {
         assertNotNull(portal);
         assertEquals("Gateway abcd", portal.getName());
         assertEquals("hub", portal.getServer().getName());
-        assertEquals("world", portal.getServer().getWorld());
+        assertEquals("minecraft:overworld", portal.getServer().getWorld());
         assertTrue(portal.isOpen());
         assertEquals("N", portal.getFrame().getNormal().name());
 

@@ -95,7 +95,7 @@ class DoorPortalVisualServiceTest
 		UUID worldId = UUID.randomUUID();
 		DoorPortalVisualService service = new DoorPortalVisualService(plugin);
 		PlacedDoorEndpoint endpoint = new PlacedDoorEndpoint(
-			new DoorPosition(worldId, "world", 1, 2, 3),
+			new DoorPosition(worldId, "minecraft:overworld", 1, 2, 3),
 			DoorItemIdentity.personal(UUID.randomUUID()));
 		VanillaDoorSnapshot snapshot = new VanillaDoorSnapshot(
 			worldId,
@@ -165,7 +165,7 @@ class DoorPortalVisualServiceTest
 		DoorPortalVisualService service = new DoorPortalVisualService(plugin);
 		serviceReference.set(service);
 		PlacedDoorEndpoint endpoint = new PlacedDoorEndpoint(
-			new DoorPosition(worldId, "world", 1, 2, 3),
+			new DoorPosition(worldId, "minecraft:overworld", 1, 2, 3),
 			DoorItemIdentity.personal(UUID.randomUUID()));
 		VanillaDoorSnapshot snapshot = new VanillaDoorSnapshot(
 			worldId,

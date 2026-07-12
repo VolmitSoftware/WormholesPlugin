@@ -50,7 +50,7 @@ public class RemotePortal extends Portal implements IRemotePortal {
     public static RemotePortal fromInfo(String serverName, PortalInfo info) {
         RemotePortal portal = new RemotePortal(
             info.id(),
-            new RemoteWorld(serverName, info.worldName()),
+            new RemoteWorld(serverName, info.worldKey()),
             new Vector(info.originX(), info.originY(), info.originZ()),
             PortalType.valueOf(info.typeName()),
             info.open(),

@@ -5,7 +5,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.block.Block;
@@ -19,6 +18,7 @@ import art.arcane.wormholes.util.JSONArray;
 import art.arcane.volmlib.util.collection.KList;
 import art.arcane.volmlib.util.collection.KMap;
 import art.arcane.volmlib.util.collection.KSet;
+import art.arcane.volmlib.util.bukkit.WorldIdentity;
 import art.arcane.wormholes.util.JSONObject;
 
 public class PortalStructure implements IWritable
@@ -38,7 +38,7 @@ public class PortalStructure implements IWritable
 	@Override
 	public void saveJSON(JSONObject j)
 	{
-		j.put("world", world.getName());
+		j.put("worldKey", WorldIdentity.serialize(world));
 		j.put("area", area.toJSON());
 		JSONArray blocks = new JSONArray();
 		for(Vector block : blockPositions)
@@ -57,7 +57,7 @@ public class PortalStructure implements IWritable
 	{
 		area = new AxisAlignedBB(0, 0, 0, 0, 0, 0);
 		area.loadJSON(j.getJSONObject("area"));
-		setWorld(Bukkit.getWorld(j.getString("world")));
+		setWorld(WorldIdentity.resolve(j.getString("worldKey")).orElse(null));
 		clearBlockCells();
 		if(j.has("blocks"))
 		{

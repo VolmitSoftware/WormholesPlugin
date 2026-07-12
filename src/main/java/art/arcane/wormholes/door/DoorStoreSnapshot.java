@@ -19,7 +19,7 @@ public record DoorStoreSnapshot(
     List<PocketSpace> spaces,
     List<ReturnTicket> returnTickets
 ) {
-    public static final int CURRENT_SCHEMA = 1;
+    public static final int CURRENT_SCHEMA = 2;
 
     public DoorStoreSnapshot {
         if (schema != CURRENT_SCHEMA) {

@@ -1,5 +1,7 @@
 package art.arcane.wormholes.door;
 
+import art.arcane.volmlib.util.bukkit.WorldIdentity;
+
 import java.util.Objects;
 import java.util.UUID;
 
@@ -8,7 +10,7 @@ public record ReturnTicket(
     UUID playerId,
     UUID sourceEndpointId,
     UUID sourceWorldId,
-    String sourceWorldName,
+    String sourceWorldKey,
     double x,
     double y,
     double z,
@@ -19,10 +21,7 @@ public record ReturnTicket(
         Objects.requireNonNull(playerId, "playerId");
         Objects.requireNonNull(sourceEndpointId, "sourceEndpointId");
         Objects.requireNonNull(sourceWorldId, "sourceWorldId");
-        sourceWorldName = Objects.requireNonNull(sourceWorldName, "sourceWorldName").trim();
-        if (sourceWorldName.isEmpty()) {
-            throw new IllegalArgumentException("sourceWorldName cannot be blank");
-        }
+        sourceWorldKey = WorldIdentity.parse(sourceWorldKey).toString();
         requireFinite(x, "x");
         requireFinite(y, "y");
         requireFinite(z, "z");

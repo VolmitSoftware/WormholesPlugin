@@ -48,6 +48,7 @@ import art.arcane.wormholes.portal.PortalBlock;
 import art.arcane.wormholes.portal.PortalType;
 import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.wormholes.util.GChunk;
+import art.arcane.volmlib.util.bukkit.WorldIdentity;
 import art.arcane.volmlib.util.collection.KList;
 import art.arcane.wormholes.util.J;
 import art.arcane.wormholes.util.M;
@@ -146,7 +147,7 @@ public class BlockManager implements Listener
 				return;
 			}
 
-			String world = at.getWorld().getName();
+			String worldKey = WorldIdentity.serialize(at.getWorld());
 			int cx = at.getBlockX() >> 4;
 			int cz = at.getBlockZ() >> 4;
 
@@ -154,7 +155,7 @@ public class BlockManager implements Listener
 			{
 				for(int dz = -1; dz <= 1; dz++)
 				{
-					Set<PortalBlock> set = blocks.get(new GChunk(cx + dx, cz + dz, world));
+					Set<PortalBlock> set = blocks.get(new GChunk(cx + dx, cz + dz, worldKey));
 					if(set == null)
 					{
 						continue;
@@ -229,13 +230,14 @@ public class BlockManager implements Listener
 	{
 		synchronized(runeMutationLock)
 		{
-			PortalBlock init = findTrackedBlock(clickedBlock.getWorld().getName(), clickedBlock.getX(), clickedBlock.getY(), clickedBlock.getZ());
+			String worldKey = WorldIdentity.serialize(clickedBlock.getWorld());
+			PortalBlock init = findTrackedBlock(worldKey, clickedBlock.getX(), clickedBlock.getY(), clickedBlock.getZ());
 			if(init == null)
 			{
 				return null;
 			}
 			PortalType type = init.getType();
-			Set<PortalBlock> connected = connectedRunes(clickedBlock.getWorld().getName(), RuneCoordinate.from(init.getLocation()), type);
+			Set<PortalBlock> connected = connectedRunes(worldKey, RuneCoordinate.from(init.getLocation()), type);
 			if(connected.isEmpty())
 			{
 				return null;
@@ -261,7 +263,7 @@ public class BlockManager implements Listener
 		}
 	}
 
-	private Set<PortalBlock> connectedRunes(String worldName, RuneCoordinate start, PortalType type)
+	private Set<PortalBlock> connectedRunes(String worldKey, RuneCoordinate start, PortalType type)
 	{
 		Set<PortalBlock> connected = new HashSet<PortalBlock>();
 		Set<RuneCoordinate> visited = new HashSet<RuneCoordinate>();
@@ -274,7 +276,7 @@ public class BlockManager implements Listener
 			{
 				continue;
 			}
-			PortalBlock portalBlock = findTrackedBlock(worldName, coordinate.x(), coordinate.y(), coordinate.z());
+			PortalBlock portalBlock = findTrackedBlock(worldKey, coordinate.x(), coordinate.y(), coordinate.z());
 			if(portalBlock == null || portalBlock.getType() != type)
 			{
 				continue;
@@ -514,16 +516,16 @@ public class BlockManager implements Listener
 	{
 	}
 
-	private record RuneCell(String world, int x, int y, int z)
+	private record RuneCell(String worldKey, int x, int y, int z)
 	{
 		private static RuneCell from(Block block)
 		{
-			return new RuneCell(block.getWorld().getName(), block.getX(), block.getY(), block.getZ());
+			return new RuneCell(WorldIdentity.serialize(block.getWorld()), block.getX(), block.getY(), block.getZ());
 		}
 
 		private static RuneCell from(Location location)
 		{
-			return new RuneCell(location.getWorld().getName(), location.getBlockX(), location.getBlockY(), location.getBlockZ());
+			return new RuneCell(WorldIdentity.serialize(location.getWorld()), location.getBlockX(), location.getBlockY(), location.getBlockZ());
 		}
 	}
 
@@ -639,7 +641,7 @@ public class BlockManager implements Listener
 	{
 		synchronized(runeMutationLock)
 		{
-			return findTrackedBlock(block.getWorld().getName(), block.getX(), block.getY(), block.getZ());
+			return findTrackedBlock(WorldIdentity.serialize(block.getWorld()), block.getX(), block.getY(), block.getZ());
 		}
 	}
 
@@ -689,9 +691,9 @@ public class BlockManager implements Listener
 		}
 	}
 
-	private PortalBlock findTrackedBlock(String worldName, int x, int y, int z)
+	private PortalBlock findTrackedBlock(String worldKey, int x, int y, int z)
 	{
-		Set<PortalBlock> tracked = blocks.get(new GChunk(x >> 4, z >> 4, worldName));
+		Set<PortalBlock> tracked = blocks.get(new GChunk(x >> 4, z >> 4, worldKey));
 		if(tracked == null)
 		{
 			return null;
@@ -709,7 +711,7 @@ public class BlockManager implements Listener
 
 	private static GChunk chunkKey(Location location)
 	{
-		return new GChunk(location.getBlockX() >> 4, location.getBlockZ() >> 4, location.getWorld().getName());
+		return new GChunk(location.getBlockX() >> 4, location.getBlockZ() >> 4, WorldIdentity.serialize(location.getWorld()));
 	}
 
 	public void registerRecipes()

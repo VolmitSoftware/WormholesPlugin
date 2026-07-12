@@ -83,7 +83,7 @@ public final class MirrorPortalStateTest {
 
     private static Cuboid cuboid() {
         Map<String, Object> map = new HashMap<String, Object>();
-        map.put("worldName", "world");
+        map.put("worldKey", "minecraft:overworld");
         map.put("x1", Integer.valueOf(0));
         map.put("y1", Integer.valueOf(64));
         map.put("z1", Integer.valueOf(0));

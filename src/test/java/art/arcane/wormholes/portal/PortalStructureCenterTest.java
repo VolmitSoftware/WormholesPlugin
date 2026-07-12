@@ -80,7 +80,7 @@ public final class PortalStructureCenterTest {
 
     private static Cuboid cuboid(int x1, int y1, int z1, int x2, int y2, int z2) {
         Map<String, Object> map = new HashMap<String, Object>();
-        map.put("worldName", "world");
+        map.put("worldKey", "minecraft:overworld");
         map.put("x1", Integer.valueOf(x1));
         map.put("y1", Integer.valueOf(y1));
         map.put("z1", Integer.valueOf(z1));

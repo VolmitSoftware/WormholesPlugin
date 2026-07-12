@@ -65,6 +65,7 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
+import art.arcane.volmlib.util.bukkit.WorldIdentity;
 import art.arcane.wormholes.EffectManager;
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
@@ -1510,7 +1511,7 @@ public final class ProjectedEntityRenderer {
     }
 
     private static final class EntityCandidateSnapshot {
-        private final String worldName;
+        private final String worldKey;
         private final int centerBlockX;
         private final int centerBlockY;
         private final int centerBlockZ;
@@ -1519,7 +1520,7 @@ public final class ProjectedEntityRenderer {
         private final List<Entity> entities;
 
         private EntityCandidateSnapshot(Location center, double range, long createdAtMillis, List<Entity> entities) {
-            this.worldName = center.getWorld().getName();
+            this.worldKey = WorldIdentity.serialize(center.getWorld());
             this.centerBlockX = center.getBlockX();
             this.centerBlockY = center.getBlockY();
             this.centerBlockZ = center.getBlockZ();
@@ -1529,7 +1530,7 @@ public final class ProjectedEntityRenderer {
         }
 
         private boolean matches(Location center, double range) {
-            return worldName.equals(center.getWorld().getName())
+            return worldKey.equals(WorldIdentity.serialize(center.getWorld()))
                 && centerBlockX == center.getBlockX()
                 && centerBlockY == center.getBlockY()
                 && centerBlockZ == center.getBlockZ()
