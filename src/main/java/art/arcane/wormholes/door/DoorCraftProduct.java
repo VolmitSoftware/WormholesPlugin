@@ -5,5 +5,5 @@ public enum DoorCraftProduct
 {
 	PAIR_KIT,
 	PERSONAL_DOOR,
-	IRON_DOOR
+	PUBLIC_DOOR
 }

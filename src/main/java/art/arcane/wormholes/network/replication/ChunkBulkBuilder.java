@@ -1,5 +1,6 @@
 package art.arcane.wormholes.network.replication;
 
+import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.network.view.ViewBox;
 import art.arcane.wormholes.network.view.ViewSlice;
 
@@ -71,7 +72,7 @@ public final class ChunkBulkBuilder {
 
         short[] biomes = buildBiomeGrid(minX, minY, minZ, sizeX, sizeY, sizeZ, (localX, worldY, localZ) -> {
             Biome biome = snapshot.getBiome(localX, worldY, localZ);
-            String biomeString = biomeStrings.computeIfAbsent(biome, b -> b.getKey().asString());
+            String biomeString = biomeStrings.computeIfAbsent(biome, b -> WormholesPlatform.keyString(b.getKey()));
             Integer biomePaletteIndex = biomePaletteLookup.get(biomeString);
             if (biomePaletteIndex == null) {
                 biomePaletteIndex = biomePalette.size();

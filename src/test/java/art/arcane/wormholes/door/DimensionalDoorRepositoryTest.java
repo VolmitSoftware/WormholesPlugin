@@ -41,7 +41,7 @@ class DimensionalDoorRepositoryTest {
         );
         PocketAllocator allocator = new PocketAllocator();
         allocator.getOrAllocate(PocketBinding.personal(id(7)));
-        allocator.getOrAllocate(PocketBinding.iron(id(8)));
+        allocator.getOrAllocate(PocketBinding.publicDoor(id(8)));
         ReturnTicket ticket = ticket(id(9), id(6));
         DoorStoreSnapshot expected = new DoorStoreSnapshot(
             DoorStoreSnapshot.CURRENT_SCHEMA,
@@ -61,6 +61,91 @@ class DimensionalDoorRepositoryTest {
         try (Stream<Path> files = Files.list(temporaryDirectory)) {
             assertEquals(List.of(stateFile), files.toList(), "atomic temp file must be cleaned up");
         }
+    }
+
+    @Test
+    void legacyDoorKindsMigrateWithoutChangingIdentityOrPocketAllocation() throws Exception {
+        Path stateFile = temporaryDirectory.resolve("legacy-state.json");
+        UUID pairId = id(110);
+        UUID pairA = id(111);
+        UUID pairB = id(112);
+        UUID publicItemId = id(113);
+        UUID publicSpaceId = id(114);
+        Files.writeString(stateFile, """
+            {
+              "schema": 2,
+              "nextPocketSlot": 1,
+              "pairs": [{
+                "pairId": "%s",
+                "endpointAItemId": "%s",
+                "endpointBItemId": "%s"
+              }],
+              "endpoints": [{
+                "worldId": "%s",
+                "worldKey": "minecraft:overworld",
+                "x": 1,
+                "y": 64,
+                "z": 2,
+                "item": {
+                  "itemId": "%s",
+                  "kind": "PAIRED",
+                  "pairId": "%s",
+                  "pairEndpoint": "A"
+                }
+              }, {
+                "worldId": "%s",
+                "worldKey": "minecraft:the_nether",
+                "x": 3,
+                "y": 70,
+                "z": 4,
+                "item": {
+                  "itemId": "%s",
+                  "kind": "IRON"
+                }
+              }],
+              "spaces": [{
+                "spaceId": "%s",
+                "bindingKind": "IRON",
+                "bindingId": "%s",
+                "slot": 0,
+                "centerX": 8,
+                "centerY": 128,
+                "centerZ": 8
+              }],
+              "returnTickets": []
+            }
+            """.formatted(
+                pairId,
+                pairA,
+                pairB,
+                id(115),
+                pairA,
+                pairId,
+                id(116),
+                publicItemId,
+                publicSpaceId,
+                publicItemId));
+
+        DimensionalDoorRepository repository = new DimensionalDoorRepository(stateFile);
+        DoorStoreSnapshot migrated = repository.load();
+
+        assertEquals(DoorStoreSnapshot.CURRENT_SCHEMA, migrated.schema());
+        assertEquals(DoorKind.PAIR, migrated.endpoints().get(0).identity().kind());
+        assertEquals(pairA, migrated.endpoints().get(0).identity().itemId());
+        assertEquals(pairId, migrated.endpoints().get(0).identity().pairId());
+        assertEquals(DoorKind.PUBLIC, migrated.endpoints().get(1).identity().kind());
+        assertEquals(publicItemId, migrated.endpoints().get(1).identity().itemId());
+        assertEquals(publicSpaceId, migrated.spaces().get(0).spaceId());
+        assertEquals(PocketBinding.publicDoor(publicItemId), migrated.spaces().get(0).binding());
+
+        repository.save(migrated);
+        String canonical = Files.readString(stateFile);
+        assertTrue(canonical.contains("\"schema\": 3"));
+        assertTrue(canonical.contains("\"kind\": \"PAIR\""));
+        assertTrue(canonical.contains("\"kind\": \"PUBLIC\""));
+        assertFalse(canonical.contains("\"kind\": \"PAIRED\""));
+        assertFalse(canonical.contains("\"kind\": \"IRON\""));
+        assertTrue(canonical.contains("\"bindingKind\": \"IRON\""));
     }
 
     @Test

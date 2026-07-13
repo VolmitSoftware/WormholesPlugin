@@ -12,9 +12,9 @@ public final class DoorDestinationResolver {
         Objects.requireNonNull(travelerId, "travelerId");
 
         return switch (door.kind()) {
-            case PAIRED -> new PairedDoorDestination(door.pairId(), door.pairEndpoint().other());
+            case PAIR -> new PairedDoorDestination(door.pairId(), door.pairEndpoint().other());
             case PERSONAL -> new PocketDoorDestination(PocketBinding.personal(travelerId));
-            case IRON -> new PocketDoorDestination(PocketBinding.iron(door.itemId()));
+            case PUBLIC -> new PocketDoorDestination(PocketBinding.publicDoor(door.itemId()));
             case RETURN -> new ReturnDoorDestination(door.spaceId(), travelerId);
         };
     }

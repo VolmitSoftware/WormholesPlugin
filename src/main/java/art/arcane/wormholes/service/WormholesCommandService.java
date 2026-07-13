@@ -17,9 +17,6 @@ import art.arcane.volmlib.util.director.theme.DirectorThemes;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.commands.CommandWormholes;
 import art.arcane.wormholes.util.common.cache.AtomicCache;
-import io.papermc.paper.command.brigadier.BasicCommand;
-import io.papermc.paper.command.brigadier.CommandSourceStack;
-import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
@@ -33,9 +30,10 @@ import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -59,26 +57,41 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
 
     public void register() {
         getDirector();
-        PluginCommand command = null;
-        try {
-            command = plugin.getCommand(ROOT_COMMAND);
-        } catch (UnsupportedOperationException ignored) {
-            // Paper plugins register commands through LifecycleEvents.COMMANDS.
-        }
+        PluginCommand command = findBukkitCommand();
         if (command != null) {
             command.setExecutor(this);
             command.setTabCompleter(this);
             return;
         }
+        registerPaperCommand();
+    }
 
-        plugin.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event ->
-            event.registrar().register(
-                ROOT_COMMAND,
-                "Wormholes base command.",
-                List.of("wh", "wormhole"),
-                new PaperCommand()
-            )
-        );
+    private PluginCommand findBukkitCommand() {
+        try {
+            return plugin.getCommand(ROOT_COMMAND);
+        } catch (UnsupportedOperationException ignored) {
+            // Paper plugins register commands through LifecycleEvents.COMMANDS.
+            return null;
+        }
+    }
+
+    private void registerPaperCommand() {
+        try {
+            Class<?> registrarType = Class.forName(
+                "art.arcane.wormholes.service.PaperCommandRegistrar",
+                true,
+                getClass().getClassLoader()
+            );
+            Method register = registrarType.getDeclaredMethod("register", Wormholes.class, WormholesCommandService.class);
+            register.invoke(null, plugin, this);
+        } catch (InvocationTargetException exception) {
+            Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+            throw new IllegalStateException("Paper command registration failed", cause);
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException("Paper command registrar is unavailable", exception);
+        } catch (LinkageError error) {
+            throw new IllegalStateException("Paper command APIs are unavailable", error);
+        }
     }
 
     public void invalidateCache() {
@@ -97,7 +110,7 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
         return executeCommand(sender, label, args);
     }
 
-    private boolean executeCommand(CommandSender sender, String label, String[] args) {
+    boolean executeCommand(CommandSender sender, String label, String[] args) {
         if (!sender.hasPermission(ROOT_PERMISSION)) {
             if (sendPublicCommandIfRequested(sender, args)) {
                 playInfoChime(sender);
@@ -133,28 +146,11 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
         return tabComplete(sender, alias, args);
     }
 
-    private List<String> tabComplete(CommandSender sender, String alias, String[] args) {
+    List<String> tabComplete(CommandSender sender, String alias, String[] args) {
         if (!sender.hasPermission(ROOT_PERMISSION)) {
             return publicTabCompletions(args);
         }
         return runDirectorTab(sender, alias, args);
-    }
-
-    private final class PaperCommand implements BasicCommand {
-        @Override
-        public void execute(CommandSourceStack source, String[] args) {
-            executeCommand(source.getSender(), ROOT_COMMAND, args);
-        }
-
-        @Override
-        public Collection<String> suggest(CommandSourceStack source, String[] args) {
-            return tabComplete(source.getSender(), ROOT_COMMAND, args);
-        }
-
-        @Override
-        public boolean canUse(CommandSender sender) {
-            return true;
-        }
     }
 
 	private boolean sendPublicCommandIfRequested(CommandSender sender, String[] args) {

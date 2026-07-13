@@ -83,25 +83,25 @@ class DoorStateServiceTest {
     }
 
     @Test
-    void personalAndIronPocketsResolveAndSurviveRestart() throws Exception {
+    void personalAndPublicPocketsResolveAndSurviveRestart() throws Exception {
         DoorStateService service = DoorStateService.load(repository());
         DoorItemIdentity personalA = DoorItemIdentity.personal(id(50));
         DoorItemIdentity personalB = DoorItemIdentity.personal(id(51));
-        DoorItemIdentity iron = DoorItemIdentity.iron(id(52));
+        DoorItemIdentity publicDoor = DoorItemIdentity.publicDoor(id(52));
         UUID traveler = id(53);
 
         PocketSpace personal = service.getOrAllocatePocket(personalA, traveler);
         assertSame(personal, service.getOrAllocatePocket(personalB, traveler));
-        PocketSpace ironPocket = service.getOrAllocatePocket(iron, id(54));
-        assertSame(ironPocket, service.getOrAllocatePocket(iron, id(55)));
+        PocketSpace publicPocket = service.getOrAllocatePocket(publicDoor, id(54));
+        assertSame(publicPocket, service.getOrAllocatePocket(publicDoor, id(55)));
         assertEquals(0, personal.slot());
-        assertEquals(1, ironPocket.slot());
+        assertEquals(1, publicPocket.slot());
         assertThrows(IllegalArgumentException.class,
             () -> service.getOrAllocatePocket(pair(56).endpoint(PairEndpoint.A), traveler));
 
         DoorStateService restarted = DoorStateService.load(new DimensionalDoorRepository(service.repository().stateFile()));
         assertEquals(personal, restarted.getOrAllocatePocket(personalA, traveler));
-        assertEquals(ironPocket, restarted.getOrAllocatePocket(iron, id(57)));
+        assertEquals(publicPocket, restarted.getOrAllocatePocket(publicDoor, id(57)));
         assertEquals(2, restarted.snapshot().nextPocketSlot());
     }
 
@@ -123,7 +123,7 @@ class DoorStateServiceTest {
         repository.save(stateWithRetiredGap);
         DoorStateService service = DoorStateService.load(new DimensionalDoorRepository(repository.stateFile()));
 
-        PocketSpace allocated = service.getOrAllocatePocket(PocketBinding.iron(id(61)));
+        PocketSpace allocated = service.getOrAllocatePocket(PocketBinding.publicDoor(id(61)));
 
         assertEquals(4, allocated.slot());
         assertEquals(5, service.snapshot().nextPocketSlot());
@@ -181,8 +181,8 @@ class DoorStateServiceTest {
     @Test
     void duplicateEndpointFailureLeavesExistingStateIntact() throws Exception {
         DoorStateService service = DoorStateService.load(repository());
-        PlacedDoorEndpoint first = placed(id(100), "minecraft:overworld", 0, 64, 0, DoorItemIdentity.iron(id(101)));
-        PlacedDoorEndpoint conflicting = placed(id(100), "minecraft:overworld", 0, 64, 0, DoorItemIdentity.iron(id(102)));
+        PlacedDoorEndpoint first = placed(id(100), "minecraft:overworld", 0, 64, 0, DoorItemIdentity.publicDoor(id(101)));
+        PlacedDoorEndpoint conflicting = placed(id(100), "minecraft:overworld", 0, 64, 0, DoorItemIdentity.publicDoor(id(102)));
         service.registerEndpoint(first);
 
         assertThrows(IllegalStateException.class, () -> service.registerEndpoint(conflicting));

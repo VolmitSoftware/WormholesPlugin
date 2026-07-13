@@ -80,7 +80,7 @@ public final class DoorRegistry {
 
     public synchronized Optional<PlacedDoorEndpoint> mateOf(DoorItemIdentity identity) {
         Objects.requireNonNull(identity, "identity");
-        if (identity.kind() != DoorKind.PAIRED) {
+        if (identity.kind() != DoorKind.PAIR) {
             return Optional.empty();
         }
         return pairedEndpoint(identity.pairId(), identity.pairEndpoint().other());
@@ -109,7 +109,7 @@ public final class DoorRegistry {
     }
 
     private static PairKey pairKey(DoorItemIdentity identity) {
-        return identity.kind() == DoorKind.PAIRED
+        return identity.kind() == DoorKind.PAIR
             ? new PairKey(identity.pairId(), identity.pairEndpoint())
             : null;
     }

@@ -19,7 +19,7 @@ public record DoorStoreSnapshot(
     List<PocketSpace> spaces,
     List<ReturnTicket> returnTickets
 ) {
-    public static final int CURRENT_SCHEMA = 2;
+    public static final int CURRENT_SCHEMA = 3;
 
     public DoorStoreSnapshot {
         if (schema != CURRENT_SCHEMA) {
@@ -90,7 +90,7 @@ public record DoorStoreSnapshot(
         }
         for (PlacedDoorEndpoint endpoint : endpoints) {
             DoorItemIdentity identity = endpoint.identity();
-            if (identity.kind() != DoorKind.PAIRED) {
+            if (identity.kind() != DoorKind.PAIR) {
                 if (pairedItemIds.contains(identity.itemId())) {
                     throw new IllegalArgumentException("paired item ID reused by another door identity");
                 }

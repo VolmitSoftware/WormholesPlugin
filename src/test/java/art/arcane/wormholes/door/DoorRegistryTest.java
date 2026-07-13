@@ -14,7 +14,7 @@ class DoorRegistryTest {
     @Test
     void placementLookupUsesWorldUuidAndLowerCoordinates() {
         UUID world = id(1);
-        PlacedDoorEndpoint endpoint = placed(world, "minecraft:overworld", 4, 64, -9, DoorItemIdentity.iron(id(2)));
+        PlacedDoorEndpoint endpoint = placed(world, "minecraft:overworld", 4, 64, -9, DoorItemIdentity.publicDoor(id(2)));
         DoorRegistry registry = new DoorRegistry();
 
         assertTrue(registry.register(endpoint));
@@ -36,7 +36,7 @@ class DoorRegistryTest {
         registry.register(placed(world, "minecraft:overworld", 0, 64, 0, pair.endpoint(PairEndpoint.A)));
 
         assertThrows(IllegalStateException.class,
-            () -> registry.register(placed(world, "minecraft:overworld", 0, 64, 0, DoorItemIdentity.iron(id(14)))));
+            () -> registry.register(placed(world, "minecraft:overworld", 0, 64, 0, DoorItemIdentity.publicDoor(id(14)))));
         assertThrows(IllegalStateException.class,
             () -> registry.register(placed(world, "minecraft:overworld", 1, 64, 0, pair.endpoint(PairEndpoint.A))));
         assertThrows(IllegalStateException.class,
@@ -66,7 +66,7 @@ class DoorRegistryTest {
     void nonPairedDoorsNeverHaveRegistryMates() {
         DoorRegistry registry = new DoorRegistry();
         assertTrue(registry.mateOf(DoorItemIdentity.personal(id(30))).isEmpty());
-        assertTrue(registry.mateOf(DoorItemIdentity.iron(id(31))).isEmpty());
+        assertTrue(registry.mateOf(DoorItemIdentity.publicDoor(id(31))).isEmpty());
     }
 
     private static PlacedDoorEndpoint placed(

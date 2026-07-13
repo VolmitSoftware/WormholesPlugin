@@ -25,43 +25,45 @@ class DoorPortalVisualServiceTest
 	private static final float EPSILON = 0.00001F;
 
 	@Test
-	void northAndSouthFillTheDoorwayAcrossTheXAxis()
+	void northAndSouthSitOutsideTheirClosedDoorEdges()
 	{
 		DoorPortalVisualService.PortalPlaneGeometry north = DoorPortalVisualService.geometry(BlockFace.NORTH);
 		DoorPortalVisualService.PortalPlaneGeometry south = DoorPortalVisualService.geometry(BlockFace.SOUTH);
 
-		assertEquals(north, south);
-		assertEquals(-0.5F, north.translationX(), EPSILON);
-		assertEquals(0.0F, north.translationY(), EPSILON);
-		assertEquals(-0.0175F, north.translationZ(), EPSILON);
-		assertEquals(1.0F, north.scaleX(), EPSILON);
-		assertEquals(2.0F, north.scaleY(), EPSILON);
+		assertEquals(-0.4375F, north.translationX(), EPSILON);
+		assertEquals(0.0625F, north.translationY(), EPSILON);
+		assertEquals(0.5F, north.translationZ(), EPSILON);
+		assertEquals(-0.535F, south.translationZ(), EPSILON);
+		assertEquals(0.875F, north.scaleX(), EPSILON);
+		assertEquals(1.875F, north.scaleY(), EPSILON);
 		assertEquals(0.035F, north.scaleZ(), EPSILON);
 	}
 
 	@Test
-	void eastAndWestFillTheDoorwayAcrossTheZAxis()
+	void eastAndWestSitOutsideTheirClosedDoorEdges()
 	{
 		DoorPortalVisualService.PortalPlaneGeometry east = DoorPortalVisualService.geometry(BlockFace.EAST);
 		DoorPortalVisualService.PortalPlaneGeometry west = DoorPortalVisualService.geometry(BlockFace.WEST);
 
-		assertEquals(east, west);
-		assertEquals(-0.0175F, east.translationX(), EPSILON);
-		assertEquals(0.0F, east.translationY(), EPSILON);
-		assertEquals(-0.5F, east.translationZ(), EPSILON);
+		assertEquals(-0.535F, east.translationX(), EPSILON);
+		assertEquals(0.0625F, east.translationY(), EPSILON);
+		assertEquals(-0.4375F, east.translationZ(), EPSILON);
+		assertEquals(0.5F, west.translationX(), EPSILON);
 		assertEquals(0.035F, east.scaleX(), EPSILON);
-		assertEquals(2.0F, east.scaleY(), EPSILON);
-		assertEquals(1.0F, east.scaleZ(), EPSILON);
+		assertEquals(1.875F, east.scaleY(), EPSILON);
+		assertEquals(0.875F, east.scaleZ(), EPSILON);
 	}
 
 	@Test
-	void everyCardinalPlaneRemainsCenteredOnTheDoorway()
+	void everyCardinalPlaneIsInsetFromTheDoorFrame()
 	{
 		for(BlockFace facing : new BlockFace[] {BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST})
 		{
 			DoorPortalVisualService.PortalPlaneGeometry geometry = DoorPortalVisualService.geometry(facing);
-			assertEquals(0.0F, geometry.translationX() + geometry.scaleX() / 2.0F, EPSILON);
-			assertEquals(0.0F, geometry.translationZ() + geometry.scaleZ() / 2.0F, EPSILON);
+			assertEquals(0.0625F, geometry.translationY(), EPSILON);
+			assertEquals(1.9375F, geometry.translationY() + geometry.scaleY(), EPSILON);
+			assertEquals(1.875F, geometry.scaleY(), EPSILON);
+			assertEquals(0.875F, Math.max(geometry.scaleX(), geometry.scaleZ()), EPSILON);
 		}
 	}
 

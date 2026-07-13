@@ -35,11 +35,10 @@ import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.event.world.PortalCreateEvent;
 import org.bukkit.util.Vector;
 
-import io.papermc.paper.entity.poi.PoiTypes;
-
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.portal.DimensionalPortalKind;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.PortalFrame;
@@ -356,7 +355,7 @@ public final class VanillaPortalReplacer implements Listener
 			}
 			EndBuildTarget reservation = reserveEndBuildTarget(end);
 			EndTarget target = reservation.target();
-			end.getChunkAtAsync(target.x() >> 4, target.z() >> 4).whenComplete((chunk, error) ->
+			WormholesPlatform.loadChunk(Wormholes.instance, end, target.x() >> 4, target.z() >> 4).whenComplete((chunk, error) ->
 			{
 				if(error != null || chunk == null)
 				{
@@ -967,7 +966,7 @@ public final class VanillaPortalReplacer implements Listener
 			return CompletableFuture.completedFuture(findPhysicalNetherPortal(world, x, y, z, radius));
 		}
 		CompletableFuture<Set<Block>> result = new CompletableFuture<Set<Block>>();
-		world.getChunkAtAsync(x >> 4, z >> 4).whenComplete((chunk, loadError) ->
+		WormholesPlatform.loadChunk(Wormholes.instance, world, x >> 4, z >> 4).whenComplete((chunk, loadError) ->
 		{
 			if(loadError != null || chunk == null)
 			{
@@ -1003,7 +1002,7 @@ public final class VanillaPortalReplacer implements Listener
 			int minChunkZ = (z - radius) >> 4;
 			int maxChunkX = (x + radius) >> 4;
 			int maxChunkZ = (z + radius) >> 4;
-			if(Bukkit.isOwnedByCurrentRegion(world, minChunkX, minChunkZ, maxChunkX, maxChunkZ))
+			if(WormholesPlatform.isOwnedByCurrentRegion(world, minChunkX, minChunkZ, maxChunkX, maxChunkZ))
 			{
 				return radius;
 			}
@@ -1021,7 +1020,7 @@ public final class VanillaPortalReplacer implements Listener
 		Location nearest;
 		try
 		{
-			nearest = world.locateNearestPoi(new Location(world, x, y, z), PoiTypes.NETHER_PORTAL, radius);
+			nearest = PortalPoiLocator.locateNearestNetherPortal(world, new Location(world, x, y, z), radius);
 		}
 		catch(RuntimeException e)
 		{

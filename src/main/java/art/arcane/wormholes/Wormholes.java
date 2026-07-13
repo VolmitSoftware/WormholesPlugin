@@ -20,6 +20,7 @@ import art.arcane.wormholes.network.replication.capture.CaptureSettings;
 import art.arcane.wormholes.network.view.RemoteViewCache;
 import art.arcane.wormholes.network.view.ViewServer;
 import art.arcane.wormholes.network.view.ViewSubscriptionManager;
+import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.portal.ArrivalWarmer;
 import art.arcane.wormholes.portal.vanilla.VanillaPortalReplacer;
 import art.arcane.wormholes.service.MetricsRuntime;
@@ -28,6 +29,7 @@ import art.arcane.wormholes.service.StatsSnapshotWriter;
 import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.wormholes.service.WormholesCommandService;
 import art.arcane.wormholes.service.WormholesIntegrationService;
+import art.arcane.wormholes.survival.doors.dimension.PocketDatapackInstaller;
 import art.arcane.wormholes.survival.doors.dimension.PocketWorldService;
 import art.arcane.wormholes.util.J;
 import art.arcane.wormholes.util.common.SplashScreen;
@@ -35,6 +37,7 @@ import art.arcane.wormholes.util.project.config.HotloadManager;
 import io.github.slimjar.app.builder.SpigotApplicationBuilder;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -61,10 +64,11 @@ import java.util.logging.Level;
 
 public final class Wormholes extends JavaPlugin implements ReloadAware {
     private static final int BSTATS_PLUGIN_ID = 27950;
+    private static final NamespacedKey VANILLA_OVERWORLD = new NamespacedKey("minecraft", "overworld");
 
     public static Wormholes INSTANCE;
     public static Wormholes instance;
-    public static String tag = ChatColor.DARK_GRAY + "[" + ChatColor.GRAY + "Wormholes" + ChatColor.DARK_GRAY + "] " + ChatColor.GRAY;
+    public static String tag = ChatColor.DARK_GRAY + "[" + ChatColor.GOLD + "Wormholes" + ChatColor.DARK_GRAY + "] " + ChatColor.GRAY;
 
     public static volatile WormholesSettings settings;
     public static volatile BlockManager blockManager;
@@ -91,6 +95,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
 
     private final AtomicBoolean alreadyDrained = new AtomicBoolean(false);
     private final AtomicBoolean dimensionalDoorDisablePending = new AtomicBoolean(false);
+    private boolean pocketDatapackRestartRequired;
     private SchedulerRuntime schedulerRuntime;
     private PacketEventsRuntime packetEventsRuntime;
     private MetricsRuntime metricsRuntime;
@@ -121,6 +126,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         boolean success = true;
         String errorMessage = "";
 
+        prepareSpigotPocketDatapack();
         preloadPersistenceClasses();
 
         try {
@@ -155,7 +161,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             getServer().getPluginManager().registerEvents(new ChatInputListener(), this);
 
             remotePortalRegistry = new RemotePortalRegistry();
-            networkManager = new NetworkManager(getLogger(), settings.getNetwork(), Bukkit.getMinecraftVersion(), getPluginMeta().getVersion(), Bukkit.getPort(), getDataFolder().toPath());
+            networkManager = new NetworkManager(getLogger(), settings.getNetwork(), WormholesPlatform.minecraftVersion(), WormholesPlatform.pluginVersion(this), Bukkit.getPort(), getDataFolder().toPath());
             importExportService = new ImportExportService(networkManager);
             portalSyncService = new PortalSyncService(
                 networkManager,
@@ -327,6 +333,10 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
 
     private void applyDimensionalDoorSetting(WormholesSettings activeSettings) {
         if (activeSettings.getMain().dimensionalDoorsEnabled) {
+            if (pocketDatapackRestartRequired) {
+                getLogger().warning("Dimensional Doors are dormant until a full server restart loads the Wormholes pocket datapack.");
+                return;
+            }
             dimensionalDoorDisablePending.set(false);
             DimensionalDoorManager activeManager = dimensionalDoorManager;
             if (activeManager != null) {
@@ -353,6 +363,56 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             notifyPocketOccupantsOfDisable();
             scheduleDimensionalDoorDisableCheck(activeSettings, activeManager);
         }
+    }
+
+    private void prepareSpigotPocketDatapack() {
+        if (isPaperRuntime()) {
+            return;
+        }
+        List<World> worlds = Bukkit.getWorlds();
+        if (worlds.isEmpty()) {
+            pocketDatapackRestartRequired = true;
+            getLogger().severe("The primary Spigot world is unavailable; the Wormholes pocket datapack could not be installed.");
+            return;
+        }
+        Path levelRoot = primarySpigotWorld(worlds).getWorldFolder().toPath();
+        try {
+            PocketDatapackInstaller.InstallResult result = PocketDatapackInstaller.install(levelRoot);
+            boolean pocketWorldLoaded = WormholesPlatform.getWorld(PocketWorldService.WORLD_KEY) != null;
+            pocketDatapackRestartRequired = result != PocketDatapackInstaller.InstallResult.UNCHANGED || !pocketWorldLoaded;
+            if (result == PocketDatapackInstaller.InstallResult.INSTALLED) {
+                getLogger().warning("Installed the Wormholes pocket datapack. A full server restart is required before Dimensional Doors can start.");
+            } else if (result == PocketDatapackInstaller.InstallResult.UPDATED) {
+                getLogger().warning("Updated the Wormholes pocket datapack. A full server restart is required before Dimensional Doors can start.");
+            } else if (!pocketWorldLoaded) {
+                getLogger().warning("The Wormholes pocket datapack is installed, but wormholes:pockets is not loaded. Ensure file/wormholes-pockets.zip is enabled, then perform a full server restart; /reload is insufficient.");
+            }
+        } catch (IOException exception) {
+            pocketDatapackRestartRequired = true;
+            getLogger().log(Level.SEVERE, "The Wormholes pocket datapack could not be installed. Core portals will remain available, but Dimensional Doors are disabled.", exception);
+        }
+    }
+
+    private static boolean isPaperRuntime() {
+        try {
+            Class.forName("io.papermc.paper.plugin.bootstrap.PluginBootstrap", false, Wormholes.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException exception) {
+            return false;
+        }
+    }
+
+    private static World primarySpigotWorld(List<World> worlds) {
+        World keyedOverworld = WormholesPlatform.getWorld(VANILLA_OVERWORLD);
+        if (keyedOverworld != null) {
+            return keyedOverworld;
+        }
+        for (World world : worlds) {
+            if (world.getEnvironment() == World.Environment.NORMAL) {
+                return world;
+            }
+        }
+        return worlds.get(0);
     }
 
     private void scheduleDimensionalDoorDisableCheck(
@@ -399,8 +459,8 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     private World activePocketWorld() {
         PocketWorldService activeService = pocketWorldService;
         return activeService == null
-            ? Bukkit.getWorld(PocketWorldService.WORLD_KEY)
-            : activeService.world().orElseGet(() -> Bukkit.getWorld(PocketWorldService.WORLD_KEY));
+            ? WormholesPlatform.getWorld(PocketWorldService.WORLD_KEY)
+            : activeService.world().orElseGet(() -> WormholesPlatform.getWorld(PocketWorldService.WORLD_KEY));
     }
 
     private void finishDimensionalDoorDisable(DimensionalDoorManager expectedManager) {
@@ -627,7 +687,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
 
     private void rebuildNetworkRuntime(WormholesSettings activeSettings) {
         remotePortalRegistry = new RemotePortalRegistry();
-        networkManager = new NetworkManager(getLogger(), activeSettings.getNetwork(), Bukkit.getMinecraftVersion(), getPluginMeta().getVersion(), Bukkit.getPort(), getDataFolder().toPath());
+        networkManager = new NetworkManager(getLogger(), activeSettings.getNetwork(), WormholesPlatform.minecraftVersion(), WormholesPlatform.pluginVersion(this), Bukkit.getPort(), getDataFolder().toPath());
         importExportService = new ImportExportService(networkManager);
         portalSyncService = new PortalSyncService(
             networkManager,

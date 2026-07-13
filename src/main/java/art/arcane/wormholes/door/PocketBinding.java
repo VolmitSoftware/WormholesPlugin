@@ -4,7 +4,7 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Stable lookup key for a pocket. PERSONAL keys are player UUIDs; IRON keys
+ * Stable lookup key for a pocket. PERSONAL keys are player UUIDs; public-door keys
  * are immutable door-item UUIDs.
  */
 public record PocketBinding(PocketBindingKind kind, UUID bindingId) {
@@ -17,7 +17,7 @@ public record PocketBinding(PocketBindingKind kind, UUID bindingId) {
         return new PocketBinding(PocketBindingKind.PERSONAL, travelerId);
     }
 
-    public static PocketBinding iron(UUID doorItemId) {
+    public static PocketBinding publicDoor(UUID doorItemId) {
         return new PocketBinding(PocketBindingKind.IRON, doorItemId);
     }
 }

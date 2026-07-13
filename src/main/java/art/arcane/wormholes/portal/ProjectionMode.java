@@ -7,13 +7,13 @@ import net.md_5.bungee.api.ChatColor;
 public enum ProjectionMode
 {
 	OFF(
-		ChatColor.DARK_PURPLE + "" + ChatColor.BOLD + "Projection Off",
+		ChatColor.DARK_GRAY + "" + ChatColor.BOLD + "Projection Off",
 		"The frame stays empty.",
 		"No destination view, no mirror.",
 		Material.TORCH,
 		false),
 	ON(
-		ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Projection On",
+		ChatColor.GOLD + "" + ChatColor.BOLD + "Projection On",
 		"Project blocks from the destination",
 		"portal through this portal.",
 		Material.REDSTONE_TORCH,

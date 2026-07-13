@@ -13,7 +13,8 @@ import org.bukkit.persistence.PersistentDataType;
  */
 public final class DoorItemPdcCodec
 {
-	private static final int CURRENT_SCHEMA = 1;
+	private static final int CURRENT_SCHEMA = 2;
+	private static final int LEGACY_SCHEMA = 1;
 
 	private final NamespacedKey schemaKey;
 	private final NamespacedKey itemIdKey;
@@ -70,7 +71,10 @@ public final class DoorItemPdcCodec
 			Integer schema = data.get(schemaKey, PersistentDataType.INTEGER);
 			String itemId = data.get(itemIdKey, PersistentDataType.STRING);
 			String kind = data.get(kindKey, PersistentDataType.STRING);
-			if(schema == null || schema != CURRENT_SCHEMA || itemId == null || kind == null)
+			if(schema == null
+				|| (schema != CURRENT_SCHEMA && schema != LEGACY_SCHEMA)
+				|| itemId == null
+				|| kind == null)
 			{
 				return Optional.empty();
 			}
@@ -80,7 +84,7 @@ public final class DoorItemPdcCodec
 			String spaceId = data.get(spaceIdKey, PersistentDataType.STRING);
 			return Optional.of(new DoorItemIdentity(
 				UUID.fromString(itemId),
-				DoorKind.valueOf(kind),
+				decodeKind(schema, kind),
 				optionalUuid(pairId),
 				pairEndpoint == null ? null : PairEndpoint.valueOf(pairEndpoint),
 				optionalUuid(spaceId)));
@@ -146,6 +150,22 @@ public final class DoorItemPdcCodec
 		{
 			return Optional.empty();
 		}
+	}
+
+	private static DoorKind decodeKind(int schema, String value)
+	{
+		if(schema == CURRENT_SCHEMA)
+		{
+			return DoorKind.valueOf(value);
+		}
+		return switch(value)
+		{
+			case "PAIRED" -> DoorKind.PAIR;
+			case "IRON" -> DoorKind.PUBLIC;
+			case "PERSONAL" -> DoorKind.PERSONAL;
+			case "RETURN" -> DoorKind.RETURN;
+			default -> throw new IllegalArgumentException("Unknown legacy door kind " + value);
+		};
 	}
 
 	private static UUID optionalUuid(String value)

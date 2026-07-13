@@ -1,20 +1,24 @@
 package art.arcane.wormholes.door;
 
+import art.arcane.wormholes.platform.WormholesPlatform;
+
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
-import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Keyed;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.Recipe;
 import org.bukkit.inventory.RecipeChoice;
 import org.bukkit.inventory.ShapedRecipe;
+import org.bukkit.inventory.ShapelessRecipe;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.Plugin;
 
@@ -28,15 +32,16 @@ import org.bukkit.plugin.Plugin;
 public final class DoorItemService
 {
 	public static final Material PAIR_KIT_MATERIAL = Material.BUNDLE;
-	public static final Material PAIRED_DOOR_MATERIAL = Material.WARPED_DOOR;
-	public static final Material PERSONAL_DOOR_MATERIAL = Material.DARK_OAK_DOOR;
-	public static final Material IRON_DOOR_MATERIAL = Material.IRON_DOOR;
+	public static final Material PAIR_DOOR_MATERIAL = Material.OAK_DOOR;
+	public static final Material PERSONAL_DOOR_MATERIAL = Material.WARPED_DOOR;
+	public static final Material PUBLIC_DOOR_MATERIAL = Material.CRIMSON_DOOR;
 
 	private final ItemStack wormholeRune;
 	private final DoorItemPdcCodec codec;
 	private final NamespacedKey pairKitRecipeKey;
 	private final NamespacedKey personalDoorRecipeKey;
-	private final NamespacedKey ironDoorRecipeKey;
+	private final NamespacedKey publicDoorRecipeKey;
+	private final NamespacedKey doorSkinRecipeKey;
 
 	public DoorItemService(Plugin plugin, ItemStack exactWormholeRune)
 	{
@@ -49,10 +54,11 @@ public final class DoorItemService
 
 		wormholeRune = exactWormholeRune.clone();
 		wormholeRune.setAmount(1);
-		codec = new DoorItemPdcCodec(plugin.namespace());
+		codec = new DoorItemPdcCodec(WormholesPlatform.pluginNamespace(plugin));
 		pairKitRecipeKey = new NamespacedKey(plugin, "dimensional_door_pair_kit");
 		personalDoorRecipeKey = new NamespacedKey(plugin, "personal_dimensional_door");
-		ironDoorRecipeKey = new NamespacedKey(plugin, "iron_dimensional_door");
+		publicDoorRecipeKey = new NamespacedKey(plugin, "public_dimensional_door");
+		doorSkinRecipeKey = new NamespacedKey(plugin, "dimensional_door_skin");
 	}
 
 	public ItemStack createPairKit()
@@ -65,7 +71,7 @@ public final class DoorItemService
 		ItemStack item = styledItem(
 			PAIR_KIT_MATERIAL,
 			"Entangled Door Pair",
-			ChatColor.LIGHT_PURPLE,
+			ChatColor.GOLD,
 			List.of(
 				"Contains two automatically linked Wormhole Doors.",
 				"Use it to unpack endpoints A and B."));
@@ -80,9 +86,9 @@ public final class DoorItemService
 		return createDoor(DoorItemIdentity.newPersonal());
 	}
 
-	public ItemStack createIronDoor()
+	public ItemStack createPublicDoor()
 	{
-		return createDoor(DoorItemIdentity.newIron());
+		return createDoor(DoorItemIdentity.newPublic());
 	}
 
 	public ItemStack createReturnDoor(UUID spaceId)
@@ -93,31 +99,41 @@ public final class DoorItemService
 	public ItemStack createDoor(DoorItemIdentity identity)
 	{
 		Objects.requireNonNull(identity, "identity");
+		return createDoor(identity, defaultMaterial(identity.kind()));
+	}
+
+	public ItemStack createDoor(DoorItemIdentity identity, Material material)
+	{
+		Objects.requireNonNull(identity, "identity");
+		if(!DoorSkin.isPlayerOperable(Objects.requireNonNull(material, "material")))
+		{
+			throw new IllegalArgumentException("Dimensional-door skins must be player-operable doors");
+		}
 		ItemStack item = switch(identity.kind())
 		{
-			case PAIRED -> styledItem(
-				PAIRED_DOOR_MATERIAL,
+			case PAIR -> styledItem(
+				material,
 				"Wormhole Door " + identity.pairEndpoint().name(),
-				ChatColor.LIGHT_PURPLE,
+				ChatColor.GOLD,
 				List.of(
 					"Automatically linked to endpoint " + identity.pairEndpoint().other().name() + ".",
 					"Open the door and physically cross its threshold."));
 			case PERSONAL -> styledItem(
-				PERSONAL_DOOR_MATERIAL,
+				material,
 				"Personal Dimension Door",
 				ChatColor.AQUA,
 				List.of(
 					"Each traveler enters their own persistent dimension.",
 					"The same traveler always reaches the same place."));
-			case IRON -> styledItem(
-				IRON_DOOR_MATERIAL,
-				"Iron Dimension Door",
+			case PUBLIC -> styledItem(
+				material,
+				"Public Dimension Door",
 				ChatColor.GOLD,
 				List.of(
-					"Permanently bound to this door's dimension.",
-					"Breaking and moving it preserves its destination."));
+					"Every traveler enters this door's shared dimension.",
+					"Breaking and moving it preserves the shared destination."));
 			case RETURN -> styledItem(
-				PocketStructureService.RETURN_DOOR_MATERIAL,
+				material,
 				"Dimensional Exit Door",
 				ChatColor.GREEN,
 				List.of(
@@ -133,13 +149,25 @@ public final class DoorItemService
 
 	public Optional<DoorItemIdentity> decodeDoor(ItemStack item)
 	{
-		if(item == null || item.getType().isAir() || item.getAmount() != 1 || !item.hasItemMeta())
+		return decodeDoorIdentity(item).filter(identity -> DoorSkin.isPlayerOperable(item.getType()));
+	}
+
+	public Optional<DoorItemIdentity> decodeDoorIdentity(ItemStack item)
+	{
+		if(item == null || item.getAmount() != 1)
 		{
 			return Optional.empty();
 		}
+		return decodeStoredIdentity(item);
+	}
 
-		Optional<DoorItemIdentity> decoded = codec.decodeIdentity(item.getItemMeta().getPersistentDataContainer());
-		return decoded.filter(identity -> expectedMaterial(identity.kind()) == item.getType());
+	private Optional<DoorItemIdentity> decodeStoredIdentity(ItemStack item)
+	{
+		if(item == null || !DoorSkin.isDoor(item.getType()) || !item.hasItemMeta())
+		{
+			return Optional.empty();
+		}
+		return codec.decodeIdentity(item.getItemMeta().getPersistentDataContainer());
 	}
 
 	public Optional<UUID> pairKitId(ItemStack item)
@@ -178,21 +206,22 @@ public final class DoorItemService
 			derivedId(kitId, "endpoint-b"));
 	}
 
-	/** Registers the three hardcoded survival recipes. */
 	public boolean registerRecipes()
 	{
 		unregisterRecipes();
-		boolean pairAdded = Bukkit.addRecipe(pairKitRecipe(), false);
-		boolean personalAdded = Bukkit.addRecipe(personalDoorRecipe(), false);
-		boolean ironAdded = Bukkit.addRecipe(ironDoorRecipe(), true);
-		return pairAdded && personalAdded && ironAdded;
+		boolean pairAdded = WormholesPlatform.addRecipe(pairKitRecipe(), false);
+		boolean personalAdded = WormholesPlatform.addRecipe(personalDoorRecipe(), false);
+		boolean publicAdded = WormholesPlatform.addRecipe(publicDoorRecipe(), true);
+		boolean skinAdded = WormholesPlatform.addRecipe(doorSkinRecipe(), false);
+		return pairAdded && personalAdded && publicAdded && skinAdded;
 	}
 
 	public void unregisterRecipes()
 	{
-		Bukkit.removeRecipe(pairKitRecipeKey, false);
-		Bukkit.removeRecipe(personalDoorRecipeKey, false);
-		Bukkit.removeRecipe(ironDoorRecipeKey, true);
+		WormholesPlatform.removeRecipe(pairKitRecipeKey, false);
+		WormholesPlatform.removeRecipe(personalDoorRecipeKey, false);
+		WormholesPlatform.removeRecipe(publicDoorRecipeKey, true);
+		WormholesPlatform.removeRecipe(doorSkinRecipeKey, false);
 	}
 
 	public ShapedRecipe pairKitRecipe()
@@ -215,14 +244,54 @@ public final class DoorItemService
 			.setIngredient('E', Material.ENDER_CHEST);
 	}
 
-	public ShapedRecipe ironDoorRecipe()
+	public ShapedRecipe publicDoorRecipe()
 	{
-		return new ShapedRecipe(ironDoorRecipeKey, craftTemplate(DoorCraftProduct.IRON_DOOR))
+		return new ShapedRecipe(publicDoorRecipeKey, craftTemplate(DoorCraftProduct.PUBLIC_DOOR))
 			.shape("RDR", " E ", " L ")
 			.setIngredient('R', new RecipeChoice.ExactChoice(wormholeRune))
-			.setIngredient('D', Material.IRON_DOOR)
+			.setIngredient('D', Material.CRIMSON_DOOR)
 			.setIngredient('E', Material.ENDER_CHEST)
 			.setIngredient('L', Material.LODESTONE);
+	}
+
+	public ShapelessRecipe doorSkinRecipe()
+	{
+		ItemStack template = styledItem(
+			PAIR_DOOR_MATERIAL,
+			"Dimensional Door Skin",
+			ChatColor.GOLD,
+			List.of("Combine a dimensional door with a player-operable door."));
+		return new ShapelessRecipe(doorSkinRecipeKey, template)
+			.addIngredient(new RecipeChoice.MaterialChoice(DoorSkin.doorMaterials()))
+			.addIngredient(new RecipeChoice.MaterialChoice(DoorSkin.playerOperableMaterials()));
+	}
+
+	public boolean isDoorSkinRecipe(Recipe recipe)
+	{
+		return recipe instanceof Keyed keyed && doorSkinRecipeKey.equals(keyed.getKey());
+	}
+
+	public Optional<ItemStack> skinCraftResult(ItemStack[] matrix)
+	{
+		Objects.requireNonNull(matrix, "matrix");
+		ArrayList<DoorSkinRecipe.Ingredient> ingredients = new ArrayList<>(2);
+		for(ItemStack item : matrix)
+		{
+			if(item == null || item.getType().isAir())
+			{
+				continue;
+			}
+			Optional<DoorItemIdentity> identity = decodeStoredIdentity(item);
+			if(identity.isPresent() && item.getAmount() != 1)
+			{
+				return Optional.empty();
+			}
+			ingredients.add(new DoorSkinRecipe.Ingredient(
+				item.getType(),
+				identity.orElse(null)));
+		}
+		return DoorSkinRecipe.resolve(ingredients)
+			.map(result -> createDoor(result.identity(), result.material()));
 	}
 
 	/**
@@ -232,6 +301,10 @@ public final class DoorItemService
 	public CraftHookResult handleCraft(CraftItemEvent event)
 	{
 		Objects.requireNonNull(event, "event");
+		if(isDoorSkinRecipe(event.getRecipe()))
+		{
+			return handleSkinCraft(event);
+		}
 		Optional<DoorCraftProduct> product = productFor(event.getRecipe());
 		if(product.isEmpty())
 		{
@@ -251,7 +324,29 @@ public final class DoorItemService
 		return CraftHookResult.IDENTITY_MINTED;
 	}
 
-	public Optional<DoorCraftProduct> productFor(org.bukkit.inventory.Recipe recipe)
+	private CraftHookResult handleSkinCraft(CraftItemEvent event)
+	{
+		if(event.isCancelled())
+		{
+			return CraftHookResult.ALREADY_CANCELLED;
+		}
+		Optional<ItemStack> result = skinCraftResult(event.getInventory().getMatrix());
+		if(result.isEmpty())
+		{
+			event.setCancelled(true);
+			event.setCurrentItem(null);
+			return CraftHookResult.INVALID_SKIN_RECIPE;
+		}
+		if(event.isShiftClick())
+		{
+			event.setCancelled(true);
+			return CraftHookResult.SHIFT_CRAFT_BLOCKED;
+		}
+		event.setCurrentItem(result.get());
+		return CraftHookResult.SKIN_CHANGED;
+	}
+
+	public Optional<DoorCraftProduct> productFor(Recipe recipe)
 	{
 		if(!(recipe instanceof Keyed keyed))
 		{
@@ -266,9 +361,9 @@ public final class DoorItemService
 		{
 			return Optional.of(DoorCraftProduct.PERSONAL_DOOR);
 		}
-		if(ironDoorRecipeKey.equals(key))
+		if(publicDoorRecipeKey.equals(key))
 		{
-			return Optional.of(DoorCraftProduct.IRON_DOOR);
+			return Optional.of(DoorCraftProduct.PUBLIC_DOOR);
 		}
 		return Optional.empty();
 	}
@@ -284,7 +379,7 @@ public final class DoorItemService
 		{
 			case PAIR_KIT -> createPairKit();
 			case PERSONAL_DOOR -> createPersonalDoor();
-			case IRON_DOOR -> createIronDoor();
+			case PUBLIC_DOOR -> createPublicDoor();
 		};
 	}
 
@@ -295,18 +390,18 @@ public final class DoorItemService
 			case PAIR_KIT -> styledItem(
 				PAIR_KIT_MATERIAL,
 				"Entangled Door Pair",
-				ChatColor.LIGHT_PURPLE,
+				ChatColor.GOLD,
 				List.of("Contains two automatically linked Wormhole Doors."));
 			case PERSONAL_DOOR -> styledItem(
 				PERSONAL_DOOR_MATERIAL,
 				"Personal Dimension Door",
 				ChatColor.AQUA,
 				List.of("Each traveler enters their own persistent dimension."));
-			case IRON_DOOR -> styledItem(
-				IRON_DOOR_MATERIAL,
-				"Iron Dimension Door",
+			case PUBLIC_DOOR -> styledItem(
+				PUBLIC_DOOR_MATERIAL,
+				"Public Dimension Door",
 				ChatColor.GOLD,
-				List.of("Permanently bound to this door's dimension."));
+				List.of("Every traveler enters this door's shared dimension."));
 		};
 		ItemMeta meta = template.getItemMeta();
 		codec.encodeCraftProduct(meta.getPersistentDataContainer(), product);
@@ -320,7 +415,7 @@ public final class DoorItemService
 		ChatColor color,
 		List<String> loreLines)
 	{
-		ItemStack item = ItemStack.of(material);
+		ItemStack item = WormholesPlatform.itemStack(material);
 		ItemMeta meta = item.getItemMeta();
 		// This project relocates Adventure; legacy string metadata keeps the
 		// server-owned ItemMeta ABI unrelocated while still rendering cleanly.
@@ -332,13 +427,13 @@ public final class DoorItemService
 		return item;
 	}
 
-	private static Material expectedMaterial(DoorKind kind)
+	public static Material defaultMaterial(DoorKind kind)
 	{
-		return switch(kind)
+		return switch(Objects.requireNonNull(kind, "kind"))
 		{
-			case PAIRED -> PAIRED_DOOR_MATERIAL;
+			case PAIR -> PAIR_DOOR_MATERIAL;
 			case PERSONAL -> PERSONAL_DOOR_MATERIAL;
-			case IRON -> IRON_DOOR_MATERIAL;
+			case PUBLIC -> PUBLIC_DOOR_MATERIAL;
 			case RETURN -> PocketStructureService.RETURN_DOOR_MATERIAL;
 		};
 	}
@@ -359,9 +454,14 @@ public final class DoorItemService
 		return personalDoorRecipeKey;
 	}
 
-	public NamespacedKey ironDoorRecipeKey()
+	public NamespacedKey publicDoorRecipeKey()
 	{
-		return ironDoorRecipeKey;
+		return publicDoorRecipeKey;
+	}
+
+	public NamespacedKey doorSkinRecipeKey()
+	{
+		return doorSkinRecipeKey;
 	}
 
 	public enum CraftHookResult
@@ -369,7 +469,9 @@ public final class DoorItemService
 		NOT_A_DOOR_RECIPE,
 		ALREADY_CANCELLED,
 		SHIFT_CRAFT_BLOCKED,
-		IDENTITY_MINTED
+		IDENTITY_MINTED,
+		INVALID_SKIN_RECIPE,
+		SKIN_CHANGED
 	}
 
 	public record PairKitContents(

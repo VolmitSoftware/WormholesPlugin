@@ -2,7 +2,7 @@ package art.arcane.wormholes.door;
 
 import art.arcane.volmlib.util.bukkit.WorldIdentity;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
-import org.bukkit.Bukkit;
+import art.arcane.wormholes.platform.WormholesPlatform;
 import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -29,8 +29,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class DoorPortalVisualService implements AutoCloseable
 {
 	static final Material PORTAL_MATERIAL = Material.LIGHT_BLUE_CONCRETE;
-	private static final float PORTAL_WIDTH = 1.0F;
-	private static final float PORTAL_HEIGHT = 2.0F;
+	private static final float PORTAL_INSET = 0.0625F;
+	private static final float PORTAL_WIDTH = 1.0F - (PORTAL_INSET * 2.0F);
+	private static final float PORTAL_HEIGHT = 2.0F - (PORTAL_INSET * 2.0F);
 	private static final float PORTAL_THICKNESS = 0.035F;
 
 	private final Plugin plugin;
@@ -200,7 +201,7 @@ final class DoorPortalVisualService implements AutoCloseable
 		for(Map.Entry<UUID, Visual> entry : Map.copyOf(visuals).entrySet())
 		{
 			Visual visual = entry.getValue();
-			if(visual.display().isValid() && Bukkit.isOwnedByCurrentRegion(visual.display()))
+			if(visual.display().isValid() && WormholesPlatform.isOwnedByCurrentRegion(visual.display()))
 			{
 				visual.display().remove();
 				continue;
@@ -227,16 +228,30 @@ final class DoorPortalVisualService implements AutoCloseable
 		Objects.requireNonNull(facing, "facing");
 		return switch(facing)
 		{
-			case NORTH, SOUTH -> new PortalPlaneGeometry(
+			case NORTH -> new PortalPlaneGeometry(
 				-PORTAL_WIDTH / 2.0F,
-				0.0F,
-				-PORTAL_THICKNESS / 2.0F,
+				PORTAL_INSET,
+				0.5F,
 				PORTAL_WIDTH,
 				PORTAL_HEIGHT,
 				PORTAL_THICKNESS);
-			case EAST, WEST -> new PortalPlaneGeometry(
-				-PORTAL_THICKNESS / 2.0F,
-				0.0F,
+			case SOUTH -> new PortalPlaneGeometry(
+				-PORTAL_WIDTH / 2.0F,
+				PORTAL_INSET,
+				-0.5F - PORTAL_THICKNESS,
+				PORTAL_WIDTH,
+				PORTAL_HEIGHT,
+				PORTAL_THICKNESS);
+			case EAST -> new PortalPlaneGeometry(
+				-0.5F - PORTAL_THICKNESS,
+				PORTAL_INSET,
+				-PORTAL_WIDTH / 2.0F,
+				PORTAL_THICKNESS,
+				PORTAL_HEIGHT,
+				PORTAL_WIDTH);
+			case WEST -> new PortalPlaneGeometry(
+				0.5F,
+				PORTAL_INSET,
 				-PORTAL_WIDTH / 2.0F,
 				PORTAL_THICKNESS,
 				PORTAL_HEIGHT,

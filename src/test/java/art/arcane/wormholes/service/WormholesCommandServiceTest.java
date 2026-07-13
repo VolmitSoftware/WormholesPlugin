@@ -58,12 +58,16 @@ class WormholesCommandServiceTest {
         DirectorSender sender = directorSender();
 
         assertEquals(
-            List.of("type=iron", "type=pair", "type=personal"),
+            List.of("type=pair", "type=personal", "type=public"),
             engine.tabComplete(new DirectorInvocation(sender, "wormholes", List.of("door", "type=")))
         );
         assertEquals(
-            List.of("type=pair", "type=personal"),
+            List.of("type=pair", "type=personal", "type=public"),
             engine.tabComplete(new DirectorInvocation(sender, "wormholes", List.of("door", "type=p")))
+        );
+        assertEquals(
+            List.of("type=public"),
+            engine.tabComplete(new DirectorInvocation(sender, "wormholes", List.of("door", "type=pub")))
         );
         assertEquals(
             List.of("type="),

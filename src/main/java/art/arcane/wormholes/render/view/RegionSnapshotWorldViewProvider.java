@@ -6,6 +6,7 @@ import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.network.view.EntityVisual;
 import art.arcane.wormholes.network.view.PacketBlobs;
 import art.arcane.wormholes.network.view.RemoteViewCache;
+import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.render.ProjectionWorldChangeTracker;
 
 import com.github.retrooper.packetevents.PacketEvents;
@@ -82,7 +83,7 @@ public final class RegionSnapshotWorldViewProvider implements ProjectionWorldVie
         World world = view.world;
         try {
             if (!world.isChunkLoaded(chunkX, chunkZ)) {
-                world.getChunkAtAsync(chunkX, chunkZ).whenComplete((chunk, error) -> {
+                WormholesPlatform.loadChunk(plugin, world, chunkX, chunkZ).whenComplete((chunk, error) -> {
                     if (error != null) {
                         view.finishCapture(key);
                         plugin.getLogger().log(Level.WARNING, "Projection snapshot chunk load failed at " + chunkX + "," + chunkZ, error);
@@ -117,7 +118,7 @@ public final class RegionSnapshotWorldViewProvider implements ProjectionWorldVie
             Chunk chunk = world.getChunkAt(chunkX, chunkZ);
             ProjectionWorldChangeTracker tracker = Wormholes.projectionChangeTracker;
             long trackerVersion = tracker == null ? Long.MIN_VALUE : tracker.currentVersion();
-            ChunkSnapshot snapshot = chunk.getChunkSnapshot(false, true, false, true);
+            ChunkSnapshot snapshot = WormholesPlatform.chunkSnapshot(chunk, false, true, false, true);
             List<CapturedEntity> entities = captureEntities(view, chunk, key);
             CapturedChunk captured = new CapturedChunk(snapshot, world.getMinHeight(), world.getMaxHeight(),
                 ProjectionWorldView.computeSkyDarken(world.getTime()), System.currentTimeMillis(), entities,
@@ -268,7 +269,7 @@ public final class RegionSnapshotWorldViewProvider implements ProjectionWorldVie
             if (chunk == null || y < chunk.minHeight || y >= chunk.maxHeight) {
                 return null;
             }
-            return chunk.snapshot.getBiome(x & 15, y, z & 15).getKey().asString();
+            return WormholesPlatform.keyString(chunk.snapshot.getBiome(x & 15, y, z & 15).getKey());
         }
 
         @Override

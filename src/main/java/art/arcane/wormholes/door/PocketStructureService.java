@@ -1,6 +1,7 @@
 package art.arcane.wormholes.door;
 
 import art.arcane.volmlib.util.bukkit.WorldIdentity;
+import art.arcane.wormholes.platform.WormholesPlatform;
 
 import java.util.Objects;
 
@@ -145,7 +146,7 @@ public final class PocketStructureService {
         int minChunkZ = layout.minZ() >> 4;
         int maxChunkX = layout.maxX() >> 4;
         int maxChunkZ = layout.maxZ() >> 4;
-        if (!Bukkit.isOwnedByCurrentRegion(world, minChunkX, minChunkZ, maxChunkX, maxChunkZ)) {
+        if (!WormholesPlatform.isOwnedByCurrentRegion(world, minChunkX, minChunkZ, maxChunkX, maxChunkZ)) {
             throw new IllegalStateException("pocket provisioning must run on the owning region thread");
         }
     }

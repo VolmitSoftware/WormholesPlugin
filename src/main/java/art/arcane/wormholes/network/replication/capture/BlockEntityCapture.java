@@ -1,6 +1,7 @@
 package art.arcane.wormholes.network.replication.capture;
 
 import art.arcane.wormholes.network.view.ViewSlice;
+import art.arcane.wormholes.platform.WormholesPlatform;
 
 import org.bukkit.World;
 import org.bukkit.block.Block;
@@ -84,7 +85,7 @@ public final class BlockEntityCapture implements Listener {
         }
         BlockState state;
         try {
-            state = block.getState(false);
+            state = WormholesPlatform.blockState(block, false);
         } catch (Throwable ex) {
             return;
         }
@@ -93,7 +94,7 @@ public final class BlockEntityCapture implements Listener {
         }
         byte[] payload;
         try {
-            payload = tileState.getPersistentDataContainer().serializeToBytes();
+            payload = WormholesPlatform.serializePersistentData(tileState.getPersistentDataContainer());
         } catch (IOException ex) {
             if (logger != null) {
                 logger.log(Level.WARNING, "Block-entity NBT serialization failed at " + worldX + "," + worldY + "," + worldZ, ex);

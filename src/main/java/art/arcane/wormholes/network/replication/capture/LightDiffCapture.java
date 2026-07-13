@@ -1,5 +1,6 @@
 package art.arcane.wormholes.network.replication.capture;
 
+import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.network.replication.BlockChange;
 import art.arcane.wormholes.network.replication.LightDiff;
 
@@ -75,7 +76,7 @@ public final class LightDiffCapture {
         }
         ChunkSnapshot snapshot;
         try {
-            snapshot = chunk.getChunkSnapshot(false, false, false, true);
+            snapshot = WormholesPlatform.chunkSnapshot(chunk, false, false, false, true);
         } catch (Throwable ignored) {
             return;
         }

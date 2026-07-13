@@ -14,6 +14,7 @@ import art.arcane.wormholes.network.WireMessage;
 import art.arcane.wormholes.network.replication.ChunkBulkBuilder;
 import art.arcane.wormholes.network.replication.ChunkReplicationManager;
 import art.arcane.wormholes.network.replication.ChunkResyncRequest;
+import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.util.AxisAlignedBB;
 
@@ -1063,7 +1064,7 @@ public final class ViewServer implements Listener {
             done.complete(false);
             return done;
         }
-        session.world.getChunkAtAsync(chunkX, chunkZ).whenComplete((chunk, error) -> {
+        WormholesPlatform.loadChunk(Wormholes.instance, session.world, chunkX, chunkZ).whenComplete((chunk, error) -> {
             if (error != null || chunk == null || !isSessionChunkActive(session, peerName, chunkKey)) {
                 done.complete(false);
                 return;
@@ -1073,7 +1074,7 @@ public final class ViewServer implements Listener {
                     done.complete(false);
                     return;
                 }
-                ChunkSnapshot snapshot = chunk.getChunkSnapshot(false, true, false, true);
+                ChunkSnapshot snapshot = WormholesPlatform.chunkSnapshot(chunk, false, true, false, true);
                 boolean encodeScheduled = FoliaScheduler.runAsync(Wormholes.instance, () -> {
                     try {
                         if (!isSessionChunkActive(session, peerName, chunkKey)) {
@@ -1304,7 +1305,7 @@ public final class ViewServer implements Listener {
     }
 
     private void applyChunkTicket(ChunkTicketKey key, TicketHold hold) {
-        hold.world.getChunkAtAsync(hold.chunkX, hold.chunkZ).whenComplete((chunk, error) -> {
+        WormholesPlatform.loadChunk(Wormholes.instance, hold.world, hold.chunkX, hold.chunkZ).whenComplete((chunk, error) -> {
             if (error != null || chunk == null) {
                 synchronized (chunkTickets) {
                     hold.applying = false;

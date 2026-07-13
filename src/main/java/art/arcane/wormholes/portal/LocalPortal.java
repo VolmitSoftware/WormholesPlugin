@@ -44,6 +44,7 @@ import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.geometry.Raycast;
 import art.arcane.wormholes.network.PortalSyncService;
+import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.wormholes.service.WormholesTelemetry;
 import art.arcane.volmlib.util.scheduling.AR;
@@ -983,7 +984,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				warmer.warmAround(target.getWorld(), target.getBlockX(), target.getBlockZ(), warmRadius, Settings.ARRIVAL_WARM_HOLD_MILLIS);
 			}
 
-			p.teleportAsync(target, PlayerTeleportEvent.TeleportCause.PLUGIN).whenComplete((success, error) ->
+			WormholesPlatform.teleport(Wormholes.instance, p, target, PlayerTeleportEvent.TeleportCause.PLUGIN).whenComplete((success, error) ->
 			{
 				TELEPORT_IN_FLIGHT.remove(entityId);
 				if(error != null || !Boolean.TRUE.equals(success))
@@ -1067,7 +1068,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		Location target = computeExitTarget(t);
 		if(entity instanceof Player player)
 		{
-			player.teleportAsync(target, PlayerTeleportEvent.TeleportCause.PLUGIN).thenAccept(success ->
+			WormholesPlatform.teleport(Wormholes.instance, player, target, PlayerTeleportEvent.TeleportCause.PLUGIN).thenAccept(success ->
 			{
 				if(success)
 				{
@@ -1930,7 +1931,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		element.setName(ChatColor.BLUE + "" + ChatColor.BOLD + "Orientation");
 		element.setMaterial(new MaterialBlock(Material.COMPASS));
 		element.addLore(ChatColor.GRAY + "Facing: " + ChatColor.BLUE + getDirection());
-		element.addLore(ChatColor.GRAY + "Up: " + ChatColor.LIGHT_PURPLE + getFrame().getUp());
+		element.addLore(ChatColor.GRAY + "Up: " + ChatColor.GOLD + getFrame().getUp());
 		element.addLore(" ");
 		element.addLore(ChatColor.DARK_GRAY + "Click for facing, flip, and rotation.");
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
@@ -1963,7 +1964,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		element.setName(ChatColor.BLUE + "" + ChatColor.BOLD + "Portal Orientation");
 		element.setMaterial(new MaterialBlock(Material.COMPASS));
 		element.addLore(ChatColor.GRAY + "Facing: " + ChatColor.BLUE + getDirection());
-		element.addLore(ChatColor.GRAY + "Screen up: " + ChatColor.LIGHT_PURPLE + getFrame().getUp());
+		element.addLore(ChatColor.GRAY + "Screen up: " + ChatColor.GOLD + getFrame().getUp());
 		return element;
 	}
 
@@ -1973,11 +1974,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		window.setTitle(getRouter(true));
 		window.setResolution(WindowResolution.W9_H6);
 		window.setViewportHeight(3);
-		window.setDecorator(new UIPaneDecorator(Material.PURPLE_STAINED_GLASS_PANE));
+		window.setDecorator(new UIPaneDecorator(Material.BLACK_STAINED_GLASS_PANE));
 		window.setElement(0, 0, gatewayPairPlacardElement());
 		window.setElement(-2, 1, exportPortalElement(window, viewer));
 		window.setElement(0, 1, new UIElement("choose-gateway-destination")
-				.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Choose Destination")
+				.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Choose Destination")
 				.setMaterial(new MaterialBlock(Material.END_CRYSTAL))
 				.addLore(ChatColor.GRAY + "Choose from discovered local and remote gateways.")
 				.addLore(" ")
@@ -1995,7 +1996,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private Element gatewayPairPlacardElement()
 	{
 		UIElement element = new UIElement("gateway-pair-placard");
-		element.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Gateway Pairing");
+		element.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Gateway Pairing");
 		element.setMaterial(new MaterialBlock(Material.RESPAWN_ANCHOR));
 		if(!hasTunnel())
 		{
@@ -2290,12 +2291,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private Element rotateCounterClockwiseElement(Window window, Player viewer)
 	{
 		UIElement element = new UIElement("rotate-counter-clockwise");
-		element.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Counterclockwise");
+		element.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Rotate Counterclockwise");
 		element.setMaterial(new MaterialBlock(Material.REPEATER));
 		element.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees");
 		element.addLore(ChatColor.GRAY + "without changing the face.");
 		element.addLore(" ");
-		element.addLore(ChatColor.GRAY + "Currently rolling up: " + ChatColor.LIGHT_PURPLE + getFrame().getUp().toString());
+		element.addLore(ChatColor.GRAY + "Currently rolling up: " + ChatColor.GOLD + getFrame().getUp().toString());
 		element.addLore(" ");
 		element.addLore(ChatColor.DARK_GRAY + "Click to rotate.");
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
@@ -2311,12 +2312,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private Element rotateClockwiseElement(Window window, Player viewer)
 	{
 		UIElement element = new UIElement("rotate-clockwise");
-		element.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Rotate Clockwise");
+		element.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Rotate Clockwise");
 		element.setMaterial(new MaterialBlock(Material.LEVER));
 		element.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees");
 		element.addLore(ChatColor.GRAY + "without changing the face.");
 		element.addLore(" ");
-		element.addLore(ChatColor.GRAY + "Currently rolling up: " + ChatColor.LIGHT_PURPLE + getFrame().getUp().toString());
+		element.addLore(ChatColor.GRAY + "Currently rolling up: " + ChatColor.GOLD + getFrame().getUp().toString());
 		element.addLore(" ");
 		element.addLore(ChatColor.DARK_GRAY + "Click to rotate.");
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
@@ -2443,7 +2444,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			element.addLore(ChatColor.GRAY + "and cross-server view tuning.");
 		}
 		element.addLore(" ");
-		element.addLore(ChatColor.GRAY + "Access: " + ChatColor.LIGHT_PURPLE + getPermissionMode().getDisplayName());
+		element.addLore(ChatColor.GRAY + "Access: " + ChatColor.GOLD + getPermissionMode().getDisplayName());
 		element.addLore(ChatColor.GRAY + "Send " + (isOutgoingTraversalsEnabled() ? ChatColor.GREEN + "On" : ChatColor.RED + "Off")
 				+ ChatColor.GRAY + "  Receive " + (isIncomingTraversalsEnabled() ? ChatColor.GREEN + "On" : ChatColor.RED + "Off"));
 		if(isGateway())
@@ -2514,7 +2515,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private void applyPermissionElement(Element element)
 	{
 		PortalPermissionMode mode = getPermissionMode();
-		element.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Access " + mode.getDisplayName());
+		element.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Access " + mode.getDisplayName());
 		element.setEnchanted(mode == PortalPermissionMode.WHITELIST);
 		element.setMaterial(new MaterialBlock(mode == PortalPermissionMode.WHITELIST ? Material.GOLDEN_HELMET : Material.IRON_HELMET));
 		KList<String> lore = element.getLore();
@@ -2522,7 +2523,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		lore.add(ChatColor.GRAY + mode.getLoreLine());
 		lore.add(ChatColor.GRAY + "Node: " + ChatColor.WHITE + getPermissionNode());
 		lore.add(" ");
-		lore.add(ChatColor.GRAY + "Currently: " + ChatColor.LIGHT_PURPLE + mode.getDisplayName());
+		lore.add(ChatColor.GRAY + "Currently: " + ChatColor.GOLD + mode.getDisplayName());
 		lore.add(" ");
 		lore.add(ChatColor.DARK_GRAY + "Click to toggle whitelist / blacklist.");
 		lore.add(ChatColor.DARK_GRAY + "Operators always bypass.");
@@ -2718,7 +2719,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				window.setElement(window.getPosition(pos), window.getRow(pos), new UIElement("remote-portal-" + pos)
 						.setMaterial(new MaterialBlock(Material.END_CRYSTAL))
 						.setEnchanted(linked)
-						.setName(ChatColor.LIGHT_PURPLE + "" + target.getName())
+						.setName(ChatColor.GOLD + "" + target.getName())
 						.addLore(ChatColor.GRAY + "on server " + ChatColor.WHITE + target.getServer().getName())
 						.addLore(ChatColor.GRAY + "at " + target.getOrigin().getBlockX() + ", " + target.getOrigin().getBlockY() + ", " + target.getOrigin().getBlockZ() + " in " + target.getServer().getWorld() + " Facing " + target.getDirection().toString())
 						.addLore(target.isOpen() ? ChatColor.GREEN + "Open" : ChatColor.RED + "Closed")

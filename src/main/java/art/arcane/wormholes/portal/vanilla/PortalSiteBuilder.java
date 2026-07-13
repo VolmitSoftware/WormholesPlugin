@@ -18,6 +18,7 @@ import org.bukkit.block.data.BlockData;
 
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.platform.WormholesPlatform;
 
 public final class PortalSiteBuilder
 {
@@ -34,7 +35,7 @@ public final class PortalSiteBuilder
 		CompletableFuture<Set<Block>> result = new CompletableFuture<Set<Block>>();
 		int width = netherInteriorWidth(interiorWidth);
 		int height = Math.max(MIN_INTERIOR_HEIGHT, Math.min(MAX_INTERIOR, interiorHeight));
-		world.getChunkAtAsync(centerX >> 4, centerZ >> 4).whenComplete((chunk, loadError) ->
+		WormholesPlatform.loadChunk(Wormholes.instance, world, centerX >> 4, centerZ >> 4).whenComplete((chunk, loadError) ->
 		{
 			if(loadError != null || chunk == null)
 			{
@@ -160,7 +161,7 @@ public final class PortalSiteBuilder
 		List<CompletableFuture<?>> chunkLoads = new ArrayList<CompletableFuture<?>>(plans.size());
 		for(ChunkMutationPlan plan : plans.values())
 		{
-			chunkLoads.add(world.getChunkAtAsync(plan.chunkX(), plan.chunkZ()).thenAccept(chunk ->
+			chunkLoads.add(WormholesPlatform.loadChunk(Wormholes.instance, world, plan.chunkX(), plan.chunkZ()).thenAccept(chunk ->
 			{
 				if(chunk == null)
 				{

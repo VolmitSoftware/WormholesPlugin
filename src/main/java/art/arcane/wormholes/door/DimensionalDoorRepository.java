@@ -18,6 +18,7 @@ import java.util.regex.Pattern;
 /** JSON persistence for dimensional-door identity and allocation state. */
 public final class DimensionalDoorRepository {
     private static final String STATE_FILE = "state.json";
+    private static final int LEGACY_SCHEMA = 2;
     private static final Pattern NEXT_POCKET_SLOT = Pattern.compile("\\\"nextPocketSlot\\\"\\s*:\\s*(\\d+)");
     private static final Pattern POCKET_SLOT = Pattern.compile("\\\"slot\\\"\\s*:\\s*(\\d+)");
 
@@ -171,6 +172,9 @@ public final class DimensionalDoorRepository {
 
     private static DoorStoreSnapshot fromJson(JSONObject root) {
         int schema = root.getInt("schema");
+        if (schema != DoorStoreSnapshot.CURRENT_SCHEMA && schema != LEGACY_SCHEMA) {
+            throw new IllegalArgumentException("unsupported dimensional-door schema " + schema);
+        }
         long nextPocketSlot = root.getLong("nextPocketSlot");
 
         JSONArray pairJson = root.getJSONArray("pairs");
@@ -189,7 +193,7 @@ public final class DimensionalDoorRepository {
         for (int i = 0; i < endpointJson.length(); i++) {
             JSONObject endpoint = endpointJson.getJSONObject(i);
             JSONObject item = endpoint.getJSONObject("item");
-            DoorKind kind = DoorKind.valueOf(item.getString("kind"));
+            DoorKind kind = decodeDoorKind(schema, item.getString("kind"));
             DoorItemIdentity identity = new DoorItemIdentity(
                 uuid(item, "itemId"),
                 kind,
@@ -242,7 +246,27 @@ public final class DimensionalDoorRepository {
                 (float) ticket.getDouble("pitch")
             ));
         }
-        return new DoorStoreSnapshot(schema, nextPocketSlot, pairs, endpoints, spaces, tickets);
+        return new DoorStoreSnapshot(
+            DoorStoreSnapshot.CURRENT_SCHEMA,
+            nextPocketSlot,
+            pairs,
+            endpoints,
+            spaces,
+            tickets
+        );
+    }
+
+    private static DoorKind decodeDoorKind(int schema, String value) {
+        if (schema == DoorStoreSnapshot.CURRENT_SCHEMA) {
+            return DoorKind.valueOf(value);
+        }
+        return switch (value) {
+            case "PAIRED" -> DoorKind.PAIR;
+            case "IRON" -> DoorKind.PUBLIC;
+            case "PERSONAL" -> DoorKind.PERSONAL;
+            case "RETURN" -> DoorKind.RETURN;
+            default -> throw new IllegalArgumentException("Unknown legacy door kind " + value);
+        };
     }
 
     private static UUID uuid(JSONObject json, String key) {

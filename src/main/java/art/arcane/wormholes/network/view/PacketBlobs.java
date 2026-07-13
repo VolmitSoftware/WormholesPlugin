@@ -1,5 +1,6 @@
 package art.arcane.wormholes.network.view;
 
+import art.arcane.wormholes.platform.WormholesPlatform;
 import com.github.retrooper.packetevents.PacketEvents;
 import com.github.retrooper.packetevents.netty.buffer.ByteBufHelper;
 import com.github.retrooper.packetevents.netty.buffer.UnpooledByteBufAllocationHelper;
@@ -132,7 +133,7 @@ public final class PacketBlobs {
                                      EntityEquipment equipment,
                                      org.bukkit.inventory.EquipmentSlot bukkitSlot,
                                      EquipmentSlot packetSlot) {
-        if (!living.canUseEquipmentSlot(bukkitSlot)) {
+        if (!WormholesPlatform.canUseEquipmentSlot(living, bukkitSlot)) {
             return;
         }
         ItemStack item = equipment.getItem(bukkitSlot);

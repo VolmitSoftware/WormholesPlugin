@@ -20,12 +20,12 @@ public record DoorItemIdentity(
         Objects.requireNonNull(kind, "kind");
 
         switch (kind) {
-            case PAIRED -> {
+            case PAIR -> {
                 Objects.requireNonNull(pairId, "paired doors require pairId");
                 Objects.requireNonNull(pairEndpoint, "paired doors require pairEndpoint");
                 requireNull(spaceId, "paired doors cannot carry spaceId");
             }
-            case PERSONAL, IRON -> {
+            case PERSONAL, PUBLIC -> {
                 requireNull(pairId, kind + " doors cannot carry pairId");
                 requireNull(pairEndpoint, kind + " doors cannot carry pairEndpoint");
                 requireNull(spaceId, kind + " doors cannot carry spaceId");
@@ -39,15 +39,15 @@ public record DoorItemIdentity(
     }
 
     public static DoorItemIdentity paired(UUID itemId, UUID pairId, PairEndpoint endpoint) {
-        return new DoorItemIdentity(itemId, DoorKind.PAIRED, pairId, endpoint, null);
+        return new DoorItemIdentity(itemId, DoorKind.PAIR, pairId, endpoint, null);
     }
 
     public static DoorItemIdentity personal(UUID itemId) {
         return new DoorItemIdentity(itemId, DoorKind.PERSONAL, null, null, null);
     }
 
-    public static DoorItemIdentity iron(UUID itemId) {
-        return new DoorItemIdentity(itemId, DoorKind.IRON, null, null, null);
+    public static DoorItemIdentity publicDoor(UUID itemId) {
+        return new DoorItemIdentity(itemId, DoorKind.PUBLIC, null, null, null);
     }
 
     public static DoorItemIdentity returnDoor(UUID itemId, UUID spaceId) {
@@ -58,8 +58,8 @@ public record DoorItemIdentity(
         return personal(UUID.randomUUID());
     }
 
-    public static DoorItemIdentity newIron() {
-        return iron(UUID.randomUUID());
+    public static DoorItemIdentity newPublic() {
+        return publicDoor(UUID.randomUUID());
     }
 
     public static DoorItemIdentity newReturn(UUID spaceId) {

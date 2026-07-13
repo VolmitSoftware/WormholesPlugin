@@ -72,6 +72,7 @@ import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.network.view.EntityVisual;
 import art.arcane.wormholes.network.view.PacketBlobs;
 import art.arcane.wormholes.network.view.RemoteViewCache;
+import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.IPortal;
 import art.arcane.wormholes.portal.PortalFrame;
@@ -107,6 +108,7 @@ public final class ProjectedEntityRenderer {
     private final double[] scratchVisiblePoint;
     private final double[] scratchDirection;
     private final double[] scratchLook;
+    private final double[] scratchEntityPosition;
     private final AtomicBoolean localRestoreRetryScheduled;
     private boolean metadataBridgeFailed;
     private boolean localHideOwnershipWarningSent;
@@ -125,6 +127,7 @@ public final class ProjectedEntityRenderer {
         this.scratchVisiblePoint = new double[3];
         this.scratchDirection = new double[3];
         this.scratchLook = new double[3];
+        this.scratchEntityPosition = new double[5];
         this.localRestoreRetryScheduled = new AtomicBoolean(false);
         this.metadataBridgeFailed = false;
         this.localHideOwnershipWarningSent = false;
@@ -726,10 +729,11 @@ public final class ProjectedEntityRenderer {
         PortalFrame mirrorPlaneFrame = mirror ? localPortal.getFrame() : null;
         Vector mirrorPlaneOrigin = mirror ? localPortal.getOrigin() : null;
 
-        double entityX = entity.getX();
-        double entityZ = entity.getZ();
+        WormholesPlatform.entityPosition(entity, scratchEntityPosition);
+        double entityX = scratchEntityPosition[0];
+        double entityZ = scratchEntityPosition[2];
         double halfHeight = entity.getHeight() * 0.5D;
-        double visibleY = entity.getY() + halfHeight;
+        double visibleY = scratchEntityPosition[1] + halfHeight;
         if (mirror) {
             PortalCoordMap.mirrorSourceToDisplayPointInto(entityX, visibleY, entityZ,
                 mirrorPlaneOrigin.getX(), mirrorPlaneOrigin.getY(), mirrorPlaneOrigin.getZ(),
@@ -745,7 +749,7 @@ public final class ProjectedEntityRenderer {
             return false;
         }
 
-        lookDirectionInto(entity.getYaw(), entity.getPitch(), scratchLook);
+        lookDirectionInto((float) scratchEntityPosition[3], (float) scratchEntityPosition[4], scratchLook);
         if (mirror) {
             PortalCoordMap.mirrorSourceToDisplayVectorInto(scratchLook[0], scratchLook[1], scratchLook[2],
                 mirrorPlaneFrame, mirrorRotationQuarterTurns, scratchDirection);
@@ -1111,9 +1115,10 @@ public final class ProjectedEntityRenderer {
         }
         PortalFrame frame = localPortal.getFrame();
         Vector origin = localPortal.getOrigin();
-        double eyeX = observer.getX();
-        double eyeY = observer.getY() + observer.getEyeHeight();
-        double eyeZ = observer.getZ();
+        WormholesPlatform.entityPosition(observer, scratchEntityPosition);
+        double eyeX = scratchEntityPosition[0];
+        double eyeY = scratchEntityPosition[1] + observer.getEyeHeight();
+        double eyeZ = scratchEntityPosition[2];
         double eyeDot = dot(eyeX - origin.getX(), eyeY - origin.getY(), eyeZ - origin.getZ(), frame);
         boolean eyeFrontSide = eyeDot >= 0.0D;
         double clearance = PortalProjector.portalPlaneClearance(localPortal.getStructure().getArea(), frame);
@@ -1154,7 +1159,7 @@ public final class ProjectedEntityRenderer {
             int minChunkZ = ((int) Math.floor(center.getZ() - radius)) >> 4;
             int maxChunkX = ((int) Math.floor(center.getX() + radius)) >> 4;
             int maxChunkZ = ((int) Math.floor(center.getZ() + radius)) >> 4;
-            if (Bukkit.isOwnedByCurrentRegion(world, minChunkX, minChunkZ, maxChunkX, maxChunkZ)) {
+            if (WormholesPlatform.isOwnedByCurrentRegion(world, minChunkX, minChunkZ, maxChunkX, maxChunkZ)) {
                 return Math.min(requestedRange, radius);
             }
             if (radius == 1) {
@@ -1188,9 +1193,10 @@ public final class ProjectedEntityRenderer {
         if (entity.getUniqueId().equals(observer.getUniqueId())) {
             return false;
         }
-        double entityX = entity.getX();
-        double entityZ = entity.getZ();
-        double centerY = entity.getY() + (entity.getHeight() * 0.5D);
+        WormholesPlatform.entityPosition(entity, scratchEntityPosition);
+        double entityX = scratchEntityPosition[0];
+        double entityZ = scratchEntityPosition[2];
+        double centerY = scratchEntityPosition[1] + (entity.getHeight() * 0.5D);
         double signedDistance = dot(entityX - origin.getX(), centerY - origin.getY(), entityZ - origin.getZ(), frame);
         if (Math.abs(signedDistance) <= clearance || Math.abs(signedDistance) > maxDepth) {
             return false;

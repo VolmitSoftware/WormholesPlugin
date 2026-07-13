@@ -137,7 +137,7 @@ public final class DoorStateService {
         return DoorDestinationResolver.resolve(identity, travelerId);
     }
 
-    /** Resolves PERSONAL/IRON identity and creates its permanent pocket if needed. */
+    /** Resolves PERSONAL/PUBLIC identity and creates its permanent pocket if needed. */
     public synchronized PocketSpace getOrAllocatePocket(DoorItemIdentity identity, UUID travelerId) throws IOException {
         DoorDestination destination = resolveDestination(
             Objects.requireNonNull(identity, "identity"),

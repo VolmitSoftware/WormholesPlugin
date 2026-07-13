@@ -38,11 +38,11 @@ class PocketAllocatorTest {
     void allocationsAreFarApartAndStableForBinding() {
         PocketAllocator allocator = new PocketAllocator();
         PocketBinding alice = PocketBinding.personal(id(1));
-        PocketBinding iron = PocketBinding.iron(id(2));
+        PocketBinding publicDoor = PocketBinding.publicDoor(id(2));
 
         PocketSpace first = allocator.getOrAllocate(alice);
         PocketSpace repeated = allocator.getOrAllocate(alice);
-        PocketSpace second = allocator.getOrAllocate(iron);
+        PocketSpace second = allocator.getOrAllocate(publicDoor);
 
         assertSame(first, repeated);
         assertEquals(0, first.slot());
@@ -69,7 +69,7 @@ class PocketAllocatorTest {
     void restoreContinuesAfterHighestSlotWithoutReusingSpace() {
         PocketAllocator original = new PocketAllocator();
         PocketSpace first = original.getOrAllocate(PocketBinding.personal(id(20)));
-        PocketSpace second = original.getOrAllocate(PocketBinding.iron(id(21)));
+        PocketSpace second = original.getOrAllocate(PocketBinding.publicDoor(id(21)));
 
         PocketAllocator restored = new PocketAllocator(
             original.stride(), original.centerY(), original.nextSlot(), original.spaces()
@@ -90,7 +90,7 @@ class PocketAllocatorTest {
             PocketAllocator.spaceIdFor(binding), binding, 0,
             PocketAllocator.CHUNK_CENTER_OFFSET, PocketAllocator.DEFAULT_CENTER_Y, PocketAllocator.CHUNK_CENTER_OFFSET
         );
-        PocketSpace wrongCoordinates = new PocketSpace(id(31), PocketBinding.iron(id(32)), 1, 1, 128, 0);
+        PocketSpace wrongCoordinates = new PocketSpace(id(31), PocketBinding.publicDoor(id(32)), 1, 1, 128, 0);
 
         assertThrows(IllegalArgumentException.class,
             () -> new PocketAllocator(8_192, 128, 0, List.of(valid)));
@@ -112,7 +112,7 @@ class PocketAllocatorTest {
         PocketAllocator restored = new PocketAllocator(8_192, 128, 1, List.of(legacy));
 
         assertEquals(legacy, restored.find(binding).orElseThrow());
-        PocketSpace next = restored.getOrAllocate(PocketBinding.iron(id(36)));
+        PocketSpace next = restored.getOrAllocate(PocketBinding.publicDoor(id(36)));
         assertEquals(8_192 + PocketAllocator.CHUNK_CENTER_OFFSET, next.centerX());
     }
 

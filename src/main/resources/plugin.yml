@@ -1,0 +1,56 @@
+name: ${name}
+version: ${version}
+main: ${main}
+api-version: ${apiVersion}
+load: POSTWORLD
+description: Through-portal projection. See what is on the other side without crossing.
+authors: [ VolmitSoftware ]
+softdepend: [ PlaceholderAPI ]
+commands:
+  wormholes:
+    description: Wormholes base command.
+    aliases: [ wh, wormhole ]
+    usage: /<command> help
+permissions:
+  wormholes.*:
+    description: Gives access to all Wormholes permissions.
+    default: op
+    children:
+      wormholes.admin: true
+      wormholes.portals: true
+      wormholes.gateway: true
+  wormholes.admin:
+    description: Gives access to all Wormholes admin permissions.
+    default: op
+    children:
+      wormholes.admin.reload: true
+      wormholes.admin.items: true
+      wormholes.admin.network: true
+      wormholes.admin.reset: true
+  wormholes.admin.reload:
+    description: Allows reloading Wormholes configuration.
+    default: op
+  wormholes.admin.items:
+    description: Allows spawning in Wormholes items (wand, runes).
+    default: op
+  wormholes.admin.network:
+    description: Allows managing Wormholes network links.
+    default: op
+  wormholes.admin.reset:
+    description: Allows deleting portals and resetting Wormholes data.
+    default: op
+  wormholes.gateway:
+    description: Allows creating and modifying gateway portals.
+    default: op
+  wormholes.portals:
+    description: Allows creating and using normal portal types.
+    default: true
+    children:
+      wormholes.portals.wormhole: true
+      wormholes.portals.portal: true
+  wormholes.portals.wormhole:
+    description: Allows creating and using wormhole portals (projecting).
+    default: true
+  wormholes.portals.portal:
+    description: Allows creating and using normal portals (non-projecting).
+    default: true

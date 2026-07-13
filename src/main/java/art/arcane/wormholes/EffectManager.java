@@ -48,6 +48,7 @@ import art.arcane.wormholes.portal.RemotePortal;
 import art.arcane.wormholes.portal.UniversalTunnel;
 import art.arcane.wormholes.network.view.RemoteViewCache;
 import art.arcane.wormholes.config.VisualQualityProfile;
+import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.volmlib.util.scheduling.AR;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
@@ -143,7 +144,7 @@ public class EffectManager implements Listener
 				removals.countDown();
 				continue;
 			}
-			boolean scheduled = entity.getScheduler().execute(Wormholes.instance, () ->
+			boolean scheduled = WormholesPlatform.scheduleEntity(Wormholes.instance, entity, () ->
 			{
 				removeTemporaryDisplay(entity);
 				removals.countDown();

@@ -14,6 +14,7 @@ def apiVersion = '26.2'
 def main = 'art.arcane.wormholes.Wormholes'
 def bootstrapper = 'art.arcane.wormholes.survival.doors.dimension.WormholesBootstrap'
 def lib = 'art.arcane.wormholes.libs'
+def spigotApiVersion = '26.2-R0.1-SNAPSHOT'
 String volmLibCoordinate = providers.gradleProperty('volmLibCoordinate')
     .orElse('com.github.VolmitSoftware:VolmLib:master-SNAPSHOT')
     .get()
@@ -95,7 +96,7 @@ tasks.named('processResources').configure {
     ]
 
     inputs.properties(pluginProperties)
-    filesMatching('**/paper-plugin.yml') {
+    filesMatching(['**/paper-plugin.yml', '**/plugin.yml']) {
         expand(pluginProperties)
     }
 }
@@ -109,6 +110,35 @@ tasks.named('compileJava', JavaCompile).configure {
 
 tasks.named('test').configure {
     useJUnitPlatform()
+}
+
+configurations {
+    spigotCompatibility
+}
+
+tasks.register('compileSpigotCompatibility', JavaCompile) {
+    source = fileTree('src/main/java') {
+        exclude '**/WormholesBootstrap.java'
+        exclude '**/PaperCommandRegistrar.java'
+    }
+    classpath = files(sourceSets.main.compileClasspath.filter { File dependency ->
+        !dependency.name.startsWith('paper-api-')
+    }) + configurations.spigotCompatibility
+    destinationDirectory.set(layout.buildDirectory.dir('classes/java/spigotCompatibility'))
+    options.compilerArgs.add('-parameters')
+    options.encoding = 'UTF-8'
+    options.debugOptions.debugLevel = 'none'
+    options.release.set(25)
+}
+
+gradle.includedBuilds.find { includedBuild -> includedBuild.name == 'VolmLib' }?.with { includedBuild ->
+    tasks.named('compileSpigotCompatibility').configure {
+        dependsOn(includedBuild.task(':shared:compileSpigotCompatibility'))
+    }
+}
+
+tasks.named('check').configure {
+    dependsOn(tasks.named('compileSpigotCompatibility'))
 }
 
 tasks.register('bandwidthHarness', JavaExec) {
@@ -137,6 +167,9 @@ repositories {
         url = uri('https://repo.papermc.io/repository/maven-public/')
     }
     maven {
+        url = uri('https://hub.spigotmc.org/nexus/content/repositories/snapshots/')
+    }
+    maven {
         url = uri('https://repo.codemc.io/repository/maven-releases/')
     }
     maven {
@@ -158,6 +191,7 @@ dependencies {
     implementation('com.github.luben:zstd-jni:1.5.6-9')
     compileOnly(libs.paper)
     compileOnly(libs.fastutil)
+    spigotCompatibility("org.spigotmc:spigot-api:${spigotApiVersion}")
     testImplementation(libs.paper)
     testImplementation(libs.fastutil)
     testImplementation(libs.junitJupiter)
@@ -234,7 +268,7 @@ void createOutputTask(String name, String path, boolean doRename = true) {
         group = 'development'
         outputs.upToDateWhen { false }
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-        dependsOn(shadowJarTask)
+        dependsOn(tasks.named('check'), shadowJarTask)
         from(shadowJarTask.flatMap { it.archiveFile })
         into(file(path))
         if (doRename) {

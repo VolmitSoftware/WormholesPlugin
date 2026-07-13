@@ -3,6 +3,7 @@ package art.arcane.wormholes.network;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.config.toml.NetworkConfig;
+import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.LocalPortal;
 import art.arcane.wormholes.portal.Traversive;
@@ -466,7 +467,7 @@ public final class TraversalService implements Listener {
         Location target = exit.computeExitTarget(traversive);
         Wormholes.i("[arrival] " + via + " " + player.getName() + " spawnLoc=" + locStr(player.getLocation()) + " exitPortal=" + exit.getId() + " -> teleport target=" + locStr(target) + " (latched to exit)");
         FoliaScheduler.runEntity(Wormholes.instance, player, () ->
-            player.teleportAsync(target, PlayerTeleportEvent.TeleportCause.PLUGIN).thenAccept(success -> {
+            WormholesPlatform.teleport(Wormholes.instance, player, target, PlayerTeleportEvent.TeleportCause.PLUGIN).thenAccept(success -> {
                 if (success) {
                     exit.completeRemoteArrival(player, traversive);
                 }
@@ -553,7 +554,7 @@ public final class TraversalService implements Listener {
         int centerZ = target.getBlockZ() >> 4;
         for (int dx = -2; dx <= 2; dx++) {
             for (int dz = -2; dz <= 2; dz++) {
-                world.getChunkAtAsync(centerX + dx, centerZ + dz);
+                WormholesPlatform.loadChunk(Wormholes.instance, world, centerX + dx, centerZ + dz);
             }
         }
     }

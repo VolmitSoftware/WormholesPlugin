@@ -3,8 +3,8 @@ package art.arcane.wormholes.door;
 import art.arcane.volmlib.util.bukkit.WorldIdentity;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.survival.doors.dimension.PocketWorldService;
-import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
@@ -16,6 +16,7 @@ import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.Bisected;
+import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.type.Door;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -35,6 +36,7 @@ import org.bukkit.event.block.BlockRedstoneEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
+import org.bukkit.event.inventory.PrepareItemCraftEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
@@ -184,14 +186,28 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		}
 	}
 
+	@EventHandler(priority = EventPriority.HIGHEST)
+	public void onPrepareCraft(PrepareItemCraftEvent event)
+	{
+		if(items().isDoorSkinRecipe(event.getRecipe()))
+		{
+			event.getInventory().setResult(items().skinCraftResult(event.getInventory().getMatrix()).orElse(null));
+		}
+	}
+
 	@EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
 	public void onCrafterCraft(CrafterCraftEvent event)
 	{
+		if(items().isDoorSkinRecipe(event.getRecipe()))
+		{
+			event.setCancelled(true);
+			return;
+		}
 		items().productFor(event.getRecipe()).ifPresent(product -> event.setResult(switch(product)
 		{
 			case PAIR_KIT -> items().createPairKit();
 			case PERSONAL_DOOR -> items().createPersonalDoor();
-			case IRON_DOOR -> items().createIronDoor();
+			case PUBLIC_DOOR -> items().createPublicDoor();
 		}));
 	}
 
@@ -232,6 +248,14 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 	@EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
 	public void onDoorPlace(BlockPlaceEvent event)
 	{
+		Optional<DoorItemIdentity> carriedIdentity = items().decodeDoorIdentity(event.getItemInHand());
+		if(carriedIdentity.isPresent() && !DoorSkin.isPlayerOperable(event.getItemInHand().getType()))
+		{
+			event.setCancelled(true);
+			event.getPlayer().sendMessage(Wormholes.tag
+				+ "Combine this legacy dimensional door with a wooden door before placing it.");
+			return;
+		}
 		Optional<DoorItemIdentity> decoded = items().decodeDoor(event.getItemInHand());
 		if(decoded.isEmpty())
 		{
@@ -243,7 +267,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			event.setCancelled(true);
 			return;
 		}
-		if(identity.kind() == DoorKind.PAIRED && state().findPair(identity.pairId()).isEmpty())
+		if(identity.kind() == DoorKind.PAIR && state().findPair(identity.pairId()).isEmpty())
 		{
 			event.setCancelled(true);
 			event.getPlayer().sendMessage(Wormholes.tag + "That paired door has no registered partner identity.");
@@ -327,6 +351,12 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		}
 		PlacedDoorEndpoint endpoint = direct.get();
 		Optional<PlacedDoorEndpoint> mate = state().findMate(endpoint.identity());
+		Material liveMaterial = event.getBlock().getWorld()
+			.getBlockAt(endpoint.position().x(), endpoint.position().y(), endpoint.position().z())
+			.getType();
+		Material droppedMaterial = DoorSkin.isPlayerOperable(liveMaterial)
+			? liveMaterial
+			: DoorItemService.defaultMaterial(endpoint.identity().kind());
 		event.setDropItems(false);
 		try
 		{
@@ -348,7 +378,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		{
 			event.getBlock().getWorld().dropItemNaturally(
 				event.getBlock().getLocation().add(0.5D, 0.5D, 0.5D),
-				items().createDoor(endpoint.identity()));
+				items().createDoor(endpoint.identity(), droppedMaterial));
 		}
 	}
 
@@ -489,7 +519,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 	@EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
 	public void onMove(PlayerMoveEvent event)
 	{
-		if(!event.hasChangedPosition() || event.getTo().getWorld() == null
+		if(!WormholesPlatform.hasChangedPosition(event) || event.getTo().getWorld() == null
 			|| event.getFrom().getWorld() == null
 			|| !event.getFrom().getWorld().getUID().equals(event.getTo().getWorld().getUID()))
 		{
@@ -513,7 +543,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			}
 			PlacedDoorEndpoint endpoint = runtime.endpoint();
 			World sourceWorld = event.getTo().getWorld();
-			if(!Bukkit.isOwnedByCurrentRegion(
+			if(!WormholesPlatform.isOwnedByCurrentRegion(
 				sourceWorld, endpoint.position().x() >> 4, endpoint.position().z() >> 4))
 			{
 				continue;
@@ -841,7 +871,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		CompletableFuture<Boolean> future;
 		try
 		{
-			future = player.teleportAsync(target, PlayerTeleportEvent.TeleportCause.PLUGIN);
+			future = WormholesPlatform.teleport(plugin, player, target, PlayerTeleportEvent.TeleportCause.PLUGIN);
 		}
 		catch(Throwable ex)
 		{
@@ -952,7 +982,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		CompletableFuture<Chunk> future;
 		try
 		{
-			future = world.getChunkAtAsync(Math.floorDiv(blockX, 16), Math.floorDiv(blockZ, 16), true);
+			future = WormholesPlatform.loadChunk(plugin, world, Math.floorDiv(blockX, 16), Math.floorDiv(blockZ, 16), true);
 		}
 		catch(Throwable ex)
 		{
@@ -1006,7 +1036,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			{
 				for(int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++)
 				{
-					loads.add(world.getChunkAtAsync(chunkX, chunkZ, true));
+					loads.add(WormholesPlatform.loadChunk(plugin, world, chunkX, chunkZ, true));
 				}
 			}
 		}
@@ -1110,7 +1140,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		CompletableFuture<Boolean> teleportFuture;
 		try
 		{
-			teleportFuture = player.teleportAsync(target, PlayerTeleportEvent.TeleportCause.PLUGIN);
+			teleportFuture = WormholesPlatform.teleport(plugin, player, target, PlayerTeleportEvent.TeleportCause.PLUGIN);
 		}
 		catch(Throwable ex)
 		{
@@ -1213,7 +1243,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		}
 		try
 		{
-			return player.getScheduler().execute(owner, task, retired, 0L);
+			return WormholesPlatform.scheduleEntity(owner, player, task, retired, 0L);
 		}
 		catch(Throwable ex)
 		{
@@ -1351,6 +1381,11 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			runtime.invalidate();
 			return;
 		}
+		if(!convertLegacyIronDoor(endpoint, world))
+		{
+			runtime.invalidate();
+			return;
+		}
 		visuals.cleanChunk(world.getChunkAt(endpoint.position().x() >> 4, endpoint.position().z() >> 4));
 		Optional<VanillaDoorSnapshot> captured = capture(endpoint, world);
 		if(captured.isEmpty())
@@ -1393,8 +1428,8 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 	{
 		return switch(identity.kind())
 		{
-			case PAIRED -> state().findMate(identity).map(endpoint -> world(endpoint.position()) != null).orElse(false);
-			case PERSONAL, IRON -> pocketWorldService.world().isPresent();
+			case PAIR -> state().findMate(identity).map(endpoint -> world(endpoint.position()) != null).orElse(false);
+			case PERSONAL, PUBLIC -> pocketWorldService.world().isPresent();
 			case RETURN -> true;
 		};
 	}
@@ -1403,12 +1438,74 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 	{
 		DoorPosition position = endpoint.position();
 		Block lower = world.getBlockAt(position.x(), position.y(), position.z());
-		if(lower.getType() != expectedMaterial(endpoint.identity().kind()))
+		if(!DoorSkin.isPlayerOperable(lower.getType()))
 		{
 			return Optional.empty();
 		}
 		return VanillaDoorSnapshot.capture(lower)
 			.filter(snapshot -> snapshot.worldId().equals(position.worldId()));
+	}
+
+	private boolean convertLegacyIronDoor(PlacedDoorEndpoint endpoint, World world)
+	{
+		if(endpoint.identity().kind() != DoorKind.PUBLIC)
+		{
+			return true;
+		}
+		DoorPosition position = endpoint.position();
+		Block lower = world.getBlockAt(position.x(), position.y(), position.z());
+		if(lower.getType() != Material.IRON_DOOR)
+		{
+			return true;
+		}
+		Block upper = lower.getRelative(BlockFace.UP);
+		if(upper.getType() != Material.IRON_DOOR
+			|| !(lower.getBlockData() instanceof Door)
+			|| !(upper.getBlockData() instanceof Door))
+		{
+			return true;
+		}
+
+		BlockData previousLower = lower.getBlockData().clone();
+		BlockData previousUpper = upper.getBlockData().clone();
+		try
+		{
+			Material material = DoorItemService.defaultMaterial(DoorKind.PUBLIC);
+			lower.setBlockData(retypeDoor(previousLower, material), false);
+			upper.setBlockData(retypeDoor(previousUpper, material), false);
+			plugin.getLogger().info("Converted legacy iron dimensional door "
+				+ endpoint.identity().itemId() + " to " + material + ".");
+			return true;
+		}
+		catch(RuntimeException exception)
+		{
+			try
+			{
+				lower.setBlockData(previousLower, false);
+				upper.setBlockData(previousUpper, false);
+			}
+			catch(RuntimeException restoreFailure)
+			{
+				exception.addSuppressed(restoreFailure);
+			}
+			plugin.getLogger().log(Level.SEVERE,
+				"Could not convert legacy iron dimensional door " + endpoint.identity().itemId(), exception);
+			return false;
+		}
+	}
+
+	private static Door retypeDoor(BlockData sourceData, Material material)
+	{
+		if(!(sourceData instanceof Door source) || !(material.createBlockData() instanceof Door target))
+		{
+			throw new IllegalArgumentException("Door material and block data are required");
+		}
+		target.setFacing(source.getFacing());
+		target.setHalf(source.getHalf());
+		target.setHinge(source.getHinge());
+		target.setOpen(source.isOpen());
+		target.setPowered(source.isPowered());
+		return target;
 	}
 
 	private void scheduleReconcile(PlacedDoorEndpoint endpoint, long delay)
@@ -1598,7 +1695,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		int maxX = floor(location.getX() + PLAYER_HALF_WIDTH - COLLISION_EPSILON);
 		int minZ = floor(location.getZ() - PLAYER_HALF_WIDTH + COLLISION_EPSILON);
 		int maxZ = floor(location.getZ() + PLAYER_HALF_WIDTH - COLLISION_EPSILON);
-		if(!Bukkit.isOwnedByCurrentRegion(world, minX >> 4, minZ >> 4, maxX >> 4, maxZ >> 4))
+		if(!WormholesPlatform.isOwnedByCurrentRegion(world, minX >> 4, minZ >> 4, maxX >> 4, maxZ >> 4))
 		{
 			return false;
 		}
@@ -1722,17 +1819,6 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 	{
 		return new DoorPosition(
 			block.getWorld().getUID(), WorldIdentity.serialize(block.getWorld()), block.getX(), lowerY, block.getZ());
-	}
-
-	private static Material expectedMaterial(DoorKind kind)
-	{
-		return switch(kind)
-		{
-			case PAIRED -> DoorItemService.PAIRED_DOOR_MATERIAL;
-			case PERSONAL -> DoorItemService.PERSONAL_DOOR_MATERIAL;
-			case IRON -> DoorItemService.IRON_DOOR_MATERIAL;
-			case RETURN -> PocketStructureService.RETURN_DOOR_MATERIAL;
-		};
 	}
 
 	private static DoorVec3 vector(Location location)

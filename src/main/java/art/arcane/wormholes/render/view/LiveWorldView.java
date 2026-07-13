@@ -1,5 +1,6 @@
 package art.arcane.wormholes.render.view;
 
+import art.arcane.wormholes.platform.WormholesPlatform;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
@@ -46,7 +47,7 @@ public final class LiveWorldView implements ProjectionWorldView {
         if (y < world.getMinHeight() || y > world.getMaxHeight() - 1) {
             return null;
         }
-        return world.getBiome(x, y, z).getKey().asString();
+        return WormholesPlatform.keyString(world.getBiome(x, y, z).getKey());
     }
 
     @Override

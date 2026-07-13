@@ -1,5 +1,6 @@
 package art.arcane.wormholes.network.replication.capture;
 
+import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.network.replication.BlockChange;
 import art.arcane.wormholes.network.replication.ChunkReplicationManager;
@@ -191,7 +192,7 @@ public final class ChunkSnapshotComparator {
         chunksProbed.incrementAndGet();
         ChunkSnapshot snapshot;
         try {
-            snapshot = chunk.getChunkSnapshot(true, false, false, false);
+            snapshot = WormholesPlatform.chunkSnapshot(chunk, true, false, false, false);
         } catch (Throwable ignored) {
             return;
         }

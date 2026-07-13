@@ -11,6 +11,7 @@ import art.arcane.wormholes.network.WireCompression;
 import art.arcane.wormholes.network.view.EntityRateScheduler;
 import art.arcane.wormholes.network.view.PreShipPredictor;
 import art.arcane.wormholes.network.view.ViewServer;
+import art.arcane.wormholes.platform.WormholesPlatform;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -306,7 +307,7 @@ public final class StatsSnapshotWriter {
         NetworkConfig config = Wormholes.settings == null ? new NetworkConfig() : Wormholes.settings.getNetwork();
         Instant now = Instant.now();
         Duration uptime = Duration.between(pluginStartedAt, now);
-        String pluginVersion = plugin.getPluginMeta() == null ? "?" : plugin.getPluginMeta().getVersion();
+        String pluginVersion = WormholesPlatform.pluginVersion(plugin);
         String localName = network == null ? "?" : network.getLocalName();
         TransportSettings transportSettings = new TransportSettings(
             config.transport.compressionEnabled,

@@ -17,7 +17,7 @@ class DoorIdentityTest {
         DoorItemIdentity endpointA = pair.endpoint(PairEndpoint.A);
         DoorItemIdentity endpointB = pair.endpoint(PairEndpoint.B);
 
-        assertEquals(DoorKind.PAIRED, endpointA.kind());
+        assertEquals(DoorKind.PAIR, endpointA.kind());
         assertEquals(pair.pairId(), endpointA.pairId());
         assertEquals(PairEndpoint.A, endpointA.pairEndpoint());
         assertEquals(PairEndpoint.B, endpointA.pairEndpoint().other());
@@ -53,15 +53,15 @@ class DoorIdentityTest {
     }
 
     @Test
-    void ironDestinationDependsOnImmutableItemIdentity() {
-        DoorItemIdentity ironDoor = DoorItemIdentity.iron(id(30));
+    void publicDestinationDependsOnImmutableItemIdentity() {
+        DoorItemIdentity publicDoor = DoorItemIdentity.publicDoor(id(30));
 
-        DoorDestination beforeMoving = DoorDestinationResolver.resolve(ironDoor, id(31));
-        DoorDestination afterMoving = DoorDestinationResolver.resolve(ironDoor, id(32));
-        DoorDestination separatelyCrafted = DoorDestinationResolver.resolve(DoorItemIdentity.iron(id(33)), id(31));
+        DoorDestination beforeMoving = DoorDestinationResolver.resolve(publicDoor, id(31));
+        DoorDestination afterMoving = DoorDestinationResolver.resolve(publicDoor, id(32));
+        DoorDestination separatelyCrafted = DoorDestinationResolver.resolve(DoorItemIdentity.publicDoor(id(33)), id(31));
 
-        assertEquals(new PocketDoorDestination(PocketBinding.iron(ironDoor.itemId())), beforeMoving);
-        assertEquals(beforeMoving, afterMoving, "traveler must not affect an iron door's pocket");
+        assertEquals(new PocketDoorDestination(PocketBinding.publicDoor(publicDoor.itemId())), beforeMoving);
+        assertEquals(beforeMoving, afterMoving, "traveler must not affect a public door's pocket");
         assertNotEquals(beforeMoving, separatelyCrafted);
     }
 
@@ -81,7 +81,7 @@ class DoorIdentityTest {
         assertThrows(NullPointerException.class,
             () -> DoorItemIdentity.paired(id(50), id(51), null));
         assertThrows(IllegalArgumentException.class,
-            () -> new DoorItemIdentity(id(50), DoorKind.IRON, id(51), null, null));
+            () -> new DoorItemIdentity(id(50), DoorKind.PUBLIC, id(51), null, null));
         assertThrows(NullPointerException.class,
             () -> new DoorItemIdentity(id(50), DoorKind.RETURN, null, null, null));
         assertThrows(IllegalArgumentException.class,

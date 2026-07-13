@@ -30,7 +30,7 @@ public final class DoorItemPdcCodecTest
 			pair.endpoint(PairEndpoint.A),
 			pair.endpoint(PairEndpoint.B),
 			DoorItemIdentity.newPersonal(),
-			DoorItemIdentity.newIron(),
+			DoorItemIdentity.newPublic(),
 			DoorItemIdentity.newReturn(UUID.randomUUID()));
 
 		for(DoorItemIdentity identity : identities)
@@ -40,6 +40,41 @@ public final class DoorItemPdcCodecTest
 
 			assertEquals(identity, codec.decodeIdentity(data).orElseThrow());
 		}
+	}
+
+	@Test
+	public void legacyDoorKindsDecodeAndReencodeWithCurrentNames()
+	{
+		DoorItemPdcCodec codec = new DoorItemPdcCodec(NAMESPACE);
+		UUID pairItemId = UUID.randomUUID();
+		UUID pairId = UUID.randomUUID();
+		PersistentDataContainer pairData = dataContainer();
+		pairData.set(key("door_schema"), PersistentDataType.INTEGER, 1);
+		pairData.set(key("door_item_id"), PersistentDataType.STRING, pairItemId.toString());
+		pairData.set(key("door_kind"), PersistentDataType.STRING, "PAIRED");
+		pairData.set(key("door_pair_id"), PersistentDataType.STRING, pairId.toString());
+		pairData.set(key("door_pair_endpoint"), PersistentDataType.STRING, "A");
+
+		DoorItemIdentity pair = codec.decodeIdentity(pairData).orElseThrow();
+		assertEquals(DoorKind.PAIR, pair.kind());
+		assertEquals(pairItemId, pair.itemId());
+		assertEquals(pairId, pair.pairId());
+		assertEquals(PairEndpoint.A, pair.pairEndpoint());
+		codec.encodeIdentity(pairData, pair);
+		assertEquals(2, pairData.get(key("door_schema"), PersistentDataType.INTEGER));
+		assertEquals("PAIR", pairData.get(key("door_kind"), PersistentDataType.STRING));
+
+		UUID publicItemId = UUID.randomUUID();
+		PersistentDataContainer publicData = dataContainer();
+		publicData.set(key("door_schema"), PersistentDataType.INTEGER, 1);
+		publicData.set(key("door_item_id"), PersistentDataType.STRING, publicItemId.toString());
+		publicData.set(key("door_kind"), PersistentDataType.STRING, "IRON");
+
+		DoorItemIdentity publicDoor = codec.decodeIdentity(publicData).orElseThrow();
+		assertEquals(DoorKind.PUBLIC, publicDoor.kind());
+		assertEquals(publicItemId, publicDoor.itemId());
+		codec.encodeIdentity(publicData, publicDoor);
+		assertEquals("PUBLIC", publicData.get(key("door_kind"), PersistentDataType.STRING));
 	}
 
 	@Test
@@ -64,7 +99,7 @@ public final class DoorItemPdcCodecTest
 	{
 		DoorItemPdcCodec codec = new DoorItemPdcCodec(NAMESPACE);
 		PersistentDataContainer data = dataContainer();
-		codec.encodeIdentity(data, DoorItemIdentity.newIron());
+		codec.encodeIdentity(data, DoorItemIdentity.newPublic());
 
 		data.set(key("door_schema"), PersistentDataType.INTEGER, 99);
 		assertTrue(codec.decodeIdentity(data).isEmpty());
@@ -83,7 +118,7 @@ public final class DoorItemPdcCodecTest
 		DoorItemPdcCodec codec = new DoorItemPdcCodec(NAMESPACE);
 		PersistentDataContainer data = dataContainer();
 		UUID kitId = UUID.randomUUID();
-		codec.encodeIdentity(data, DoorItemIdentity.newIron());
+		codec.encodeIdentity(data, DoorItemIdentity.newPublic());
 
 		codec.encodePairKit(data, kitId);
 		assertEquals(kitId, codec.decodePairKitId(data).orElseThrow());

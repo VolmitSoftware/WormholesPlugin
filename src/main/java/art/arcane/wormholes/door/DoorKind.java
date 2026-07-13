@@ -1,9 +1,9 @@
 package art.arcane.wormholes.door;
 
-/** The four immutable identities a dimensional door item can carry. */
+/** The immutable identities a dimensional door item can carry. */
 public enum DoorKind {
-    PAIRED,
+    PAIR,
     PERSONAL,
-    IRON,
+    PUBLIC,
     RETURN
 }

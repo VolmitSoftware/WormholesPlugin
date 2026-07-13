@@ -71,7 +71,7 @@ public class BlockManager implements Listener
 	{
 		Wormholes.v("Starting Block Manager");
 		wandTemplate = buildTemplate(Material.BLAZE_ROD, ChatColor.GOLD + "" + ChatColor.BOLD + "Portal Wand");
-		portalRuneTemplate = buildTemplate(Material.PRISMARINE, ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Portal Rune");
+		portalRuneTemplate = buildTemplate(Material.PRISMARINE, ChatColor.GOLD + "" + ChatColor.BOLD + "Portal Rune");
 		wormholeRuneTemplate = buildTemplate(Material.DARK_PRISMARINE, ChatColor.GOLD + "" + ChatColor.BOLD + "Wormhole Rune");
 		gatewayRuneTemplate = buildTemplate(Material.BLACK_STAINED_GLASS, ChatColor.RED + "" + ChatColor.BOLD + "Gateway Rune");
 		registerRecipes();

@@ -20,7 +20,7 @@ import java.util.Locale;
 
 @Director(name = "wormholes", aliases = {"wh", "wormhole"}, description = "Wormholes command root")
 public class CommandWormholes {
-    private static final List<String> DOOR_TYPE_COMPLETIONS = List.of("pair", "personal", "iron");
+    private static final List<String> DOOR_TYPE_COMPLETIONS = List.of("pair", "personal", "public");
 
     private final Wormholes plugin;
     private CommandAdmin admin = new CommandAdmin();
@@ -71,7 +71,7 @@ public class CommandWormholes {
 
     @Director(name = "door", sync = true, description = "Give a survival Dimensional Door item")
     public void door(@Param(name = "sender", contextual = true) CommandSender sender,
-                     @Param(name = "type", description = "pair | personal | iron", defaultValue = "pair", customHandler = DoorTypeHandler.class) String type) {
+                     @Param(name = "type", description = "pair | personal | public", defaultValue = "pair", customHandler = DoorTypeHandler.class) String type) {
         if (!sender.hasPermission("wormholes.admin.items")) {
             sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
             return;
@@ -88,13 +88,13 @@ public class CommandWormholes {
 
         String normalized = type == null ? "pair" : type.toLowerCase(Locale.ROOT);
         ItemStack item = switch (normalized) {
-            case "pair", "paired", "wormhole" -> manager.items().createPairKit();
+            case "pair" -> manager.items().createPairKit();
             case "personal" -> manager.items().createPersonalDoor();
-            case "iron" -> manager.items().createIronDoor();
+            case "public" -> manager.items().createPublicDoor();
             default -> null;
         };
         if (item == null) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Unknown door type. Use pair, personal, or iron.");
+            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Unknown door type. Use pair, personal, or public.");
             return;
         }
         player.getInventory().addItem(item).values().forEach(overflow ->

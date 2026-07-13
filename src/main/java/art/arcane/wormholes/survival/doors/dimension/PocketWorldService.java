@@ -1,5 +1,6 @@
 package art.arcane.wormholes.survival.doors.dimension;
 
+import art.arcane.wormholes.platform.WormholesPlatform;
 import org.bukkit.Bukkit;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
@@ -43,7 +44,7 @@ public final class PocketWorldService implements Listener, AutoCloseable {
             return;
         }
         plugin.getServer().getPluginManager().registerEvents(this, plugin);
-        accept(Bukkit.getWorld(WORLD_KEY));
+        accept(WormholesPlatform.getWorld(WORLD_KEY));
     }
 
     public Optional<World> world() {

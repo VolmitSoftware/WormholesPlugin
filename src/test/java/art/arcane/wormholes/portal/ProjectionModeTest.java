@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import net.md_5.bungee.api.ChatColor;
 import org.junit.jupiter.api.Test;
 
 public final class ProjectionModeTest
@@ -66,5 +67,14 @@ public final class ProjectionModeTest
 		assertTrue(ProjectionMode.ON.allowsTraversal());
 		assertTrue(ProjectionMode.ONE_WAY.allowsTraversal());
 		assertFalse(ProjectionMode.MIRROR.allowsTraversal());
+	}
+
+	@Test
+	public void primaryProjectionStatesUseBlackAndGoldTheme()
+	{
+		assertTrue(ProjectionMode.OFF.getDisplayName().startsWith(ChatColor.DARK_GRAY.toString()));
+		assertTrue(ProjectionMode.ON.getDisplayName().startsWith(ChatColor.GOLD.toString()));
+		assertFalse(ProjectionMode.OFF.getDisplayName().contains(ChatColor.DARK_PURPLE.toString()));
+		assertFalse(ProjectionMode.ON.getDisplayName().contains(ChatColor.LIGHT_PURPLE.toString()));
 	}
 }

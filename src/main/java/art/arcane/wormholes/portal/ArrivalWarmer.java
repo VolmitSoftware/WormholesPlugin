@@ -13,6 +13,7 @@ import org.bukkit.entity.Player;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.platform.WormholesPlatform;
 
 public final class ArrivalWarmer
 {
@@ -109,7 +110,7 @@ public final class ArrivalWarmer
 
 	public int viewRadius(Player viewer)
 	{
-		int distance = viewer == null ? 0 : viewer.getSendViewDistance();
+		int distance = WormholesPlatform.sendViewDistance(viewer);
 		if(distance <= 0)
 		{
 			distance = Bukkit.getViewDistance();
@@ -139,7 +140,7 @@ public final class ArrivalWarmer
 
 	private void applyTicket(ChunkKey key, WarmHold hold)
 	{
-		hold.world.getChunkAtAsync(hold.chunkX, hold.chunkZ).whenComplete((chunk, error) ->
+		WormholesPlatform.loadChunk(Wormholes.instance, hold.world, hold.chunkX, hold.chunkZ).whenComplete((chunk, error) ->
 		{
 			if(error != null || chunk == null)
 			{
