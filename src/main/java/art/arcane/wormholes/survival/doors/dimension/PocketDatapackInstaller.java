@@ -12,6 +12,7 @@ import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Objects;
+import java.util.Properties;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipException;
@@ -29,6 +30,27 @@ public final class PocketDatapackInstaller {
     private static final Set<String> PACK_FILE_SET = Set.copyOf(PACK_FILES);
 
     private PocketDatapackInstaller() {
+    }
+
+    public static StagedDatapack stageConfigured(Path serverRoot) throws IOException {
+        String[] arguments = ProcessHandle.current().info().arguments().orElse(new String[0]);
+        return stageConfigured(serverRoot, arguments);
+    }
+
+    static StagedDatapack stageConfigured(Path serverRoot, String[] arguments) throws IOException {
+        Path levelRoot = resolveLevelRoot(serverRoot, arguments);
+        Files.createDirectories(levelRoot);
+        InstallResult status = install(levelRoot);
+        return new StagedDatapack(status, levelRoot, packPath(levelRoot));
+    }
+
+    static Path resolveLevelRoot(Path serverRoot, String[] arguments) throws IOException {
+        Path normalizedServerRoot = Objects.requireNonNull(serverRoot, "serverRoot").toAbsolutePath().normalize();
+        String levelName = readConfiguredLevelName(normalizedServerRoot, Objects.requireNonNull(arguments, "arguments"));
+        Path configured = Path.of(levelName);
+        return configured.isAbsolute()
+            ? configured.normalize()
+            : normalizedServerRoot.resolve(configured).normalize();
     }
 
     public static InstallResult install(Path levelRoot) throws IOException {
@@ -123,6 +145,50 @@ public final class PocketDatapackInstaller {
             throw new IOException("Bundled Wormholes pocket datapack resource is missing: " + RESOURCE_ROOT + path);
         }
         return resource;
+    }
+
+    private static String readConfiguredLevelName(Path serverRoot, String[] arguments) throws IOException {
+        String levelName = "world";
+        Path propertiesFile = serverRoot.resolve("server.properties");
+        if (Files.isRegularFile(propertiesFile)) {
+            Properties properties = new Properties();
+            try (InputStream input = Files.newInputStream(propertiesFile)) {
+                properties.load(input);
+            }
+            levelName = properties.getProperty("level-name", levelName);
+        }
+        for (int index = 0; index < arguments.length; index++) {
+            String following = index + 1 < arguments.length ? arguments[index + 1] : null;
+            String parsed = parseLevelArgument(arguments[index], following);
+            if (parsed != null) {
+                levelName = parsed;
+            }
+        }
+        if (levelName.isBlank()) {
+            throw new IOException("Configured level name is empty");
+        }
+        return levelName;
+    }
+
+    private static String parseLevelArgument(String argument, String following) {
+        for (String key : List.of("-w", "--level-name", "--world")) {
+            if (argument.equals(key) && following != null && !following.isBlank()) {
+                return following;
+            }
+            String prefix = key + "=";
+            if (argument.startsWith(prefix) && argument.length() > prefix.length()) {
+                return argument.substring(prefix.length());
+            }
+        }
+        return null;
+    }
+
+    public record StagedDatapack(InstallResult status, Path levelRoot, Path packPath) {
+        public StagedDatapack {
+            Objects.requireNonNull(status, "status");
+            Objects.requireNonNull(levelRoot, "levelRoot");
+            Objects.requireNonNull(packPath, "packPath");
+        }
     }
 
     public enum InstallResult {

@@ -78,6 +78,61 @@ public final class PocketDatapackInstallerTest {
         assertTrue(Files.isRegularFile(invalidLevelRoot));
     }
 
+    @Test
+    void stagesIntoConfiguredLevelBeforeTheLevelDirectoryExists() throws IOException {
+        Files.writeString(
+            temporaryDirectory.resolve("server.properties"),
+            "level-name=levels/primary\n",
+            StandardCharsets.UTF_8
+        );
+
+        PocketDatapackInstaller.StagedDatapack staged = PocketDatapackInstaller.stageConfigured(temporaryDirectory, new String[0]);
+
+        Path expectedLevelRoot = temporaryDirectory.resolve("levels/primary").toAbsolutePath().normalize();
+        assertEquals(PocketDatapackInstaller.InstallResult.INSTALLED, staged.status());
+        assertEquals(expectedLevelRoot, staged.levelRoot());
+        assertEquals(expectedLevelRoot.resolve("datapacks/wormholes-pockets.zip"), staged.packPath());
+        assertPackMatchesResources(staged.packPath());
+    }
+
+    @Test
+    void commandLineWorldOverridesServerProperties() throws IOException {
+        Files.writeString(
+            temporaryDirectory.resolve("server.properties"),
+            "level-name=properties-world\n",
+            StandardCharsets.UTF_8
+        );
+
+        PocketDatapackInstaller.StagedDatapack staged = PocketDatapackInstaller.stageConfigured(
+            temporaryDirectory,
+            new String[]{"--world", "command-world"}
+        );
+
+        assertEquals(
+            temporaryDirectory.resolve("command-world").toAbsolutePath().normalize(),
+            staged.levelRoot()
+        );
+        assertPackMatchesResources(staged.packPath());
+        assertFalse(Files.exists(temporaryDirectory.resolve("properties-world")));
+    }
+
+    @Test
+    void rejectsEmptyConfiguredLevelNameBeforeWritingDatapack() throws IOException {
+        Files.writeString(
+            temporaryDirectory.resolve("server.properties"),
+            "level-name=\n",
+            StandardCharsets.UTF_8
+        );
+
+        IOException exception = assertThrows(
+            IOException.class,
+            () -> PocketDatapackInstaller.stageConfigured(temporaryDirectory, new String[0])
+        );
+
+        assertTrue(exception.getMessage().contains("level name is empty"));
+        assertFalse(Files.exists(temporaryDirectory.resolve("datapacks")));
+    }
+
     private static void assertPackMatchesResources(Path pack) throws IOException {
         try (ZipFile zip = new ZipFile(pack.toFile())) {
             Set<String> actualFiles = new HashSet<>();
