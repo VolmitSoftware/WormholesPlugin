@@ -20,6 +20,7 @@ import org.bukkit.entity.Player;
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.render.view.ProjectionWorldView;
+import art.arcane.wormholes.service.WormholesTelemetry;
 
 public final class ProjectorLighting {
     private static final int SECTION_NIBBLE_BYTES = 2048;
@@ -274,6 +275,7 @@ public final class ProjectorLighting {
             sectionCount, sectionCount, skyArrays, blockArrays);
         WrapperPlayServerUpdateLight pkt = new WrapperPlayServerUpdateLight(chunkX, chunkZ, data);
         PacketEvents.getAPI().getPlayerManager().sendPacket(observer, pkt);
+        WormholesTelemetry.countPacket();
         return true;
     }
 
@@ -452,6 +454,7 @@ public final class ProjectorLighting {
             sectionCount, sectionCount, skyArrays, blockArrays);
         WrapperPlayServerUpdateLight pkt = new WrapperPlayServerUpdateLight(chunkX, chunkZ, data);
         PacketEvents.getAPI().getPlayerManager().sendPacket(observer, pkt);
+        WormholesTelemetry.countPacket();
         return true;
     }
 

@@ -144,6 +144,14 @@ class StatusSidebandReliabilityTest {
         assertFalse(beta.hasPendingStatusResponse(ALPHA));
         assertEquals(0L, beta.statusOutboxQueuedCount(ALPHA));
         assertFalse(beta.nextStatusAttempt.containsKey(ALPHA));
+        assertTrue(rawConnection.send(new WireMessage.Ping(43L)));
+        NetworkManager.DebugSnapshot snapshot = beta.debugSnapshot();
+        assertEquals(rawConnection.getWriteQueueSize(), snapshot.rawWriteQueueFrames());
+        assertTrue(snapshot.rawWriteQueueFrames() > 0L);
+        assertEquals(0L, snapshot.sidebandQueuedBytes());
+        assertEquals(0L, snapshot.sidebandQueuedCount());
+        assertTrue(snapshot.sidebandDroppedBytes() > 0L);
+        assertTrue(snapshot.sidebandDroppedCount() > 0L);
         assertNull(beta.handleStatusBridgeRequest(request));
         MinecraftStatusBridge.StatusPacket staleResponse = alpha.createStatusBridgePacket(BETA, List.of());
         assertFalse(beta.handleStatusBridgeResponse(ALPHA, staleResponse, 1L));

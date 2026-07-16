@@ -27,7 +27,6 @@ public final class WormholesTelemetry {
 
     public static void countBlockChange() {
         BLOCK_CHANGES.incrementAndGet();
-        PACKETS.incrementAndGet();
     }
 
     public static void countPacket() {

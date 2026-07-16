@@ -873,6 +873,28 @@ class NetworkManagerTest {
     }
 
     @Test
+    void debugSnapshotAggregatesCurrentSidebandOutboxes() throws IOException {
+        NetworkConfig alphaConfig = config(freePort(), ALPHA_NAME);
+        alphaConfig.listenEnabled = false;
+        NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "debug-snapshot-alpha");
+        alpha.savePeer(sidebandRoute(BETA_NAME, freePort(), BETA_GAME_PORT));
+        alpha.savePeer(sidebandRoute(ZULU_NAME, freePort(), BETA_GAME_PORT + 1));
+
+        assertTrue(alpha.send(BETA_NAME, new WireMessage.PortalDirectory(List.of())));
+        assertTrue(alpha.send(ZULU_NAME, new WireMessage.PortalDirectory(List.of())));
+
+        NetworkManager.DebugSnapshot snapshot = alpha.debugSnapshot();
+        assertEquals(0L, snapshot.rawWriteQueueFrames());
+        assertEquals(
+            alpha.statusOutboxQueuedBytes(BETA_NAME) + alpha.statusOutboxQueuedBytes(ZULU_NAME),
+            snapshot.sidebandQueuedBytes()
+        );
+        assertEquals(2L, snapshot.sidebandQueuedCount());
+        assertEquals(0L, snapshot.sidebandDroppedBytes());
+        assertEquals(0L, snapshot.sidebandDroppedCount());
+    }
+
+    @Test
     void statusSidebandNudgeRespectsSingleFlight() throws IOException {
         NetworkConfig alphaConfig = config(freePort(), ALPHA_NAME);
         alphaConfig.listenEnabled = false;

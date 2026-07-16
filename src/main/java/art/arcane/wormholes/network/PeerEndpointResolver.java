@@ -40,7 +40,7 @@ final class PeerEndpointResolver {
         return peer.publicPort > 0 ? peer.publicPort : 25565;
     }
 
-    private static boolean isLocalClient(InetSocketAddress clientAddress) {
+    static boolean isLocalClient(InetSocketAddress clientAddress) {
         InetAddress address = clientAddress == null ? null : clientAddress.getAddress();
         return isLocalAddress(address);
     }

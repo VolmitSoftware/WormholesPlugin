@@ -45,6 +45,10 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
                                boolean handshakeComplete, boolean disconnected) {
     }
 
+    public record DebugSnapshot(long rawWriteQueueFrames, long sidebandQueuedBytes, long sidebandQueuedCount,
+                                long sidebandDroppedBytes, long sidebandDroppedCount) {
+    }
+
     private static final long DIAL_SCAN_INTERVAL_MS = 2_000L;
     private static final long KEEPALIVE_INTERVAL_MS = 5_000L;
     private static final long BACKOFF_BASE_MS = 1_000L;
@@ -108,6 +112,8 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     final Map<String, Long> nextStatusAttempt = new ConcurrentHashMap<>();
     private final Map<String, Integer> statusRequestBudgets = new ConcurrentHashMap<>();
     private final AtomicLong statusFragmentIds = new AtomicLong();
+    private final AtomicLong retiredSidebandDroppedBytes = new AtomicLong();
+    private final AtomicLong retiredSidebandDroppedCount = new AtomicLong();
     private final Set<String> statusOversizeWarnings = ConcurrentHashMap.newKeySet();
     private final Set<String> statusPollFailing = ConcurrentHashMap.newKeySet();
     final Set<String> statusPollInFlight = ConcurrentHashMap.newKeySet();
@@ -468,6 +474,7 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         nextStatusAttempt.clear();
         for (SidebandOutbox outbox : statusOutbox.values()) {
             outbox.discardAll();
+            retireSidebandDrops(outbox);
         }
         statusOutbox.clear();
         pendingStatusRequests.clear();
@@ -681,6 +688,33 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
 
     public DictionarySampleCollector dictionarySampleCollector() {
         return sampleCollector;
+    }
+
+    public DebugSnapshot debugSnapshot() {
+        Set<PeerConnection> rawConnections = new HashSet<>(pending);
+        rawConnections.addAll(readyPeers.values());
+        long rawWriteQueueFrames = 0L;
+        for (PeerConnection connection : rawConnections) {
+            rawWriteQueueFrames += connection.getWriteQueueSize();
+        }
+
+        long sidebandQueuedBytes = 0L;
+        long sidebandQueuedCount = 0L;
+        long sidebandDroppedBytes = retiredSidebandDroppedBytes.get();
+        long sidebandDroppedCount = retiredSidebandDroppedCount.get();
+        for (SidebandOutbox outbox : statusOutbox.values()) {
+            sidebandQueuedBytes += outbox.queuedBytes();
+            sidebandQueuedCount += outbox.queuedCount();
+            sidebandDroppedBytes += outbox.droppedBytes();
+            sidebandDroppedCount += outbox.droppedCount();
+        }
+        return new DebugSnapshot(
+            rawWriteQueueFrames,
+            sidebandQueuedBytes,
+            sidebandQueuedCount,
+            sidebandDroppedBytes,
+            sidebandDroppedCount
+        );
     }
 
     private static String compressionModeFor(PeerConnection connection) {
@@ -2013,6 +2047,7 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         SidebandOutbox outbox = statusOutbox.remove(peerName);
         if (outbox != null) {
             outbox.discardAll();
+            retireSidebandDrops(outbox);
         }
         statusResponseAckNonces.remove(peerName);
         statusRequestNonces.remove(peerName);
@@ -2024,6 +2059,11 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         statusPollFailing.remove(peerName);
         String fragmentPrefix = peerName + ":";
         statusFragments.keySet().removeIf(key -> key.startsWith(fragmentPrefix));
+    }
+
+    private void retireSidebandDrops(SidebandOutbox outbox) {
+        retiredSidebandDroppedBytes.addAndGet(outbox.droppedBytes());
+        retiredSidebandDroppedCount.addAndGet(outbox.droppedCount());
     }
 
     private void expireStatusBridgePeers(long now) {

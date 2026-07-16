@@ -23,6 +23,7 @@ import art.arcane.wormholes.network.view.ViewSubscriptionManager;
 import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.portal.ArrivalWarmer;
 import art.arcane.wormholes.portal.vanilla.VanillaPortalReplacer;
+import art.arcane.wormholes.service.DebugTelemetryService;
 import art.arcane.wormholes.service.MetricsRuntime;
 import art.arcane.wormholes.service.PacketEventsRuntime;
 import art.arcane.wormholes.service.StatsSnapshotWriter;
@@ -102,6 +103,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     private WormholesCommandService commandService;
     private WormholesIntegrationService integrationService;
     private HotloadManager hotloadManager;
+    private DebugTelemetryService debugTelemetryService;
     private StatsSnapshotWriter statsSnapshotWriter;
     private CaptureRuntime captureRuntime;
     private Instant pluginStartedAt;
@@ -211,6 +213,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
 
             this.metricsRuntime = MetricsRuntime.start(this, BSTATS_PLUGIN_ID);
             this.pluginStartedAt = Instant.now();
+            startDebugTelemetryService();
             startStatsSnapshotWriter();
             startCaptureRuntime();
         } catch (Exception ex) {
@@ -564,6 +567,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         WormholesSettings defaults = WormholesSettings.loadAll(dataFolder);
         settings = defaults;
         Settings.refresh(defaults);
+        synchronizeDebugTelemetrySetting();
         if (defaults.getMain().dimensionalDoorsEnabled) {
             startDimensionalDoorsOrThrow();
         } else {
@@ -602,6 +606,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         }
         settings = reloaded;
         Settings.refresh(reloaded);
+        synchronizeDebugTelemetrySetting();
         FoliaScheduler.runGlobal(this, () -> applyReloadedManagers(reloaded));
     }
 
@@ -795,6 +800,14 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         return networkManager;
     }
 
+    public TraversalService getTraversalService() {
+        return traversalService;
+    }
+
+    public ViewServer getViewServer() {
+        return viewServer;
+    }
+
     public void registerListener(Listener listener) {
         getServer().getPluginManager().registerEvents(listener, this);
     }
@@ -882,6 +895,12 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     private void drain() {
         if (!alreadyDrained.compareAndSet(false, true)) {
             return;
+        }
+
+        try {
+            stopDebugTelemetryService();
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "Error during DebugTelemetryService stop", ex);
         }
 
         try {
@@ -990,6 +1009,41 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
 
     public StatsSnapshotWriter getStatsSnapshotWriter() {
         return statsSnapshotWriter;
+    }
+
+    public void toggleDebugTelemetry(String actor) {
+        DebugTelemetryService service = debugTelemetryService;
+        if (service != null) {
+            service.toggle(actor);
+            return;
+        }
+        boolean enabled = !Settings.DEBUG;
+        Settings.DEBUG = enabled;
+        getLogger().info("[debug] verbose logging " + (enabled ? "ENABLED" : "DISABLED") + " by " + actor + "; telemetry reporter unavailable");
+    }
+
+    private void startDebugTelemetryService() {
+        if (debugTelemetryService != null) {
+            return;
+        }
+        DebugTelemetryService service = new DebugTelemetryService(this);
+        service.start();
+        debugTelemetryService = service;
+    }
+
+    private void stopDebugTelemetryService() {
+        DebugTelemetryService service = debugTelemetryService;
+        debugTelemetryService = null;
+        if (service != null) {
+            service.stop();
+        }
+    }
+
+    private void synchronizeDebugTelemetrySetting() {
+        DebugTelemetryService service = debugTelemetryService;
+        if (service != null) {
+            service.onSettingsReloaded();
+        }
     }
 
     private void startCaptureRuntime() {

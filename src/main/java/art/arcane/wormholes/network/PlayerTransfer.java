@@ -52,13 +52,22 @@ public final class PlayerTransfer {
     }
 
     private static boolean sendViaTransferPacket(Player player, NetworkConfig.PeerEntry peer) {
-        String host = directHost(player.getAddress(), peer);
+        InetSocketAddress clientAddress = player.getAddress();
+        String host = directHost(clientAddress, peer);
         int port = PeerEndpointResolver.gamePort(peer);
         if (host == null || host.isBlank()) {
             Wormholes.w("net: peer " + peer.name + " has no reachable host; cannot transfer " + player.getName());
             return false;
         }
-        Wormholes.v("[xfer] transfer-packet " + player.getName() + " -> " + host + ":" + port + " (peer=" + peer.name + " publicHost=" + peer.publicHost + " publicPort=" + peer.publicPort + ")");
+        Wormholes.v("[xfer] transfer-packet " + player.getName()
+            + " client=" + formatAddress(clientAddress)
+            + " localClient=" + PeerEndpointResolver.isLocalClient(clientAddress)
+            + " selected=" + host + ":" + port
+            + " peer=" + peer.name
+            + " peerHost=" + peer.host
+            + " fallbackHosts=" + peer.fallbackHosts
+            + " publicHost=" + peer.publicHost
+            + " publicPort=" + peer.publicPort);
         try {
             player.transfer(host, port);
             return true;
@@ -88,5 +97,12 @@ public final class PlayerTransfer {
             return;
         }
         Wormholes.instance.getLogger().log(Level.WARNING, message, error);
+    }
+
+    private static String formatAddress(InetSocketAddress address) {
+        if (address == null) {
+            return "-";
+        }
+        return address.getHostString() + ":" + address.getPort();
     }
 }

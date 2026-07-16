@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -23,11 +24,14 @@ class RawOutboxTest {
         assertTrue(outbox.offer(firstControl));
         assertTrue(outbox.offer(secondData));
         assertTrue(outbox.offer(secondControl));
+        assertEquals(4, outbox.size());
 
         assertSame(firstControl, outbox.poll(1L, TimeUnit.SECONDS));
+        assertEquals(3, outbox.size());
         assertSame(secondControl, outbox.poll(1L, TimeUnit.SECONDS));
         assertSame(firstData, outbox.poll(1L, TimeUnit.SECONDS));
         assertSame(secondData, outbox.poll(1L, TimeUnit.SECONDS));
+        assertEquals(0, outbox.size());
     }
 
     @Test

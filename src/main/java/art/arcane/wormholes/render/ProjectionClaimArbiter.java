@@ -377,6 +377,7 @@ public final class ProjectionClaimArbiter {
                 long key = change.getLongKey();
                 observer.sendBlockChange(new Location(localWorld, unpackX(key), unpackY(key), unpackZ(key)), change.getValue());
                 WormholesTelemetry.countBlockChange();
+                WormholesTelemetry.countPacket();
             }
             return;
         }
@@ -392,6 +393,7 @@ public final class ProjectionClaimArbiter {
             Vector3i sectionPos = new Vector3i(unpackSectionX(sectionKey), unpackSectionY(sectionKey), unpackSectionZ(sectionKey));
             WrapperPlayServerMultiBlockChange wrapper = new WrapperPlayServerMultiBlockChange(sectionPos, null, blocks);
             PacketEvents.getAPI().getPlayerManager().sendPacket(observer, wrapper);
+            WormholesTelemetry.countPacket();
             for (int i = 0; i < blocks.length; i++) {
                 WormholesTelemetry.countBlockChange();
             }
@@ -400,6 +402,7 @@ public final class ProjectionClaimArbiter {
             long key = change.getLongKey();
             observer.sendBlockChange(new Location(localWorld, unpackX(key), unpackY(key), unpackZ(key)), change.getValue());
             WormholesTelemetry.countBlockChange();
+            WormholesTelemetry.countPacket();
         }
     }
 

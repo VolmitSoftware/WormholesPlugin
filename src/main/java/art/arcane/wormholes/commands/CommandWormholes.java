@@ -112,20 +112,13 @@ public class CommandWormholes {
         sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Wormholes configuration reloaded.");
     }
 
-    @Director(name = "debug", sync = true, description = "Toggle verbose debug logging at runtime (like /iris debug)")
+    @Director(name = "debug", sync = true, description = "Toggle verbose console logs and one-second telemetry")
     public void debug(@Param(name = "sender", contextual = true) CommandSender sender) {
         if (!sender.hasPermission("wormholes.admin")) {
             sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
             return;
         }
-        boolean enabled = !Settings.DEBUG;
-        Settings.DEBUG = enabled;
-        if (enabled) {
-            sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Debug logging ENABLED" + ChatColor.GRAY + " — do a portal jump now and share the console output.");
-        } else {
-            sender.sendMessage(Wormholes.tag + ChatColor.YELLOW + "Debug logging DISABLED.");
-        }
-        Wormholes.instance.getLogger().info("[debug] verbose debug logging " + (enabled ? "ENABLED" : "DISABLED") + " by " + sender.getName());
+        plugin.toggleDebugTelemetry(sender.getName());
     }
 
     @Director(name = "stats", sync = true, description = "Print the live stats-snapshot file path, optionally force a refresh with now=true")

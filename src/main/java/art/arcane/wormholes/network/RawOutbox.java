@@ -69,7 +69,7 @@ final class RawOutbox {
         };
     }
 
-    private int size() {
+    synchronized int size() {
         return control.size() + data.size();
     }
 }

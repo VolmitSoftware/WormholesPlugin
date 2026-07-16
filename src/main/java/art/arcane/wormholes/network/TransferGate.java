@@ -27,7 +27,17 @@ public final class TransferGate extends PacketListenerAbstract {
         if (handshake.getIntention() != WrapperHandshakingClientHandshake.ConnectionIntention.TRANSFER) {
             return;
         }
+        Wormholes.v("[transfer-gate] TRANSFER handshake client=" + event.getSocketAddress()
+            + " target=" + singleLine(handshake.getServerAddress()) + ":" + handshake.getServerPort()
+            + " protocol=" + handshake.getProtocolVersion() + " rewriting=LOGIN");
         handshake.setIntention(WrapperHandshakingClientHandshake.ConnectionIntention.LOGIN);
         event.markForReEncode(true);
+    }
+
+    private static String singleLine(String value) {
+        if (value == null || value.isBlank()) {
+            return "-";
+        }
+        return value.replace('\0', '|').replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim();
     }
 }

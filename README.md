@@ -102,6 +102,13 @@ destination server's `server.properties` followed by a restart. Wormholes keeps
 its `network.autoAcceptTransfers` compatibility gate enabled by default for
 hosts where that property cannot be changed.
 
+Run `/wormhole debug` on both servers before reproducing a failed handoff. The
+command is a silent toggle in game and writes one-second projection, network,
+queue, peer, and handoff telemetry to each server console. Direct transfers log
+the client's address, LAN classification, selected `host:port`, and every
+configured endpoint; the destination logs when its transfer gate receives and
+rewrites the incoming handshake. Run the same command again to stop the stream.
+
 ## Runtime
 
 Java 25 server launch commands should include

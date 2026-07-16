@@ -203,6 +203,10 @@ public final class PeerConnection {
         return rttMillis.get();
     }
 
+    int getWriteQueueSize() {
+        return writeQueue.size();
+    }
+
     public String describeRemote() {
         return channel.describeRemote();
     }
