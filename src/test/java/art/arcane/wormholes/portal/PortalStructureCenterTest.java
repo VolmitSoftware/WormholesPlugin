@@ -78,6 +78,24 @@ public final class PortalStructureCenterTest {
         assertEquals(1, rebuilt.size());
     }
 
+    @Test
+    public void geometryRevisionAdvancesOnlyWhenStructureCachesAreInvalidated() {
+        PortalStructure structure = new PortalStructure();
+        long initialRevision = structure.getRevision();
+
+        structure.setArea(cuboid(0, 64, 0, 3, 68, 1));
+        long firstAreaRevision = structure.getRevision();
+        structure.getCachedApertureFaces(Direction.N);
+        structure.getCenter();
+
+        assertEquals(initialRevision + 1L, firstAreaRevision);
+        assertEquals(firstAreaRevision, structure.getRevision());
+
+        structure.setArea(cuboid(10, 10, 10, 10, 12, 10));
+
+        assertEquals(firstAreaRevision + 1L, structure.getRevision());
+    }
+
     private static Cuboid cuboid(int x1, int y1, int z1, int x2, int y2, int z2) {
         Map<String, Object> map = new HashMap<String, Object>();
         map.put("worldKey", "minecraft:overworld");

@@ -22,6 +22,19 @@ import art.arcane.wormholes.portal.vanilla.PortalFactory;
 public final class DimensionalPortalPairStateTest
 {
 	@Test
+	public void mirrorAndProjectionStatePersistIndependently()
+	{
+		LocalPortal portal = portal();
+		portal.setMirrorMode(true);
+		portal.setProjectionMode(ProjectionMode.OFF);
+
+		JSONObject stored = portal.toJSON();
+
+		assertTrue(stored.getBoolean("mirrorMode"));
+		assertEquals(ProjectionMode.OFF.name(), stored.getString("projectionMode"));
+	}
+
+	@Test
 	public void counterpartIdentityPersistsOutsideTheTunnel()
 	{
 		LocalPortal portal = portal();
@@ -75,7 +88,7 @@ public final class DimensionalPortalPairStateTest
 		UUID counterpartId = UUID.randomUUID();
 		arrival.setDestination(unrelated);
 		arrival.setDimensionalCounterpartId(counterpartId);
-		arrival.setProjectionMode(ProjectionMode.MIRROR);
+		arrival.setMirrorMode(true);
 		arrival.setOutgoingTraversalsEnabled(true);
 		arrival.setIncomingTraversalsEnabled(false);
 
@@ -83,6 +96,7 @@ public final class DimensionalPortalPairStateTest
 
 		assertEquals(PortalType.PORTAL, arrival.getType());
 		assertEquals(ProjectionMode.OFF, arrival.getProjectionMode());
+		assertFalse(arrival.isMirrorMode());
 		assertFalse(arrival.isOutgoingTraversalsEnabled());
 		assertTrue(arrival.isIncomingTraversalsEnabled());
 		assertNull(arrival.getTunnel());
@@ -90,6 +104,7 @@ public final class DimensionalPortalPairStateTest
 		JSONObject stored = arrival.toJSON();
 		assertFalse(stored.has("tunnel"));
 		assertEquals(ProjectionMode.OFF.name(), stored.getString("projectionMode"));
+		assertFalse(stored.getBoolean("mirrorMode"));
 		assertFalse(stored.getBoolean("outgoingTraversalsEnabled"));
 		assertTrue(stored.getBoolean("incomingTraversalsEnabled"));
 	}
@@ -107,7 +122,7 @@ public final class DimensionalPortalPairStateTest
 		arrival.setDestination(unrelated);
 		arrival.linkRemote("other-server", UUID.randomUUID());
 		arrival.setType(PortalType.GATEWAY);
-		arrival.setProjectionMode(ProjectionMode.MIRROR);
+		arrival.setMirrorMode(true);
 		arrival.setOutgoingTraversalsEnabled(true);
 		arrival.setIncomingTraversalsEnabled(false);
 
@@ -115,6 +130,7 @@ public final class DimensionalPortalPairStateTest
 		assertEquals(counterpartId, arrival.getDimensionalCounterpartId());
 		assertEquals(PortalType.PORTAL, arrival.getType());
 		assertEquals(ProjectionMode.OFF, arrival.getProjectionMode());
+		assertFalse(arrival.isMirrorMode());
 		assertFalse(arrival.isOutgoingTraversalsEnabled());
 		assertTrue(arrival.isIncomingTraversalsEnabled());
 	}
@@ -153,11 +169,12 @@ public final class DimensionalPortalPairStateTest
 		assertTrue(arrival.isIncomingTraversalsEnabled());
 
 		source.setType(PortalType.GATEWAY);
-		source.setProjectionMode(ProjectionMode.MIRROR);
+		source.setMirrorMode(true);
 		source.setOutgoingTraversalsEnabled(false);
 		source.setIncomingTraversalsEnabled(true);
 		assertEquals(PortalType.PORTAL, source.getType());
 		assertEquals(ProjectionMode.ON, source.getProjectionMode());
+		assertFalse(source.isMirrorMode());
 		assertTrue(source.isOutgoingTraversalsEnabled());
 		assertFalse(source.isIncomingTraversalsEnabled());
 	}
@@ -178,12 +195,13 @@ public final class DimensionalPortalPairStateTest
 		portal.setDimensionalPortalKind(DimensionalPortalKind.NETHER);
 
 		portal.setType(PortalType.GATEWAY);
-		portal.setProjectionMode(ProjectionMode.MIRROR);
+		portal.setMirrorMode(true);
 		portal.setOutgoingTraversalsEnabled(false);
 		portal.setIncomingTraversalsEnabled(false);
 
 		assertEquals(PortalType.PORTAL, portal.getType());
 		assertEquals(ProjectionMode.ON, portal.getProjectionMode());
+		assertFalse(portal.isMirrorMode());
 		assertTrue(portal.isOutgoingTraversalsEnabled());
 		assertTrue(portal.isIncomingTraversalsEnabled());
 	}

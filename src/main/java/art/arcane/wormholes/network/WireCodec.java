@@ -12,7 +12,7 @@ public final class WireCodec {
         void sample(WireMessageType type, byte[] payload);
     }
 
-    public static final int PROTOCOL_VERSION = 13;
+    public static final int PROTOCOL_VERSION = 15;
     public static final int MAX_FRAME_BYTES = 4 * 1024 * 1024;
     private static final int MIN_FRAME_BODY_BYTES = 2;
     private static final int PAYLOAD_SCRATCH_RETAIN_LIMIT_BYTES = 1024 * 1024;

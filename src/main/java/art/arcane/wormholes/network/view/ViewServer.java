@@ -45,6 +45,8 @@ import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -57,6 +59,7 @@ public final class ViewServer implements Listener {
     private static final long DIRTY_DRAIN_INTERVAL_TICKS = 2L;
     private static final int MAX_BULK_SNAPSHOTS_PER_TICK = 8;
     private static final int MAX_CAPTURED_ENTITIES = 64;
+    private static final long ENTITY_CAPTURE_DEADLINE_MILLIS = 10_000L;
     private static final int SIDEBAND_MAX_ENTITIES = 24;
     private static final long SIDEBAND_ENTITY_INTERVAL_TICKS = 2L;
     private static final long SIDEBAND_FULL_RESYNC_TICKS = 80L;
@@ -64,6 +67,7 @@ public final class ViewServer implements Listener {
     private static final long BLOB_RECAPTURE_INTERVAL_TICKS = 40L;
     private static final long MAX_BULK_RETRY_DELAY_TICKS = 40L;
     private static final long BULK_COMPLETE_RETRY_DELAY_TICKS = 5L;
+    private static final long VIEW_TIME_RETRY_DELAY_TICKS = 5L;
 
     private final NetworkManager network;
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
@@ -103,11 +107,14 @@ public final class ViewServer implements Listener {
         private final Map<String, Set<UUID>> lastSentPresentIds = new ConcurrentHashMap<>();
         private final Map<String, Long> sidebandEntityNextTick = new ConcurrentHashMap<>();
         private final Map<String, Boolean> lastPeerSideband = new ConcurrentHashMap<>();
+        private final Map<String, TimeDeliveryState> timeDeliveryStates = new ConcurrentHashMap<>();
         private final Map<UUID, EntityVisual> lastCapturedSnapshots = new ConcurrentHashMap<>();
         private final Map<UUID, BlobCaptureState> blobCaptureStates = new ConcurrentHashMap<>();
         private final AtomicBoolean entityCaptureRunning = new AtomicBoolean(false);
+        private final AtomicLong entityCaptureGeneration = new AtomicLong();
         private final AtomicBoolean captureFailureLogged = new AtomicBoolean(false);
         private volatile TicketLease ticketLease;
+        private volatile EntityCaptureToken activeEntityCapture;
         private volatile int lastSkyDarken = -1;
 
         private Session(UUID portalId, World world, ViewBox box, int centerChunkX, int centerChunkZ,
@@ -133,6 +140,87 @@ public final class ViewServer implements Listener {
     }
 
     record BlobCaptureState(long lastCaptureTick, Pose pose, boolean onFire, int equipmentSignature) {
+    }
+
+    static final class TimeDeliveryState {
+        private final AtomicBoolean deliveryRunning = new AtomicBoolean(false);
+        private final AtomicBoolean initialAccepted = new AtomicBoolean(false);
+        private volatile int desiredSkyDarken;
+        private volatile int acceptedSkyDarken = -1;
+
+        TimeDeliveryState(int desiredSkyDarken) {
+            this.desiredSkyDarken = desiredSkyDarken;
+        }
+
+        void updateDesired(int skyDarken) {
+            desiredSkyDarken = skyDarken;
+        }
+
+        int desiredSkyDarken() {
+            return desiredSkyDarken;
+        }
+
+        boolean needsDelivery() {
+            return acceptedSkyDarken != desiredSkyDarken;
+        }
+
+        boolean hasAcceptedInitial() {
+            return initialAccepted.get();
+        }
+
+        void markAccepted(int skyDarken) {
+            acceptedSkyDarken = skyDarken;
+            initialAccepted.set(true);
+        }
+
+        boolean tryStartDelivery() {
+            return deliveryRunning.compareAndSet(false, true);
+        }
+
+        void finishDelivery() {
+            deliveryRunning.set(false);
+        }
+    }
+
+    static final class EntityCaptureToken {
+        private final long generation;
+        private final long deadlineNanos;
+        private final AtomicBoolean active = new AtomicBoolean(true);
+
+        EntityCaptureToken(long generation, long deadlineNanos) {
+            this.generation = generation;
+            this.deadlineNanos = deadlineNanos;
+        }
+
+        long generation() {
+            return generation;
+        }
+
+        boolean isActive() {
+            return active.get();
+        }
+
+        boolean isExpired() {
+            return deadlineNanos - System.nanoTime() < 0L;
+        }
+
+        boolean tryCompleteBeforeDeadline() {
+            return !isExpired() && active.compareAndSet(true, false);
+        }
+
+        boolean tryComplete() {
+            return active.compareAndSet(true, false);
+        }
+    }
+
+    private static final class EntityCaptureContext {
+        private final EntityCaptureToken token;
+        private final Set<UUID> profileUpdates = ConcurrentHashMap.newKeySet();
+        private final Map<UUID, BlobCaptureState> blobStateUpdates = new ConcurrentHashMap<>();
+
+        private EntityCaptureContext(EntityCaptureToken token) {
+            this.token = token;
+        }
     }
 
     private record ChunkTicketKey(UUID worldId, int chunkX, int chunkZ) {
@@ -223,6 +311,9 @@ public final class ViewServer implements Listener {
         session.peers.add(peerName);
         session.sentProfiles.clear();
         session.sendStates.remove(peerName);
+        int initialSkyDarken = art.arcane.wormholes.render.view.ProjectionWorldView.computeSkyDarken(session.world.getTime());
+        session.timeDeliveryStates.put(peerName, new TimeDeliveryState(initialSkyDarken));
+        queueTimeDelivery(session, peerName, initialSkyDarken);
         ChunkReplicationManager replication = network.getReplicationManager();
         for (long[] column : session.columns) {
             replication.subscribe(peerName, session.subscriptionId, session.world, ViewSlice.columnKey((int) column[0], (int) column[1]));
@@ -266,6 +357,7 @@ public final class ViewServer implements Listener {
         session.sendStates.remove(peerName);
         session.lastSentPresentIds.remove(peerName);
         session.lastPeerSideband.remove(peerName);
+        session.timeDeliveryStates.remove(peerName);
         if (session.peers.isEmpty()) {
             sessions.remove(portalId);
             releaseSessionTickets(session);
@@ -399,13 +491,19 @@ public final class ViewServer implements Listener {
                 releaseSessionTickets(session);
                 continue;
             }
+            retryPendingTimeDeliveries(session);
+            expireEntityCaptureIfNeeded(session);
             boolean entitiesDue = isIntervalDue(portal.getNetworkViewEntityIntervalTicks());
             if (entitiesDue && session.entityCaptureRunning.compareAndSet(false, true)) {
+                EntityCaptureToken token = new EntityCaptureToken(
+                    session.entityCaptureGeneration.incrementAndGet(),
+                    System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ENTITY_CAPTURE_DEADLINE_MILLIS));
+                session.activeEntityCapture = token;
                 boolean scheduled = FoliaScheduler.runRegion(Wormholes.instance, session.world, session.centerChunkX, session.centerChunkZ,
-                    () -> captureEntities(session));
+                    () -> captureEntities(session, token));
                 if (!scheduled) {
-                    publishEmptyEntityPresence(session, new IllegalStateException("Entity capture center region rejected scheduling"));
-                    session.entityCaptureRunning.set(false);
+                    completeEntityCaptureFailure(session, token,
+                        new IllegalStateException("Entity capture center region rejected scheduling"));
                 }
             }
         }
@@ -503,15 +601,17 @@ public final class ViewServer implements Listener {
         return fresh;
     }
 
-    private void captureEntities(Session session) {
+    private void captureEntities(Session session, EntityCaptureToken token) {
+        if (!isEntityCaptureActive(session, token)) {
+            return;
+        }
+        EntityCaptureContext context = new EntityCaptureContext(token);
         try {
             int skyDarken = art.arcane.wormholes.render.view.ProjectionWorldView.computeSkyDarken(session.world.getTime());
             if (skyDarken != session.lastSkyDarken) {
                 session.lastSkyDarken = skyDarken;
-                if (!session.peers.isEmpty()) {
-                    WireMessage.ViewTime time = new WireMessage.ViewTime(session.portalId, skyDarken);
-                    network.sendToPeers(session.peers, time);
-                    timeSendCount.addAndGet(session.peers.size());
+                for (String peerName : session.peers) {
+                    queueTimeDelivery(session, peerName, skyDarken);
                 }
             }
             long entityTick = tickCounter;
@@ -528,15 +628,16 @@ public final class ViewServer implements Listener {
                 }
                 Map<UUID, EntityVisual> captured = new HashMap<>();
                 for (Entity entity : admission.selectedEntities()) {
+                    if (!isEntityCaptureActive(session, token)) {
+                        return;
+                    }
                     if (entity.isDead() || !entity.isValid() || EffectManager.isPortalEffectEntity(entity)) {
                         continue;
                     }
-                    EntityVisual currentFull = captureEntityVisualFull(session, entity, entityTick);
+                    EntityVisual currentFull = captureEntityVisualFull(session, context, entity, entityTick);
                     captured.put(currentFull.id(), currentFull);
-                    session.lastCapturedSnapshots.put(currentFull.id(), currentFull);
                 }
-                publishEntityCapture(session, entityTick, scheduler, deltaEnabled, captured);
-                session.entityCaptureRunning.set(false);
+                completeEntityCaptureSuccess(session, context, entityTick, scheduler, deltaEnabled, captured);
                 return;
             }
             EntityAdmission<Entity> admission = new EntityAdmission<>(MAX_CAPTURED_ENTITIES);
@@ -573,27 +674,32 @@ public final class ViewServer implements Listener {
             }
             CompletableFuture.allOf(partitions.toArray(CompletableFuture[]::new)).whenComplete((ignored, error) -> {
                 if (error != null) {
-                    publishEmptyEntityPresence(session, error);
-                    session.entityCaptureRunning.set(false);
+                    completeEntityCaptureFailure(session, token, error);
                 } else {
-                    captureAdmittedEntities(session, admission.selectedEntities(), entityTick, scheduler, deltaEnabled);
+                    captureAdmittedEntities(session, context, admission.selectedEntities(), entityTick, scheduler, deltaEnabled);
                 }
             });
         } catch (Throwable e) {
-            publishEmptyEntityPresence(session, e);
-            session.entityCaptureRunning.set(false);
+            completeEntityCaptureFailure(session, token, e);
         }
     }
 
-    private void captureAdmittedEntities(Session session, List<Entity> entities, long entityTick,
+    private void captureAdmittedEntities(Session session, EntityCaptureContext context, List<Entity> entities, long entityTick,
                                           EntityRateScheduler scheduler, boolean deltaEnabled) {
+        if (!isEntityCaptureActive(session, context.token)) {
+            return;
+        }
         Map<UUID, EntityVisual> captured = new ConcurrentHashMap<>();
         List<CompletableFuture<Void>> captures = new ArrayList<>(entities.size());
         for (Entity entity : entities) {
             CompletableFuture<Void> capture = new CompletableFuture<>();
             captures.add(capture);
-            boolean scheduled = FoliaScheduler.runEntity(Wormholes.instance, entity, () -> {
+            boolean scheduled = WormholesPlatform.scheduleEntity(Wormholes.instance, entity, () -> {
                 try {
+                    if (!isEntityCaptureActive(session, context.token)) {
+                        capture.complete(null);
+                        return;
+                    }
                     Location location = entity.getLocation();
                     if (entity.isDead()
                         || !entity.isValid()
@@ -602,31 +708,147 @@ public final class ViewServer implements Listener {
                         capture.complete(null);
                         return;
                     }
-                    EntityVisual visual = captureEntityVisualFull(session, entity, entityTick);
-                    captured.put(visual.id(), visual);
+                    EntityVisual visual = captureEntityVisualFull(session, context, entity, entityTick);
+                    if (isEntityCaptureActive(session, context.token)) {
+                        captured.put(visual.id(), visual);
+                    }
                     capture.complete(null);
                 } catch (Throwable error) {
                     capture.completeExceptionally(error);
                 }
-            });
+            }, () -> capture.complete(null), 0L);
             if (!scheduled) {
                 capture.complete(null);
             }
         }
         CompletableFuture.allOf(captures.toArray(CompletableFuture[]::new)).whenComplete((ignored, error) -> {
-            try {
-                if (error != null) {
-                    publishEmptyEntityPresence(session, error);
-                    return;
-                }
-                for (EntityVisual visual : captured.values()) {
-                    session.lastCapturedSnapshots.put(visual.id(), visual);
-                }
-                publishEntityCapture(session, entityTick, scheduler, deltaEnabled, captured);
-            } finally {
-                session.entityCaptureRunning.set(false);
+            if (error != null) {
+                completeEntityCaptureFailure(session, context.token, error);
+                return;
             }
+            completeEntityCaptureSuccess(session, context, entityTick, scheduler, deltaEnabled, captured);
         });
+    }
+
+    private void queueTimeDelivery(Session session, String peerName, int skyDarken) {
+        TimeDeliveryState state = session.timeDeliveryStates.get(peerName);
+        if (state == null) {
+            return;
+        }
+        state.updateDesired(skyDarken);
+        startTimeDelivery(session, peerName, state);
+    }
+
+    private void retryPendingTimeDeliveries(Session session) {
+        for (Map.Entry<String, TimeDeliveryState> entry : session.timeDeliveryStates.entrySet()) {
+            TimeDeliveryState state = entry.getValue();
+            if (state.needsDelivery()) {
+                startTimeDelivery(session, entry.getKey(), state);
+            }
+        }
+    }
+
+    private void startTimeDelivery(Session session, String peerName, TimeDeliveryState state) {
+        if (state.tryStartDelivery()) {
+            attemptTimeDelivery(session, peerName, state);
+        }
+    }
+
+    private void attemptTimeDelivery(Session session, String peerName, TimeDeliveryState state) {
+        if (!isTimeDeliveryActive(session, peerName, state)) {
+            state.finishDelivery();
+            return;
+        }
+        int skyDarken = state.desiredSkyDarken();
+        if (!state.needsDelivery()) {
+            finishTimeDelivery(session, peerName, state);
+            return;
+        }
+        if (network.send(peerName, new WireMessage.ViewTime(session.portalId, skyDarken))) {
+            state.markAccepted(skyDarken);
+            timeSendCount.incrementAndGet();
+        }
+        if (!state.needsDelivery()) {
+            finishTimeDelivery(session, peerName, state);
+            return;
+        }
+        boolean scheduled = FoliaScheduler.runAsync(Wormholes.instance,
+            () -> attemptTimeDelivery(session, peerName, state), VIEW_TIME_RETRY_DELAY_TICKS);
+        if (!scheduled) {
+            state.finishDelivery();
+        }
+    }
+
+    private void finishTimeDelivery(Session session, String peerName, TimeDeliveryState state) {
+        state.finishDelivery();
+        if (isTimeDeliveryActive(session, peerName, state) && state.needsDelivery()) {
+            startTimeDelivery(session, peerName, state);
+        }
+    }
+
+    private boolean isTimeDeliveryActive(Session session, String peerName, TimeDeliveryState state) {
+        return isSessionPeerActive(session, peerName) && session.timeDeliveryStates.get(peerName) == state;
+    }
+
+    private void expireEntityCaptureIfNeeded(Session session) {
+        EntityCaptureToken token = session.activeEntityCapture;
+        if (token != null && token.isExpired()) {
+            completeEntityCaptureFailure(session, token, entityCaptureTimeout(token));
+        }
+    }
+
+    private boolean isEntityCaptureActive(Session session, EntityCaptureToken token) {
+        return active.get()
+            && sessions.get(session.portalId) == session
+            && session.activeEntityCapture == token
+            && session.entityCaptureGeneration.get() == token.generation()
+            && token.isActive();
+    }
+
+    private void completeEntityCaptureSuccess(Session session, EntityCaptureContext context, long entityTick,
+                                              EntityRateScheduler scheduler, boolean deltaEnabled,
+                                              Map<UUID, EntityVisual> captured) {
+        EntityCaptureToken token = context.token;
+        if (!isEntityCaptureActive(session, token)) {
+            return;
+        }
+        if (!token.tryCompleteBeforeDeadline()) {
+            completeEntityCaptureFailure(session, token, entityCaptureTimeout(token));
+            return;
+        }
+        try {
+            session.sentProfiles.addAll(context.profileUpdates);
+            session.blobCaptureStates.putAll(context.blobStateUpdates);
+            for (EntityVisual visual : captured.values()) {
+                session.lastCapturedSnapshots.put(visual.id(), visual);
+            }
+            publishEntityCapture(session, entityTick, scheduler, deltaEnabled, captured);
+        } finally {
+            finishEntityCapture(session, token);
+        }
+    }
+
+    private void completeEntityCaptureFailure(Session session, EntityCaptureToken token, Throwable error) {
+        if (!isEntityCaptureActive(session, token) || !token.tryComplete()) {
+            return;
+        }
+        try {
+            publishEmptyEntityPresence(session, error);
+        } finally {
+            finishEntityCapture(session, token);
+        }
+    }
+
+    private TimeoutException entityCaptureTimeout(EntityCaptureToken token) {
+        return new TimeoutException(
+            "Entity capture generation " + token.generation() + " exceeded " + ENTITY_CAPTURE_DEADLINE_MILLIS + "ms");
+    }
+
+    private void finishEntityCapture(Session session, EntityCaptureToken token) {
+        if (session.activeEntityCapture == token) {
+            session.activeEntityCapture = null;
+            session.entityCaptureRunning.set(false);
+        }
     }
 
     static BoundingBox captureBoundsForChunk(BoundingBox bounds, int chunkX, int chunkZ) {
@@ -660,13 +882,16 @@ public final class ViewServer implements Listener {
         session.captureFailureLogged.set(false);
         List<EntityVisual> visuals = new ArrayList<>(captured.values());
         Set<UUID> presentIds = new HashSet<>(captured.keySet());
+        List<UUID> presentIdList = new ArrayList<>(presentIds);
         session.sentProfiles.retainAll(presentIds);
         session.lastCapturedSnapshots.keySet().retainAll(presentIds);
         session.blobCaptureStates.keySet().retainAll(presentIds);
 
         Set<UUID> sidebandAllowed = null;
+        List<UUID> sidebandPresentIdList = null;
         for (String peerName : session.peers) {
             boolean sideband = network.isSidebandOnlyPeer(peerName);
+            List<UUID> peerPresentIdList;
             if (sideband) {
                 Long nextTick = session.sidebandEntityNextTick.get(peerName);
                 if (nextTick != null && entityTick < nextTick.longValue()) {
@@ -675,9 +900,12 @@ public final class ViewServer implements Listener {
                 session.sidebandEntityNextTick.put(peerName, entityTick + SIDEBAND_ENTITY_INTERVAL_TICKS);
                 if (sidebandAllowed == null) {
                     sidebandAllowed = nearestEntityIds(session, visuals, SIDEBAND_MAX_ENTITIES);
+                    sidebandPresentIdList = new ArrayList<>(sidebandAllowed);
                 }
+                peerPresentIdList = sidebandPresentIdList;
             } else {
                 session.sidebandEntityNextTick.remove(peerName);
+                peerPresentIdList = presentIdList;
             }
             Map<UUID, EntitySendState> peerStates = session.sendStatesFor(peerName);
             Set<UUID> peerPresentIds = presentIdsForPeer(sideband, presentIds, sidebandAllowed);
@@ -688,7 +916,8 @@ public final class ViewServer implements Listener {
                     transitioned.requestFull();
                 }
             }
-            List<EntityVisual> outbound = new ArrayList<>(visuals.size());
+            int outboundCapacity = sideband ? Math.min(visuals.size(), SIDEBAND_MAX_ENTITIES) : visuals.size();
+            List<EntityVisual> outbound = new ArrayList<>(outboundCapacity);
             for (EntityVisual currentFull : visuals) {
                 if (sideband && !sidebandAllowed.contains(currentFull.id())) {
                     continue;
@@ -701,9 +930,10 @@ public final class ViewServer implements Listener {
                     double dz = currentFull.z() - session.portalCenterZ;
                     state.setNextEligibleTick(entityTick + scheduler.claimSendInterval((dx * dx) + (dy * dy) + (dz * dz)));
                 }
+                EntityVisual lastSent = state.getLastSentSnapshot();
                 boolean forceFull = !deltaEnabled
                     || state.isForceFullNext()
-                    || state.getLastSentSnapshot() == null
+                    || lastSent == null
                     || (sideband && state.isSidebandFullDue(entityTick, SIDEBAND_FULL_RESYNC_TICKS, SIDEBAND_FULL_RESYNC_JITTER_TICKS));
                 if (!rateAllowsSend && !forceFull) {
                     continue;
@@ -713,12 +943,12 @@ public final class ViewServer implements Listener {
                     outbound.add(withSequenceAndMode(currentFull, sequence, EntityVisual.MODE_FULL));
                     state.recordSent(currentFull, true, entityTick);
                 } else {
-                    int mask = EntityDeltaCodec.computeMask(currentFull, state.getLastSentSnapshot());
+                    int mask = EntityDeltaCodec.computeMask(currentFull, lastSent);
                     if (mask == 0) {
                         continue;
                     }
                     int sequence = state.allocateSequence();
-                    outbound.add(EntityDeltaCodec.buildDelta(currentFull, state.getLastSentSnapshot(), sequence, mask));
+                    outbound.add(EntityDeltaCodec.buildDelta(currentFull, lastSent, sequence, mask));
                     state.recordSent(currentFull, false, entityTick);
                 }
             }
@@ -737,10 +967,10 @@ public final class ViewServer implements Listener {
             if (outbound.isEmpty() && !presentChanged) {
                 continue;
             }
-            WireMessage.ViewEntities message = new WireMessage.ViewEntities(session.portalId, outbound, new ArrayList<>(peerPresentIds));
+            WireMessage.ViewEntities message = new WireMessage.ViewEntities(session.portalId, outbound, peerPresentIdList);
             boolean sent = network.send(peerName, message);
             if (sent) {
-                session.lastSentPresentIds.put(peerName, new HashSet<>(peerPresentIds));
+                session.lastSentPresentIds.put(peerName, peerPresentIds);
                 entitySendCount.addAndGet(outbound.size());
             } else {
                 for (EntityVisual failedVisual : outbound) {
@@ -782,7 +1012,7 @@ public final class ViewServer implements Listener {
         return sidebandAllowed == null ? Set.of() : sidebandAllowed;
     }
 
-    private EntityVisual captureEntityVisualFull(Session session, Entity entity, long entityTick) {
+    private EntityVisual captureEntityVisualFull(Session session, EntityCaptureContext context, Entity entity, long entityTick) {
         Location location = entity.getLocation();
         Vector look = entity instanceof LivingEntity living ? living.getEyeLocation().getDirection() : location.getDirection();
         Vector velocity = entity.getVelocity();
@@ -791,7 +1021,8 @@ public final class ViewServer implements Listener {
         String textureSignature = "";
         if (entity instanceof Player player) {
             playerName = player.getName();
-            if (session.sentProfiles.add(player.getUniqueId())) {
+            UUID playerId = player.getUniqueId();
+            if (!session.sentProfiles.contains(playerId) && context.profileUpdates.add(playerId)) {
                 String[] textures = playerTextures(player);
                 textureValue = textures[0];
                 textureSignature = textures[1];
@@ -818,7 +1049,7 @@ public final class ViewServer implements Listener {
         if (shouldRecaptureBlobs(previousVisual, previousBlobState, entityTick, BLOB_RECAPTURE_INTERVAL_TICKS, pose, onFire, equipmentSignature)) {
             metadata = PacketBlobs.captureMetadata(entity);
             equipment = PacketBlobs.captureEquipment(entity);
-            session.blobCaptureStates.put(entity.getUniqueId(), new BlobCaptureState(entityTick, pose, onFire, equipmentSignature));
+            context.blobStateUpdates.put(entity.getUniqueId(), new BlobCaptureState(entityTick, pose, onFire, equipmentSignature));
         } else {
             metadata = previousVisual.metadata();
             equipment = previousVisual.equipment();
@@ -1099,10 +1330,6 @@ public final class ViewServer implements Listener {
                             return;
                         }
                         boolean accepted = replication.sendBulk(peerName, session.subscriptionId, chunkKey, payload, slice.contentHash(), bulkGeneration);
-                        if (accepted && session.lastSkyDarken >= 0 && isSessionChunkActive(session, peerName, chunkKey)) {
-                            network.send(peerName, new WireMessage.ViewTime(session.portalId, session.lastSkyDarken));
-                            timeSendCount.incrementAndGet();
-                        }
                         done.complete(accepted);
                     } catch (Throwable errorDuringBulk) {
                         done.complete(false);
@@ -1147,12 +1374,24 @@ public final class ViewServer implements Listener {
             bulkCompleteRetries.remove(key);
             return;
         }
+        TimeDeliveryState timeState = session.timeDeliveryStates.get(peerName);
+        if (timeState == null || !timeState.hasAcceptedInitial()) {
+            if (timeState != null) {
+                startTimeDelivery(session, peerName, timeState);
+            }
+            scheduleBulkCompleteRetry(session, peerName, key);
+            return;
+        }
         ChunkReplicationManager replication = network.getReplicationManager();
         if (replication.sendWhenAllBulked(peerName, session.subscriptionId, session.chunkKeys,
             () -> network.send(peerName, new WireMessage.ViewBulkComplete(session.portalId)))) {
             bulkCompleteRetries.remove(key);
             return;
         }
+        scheduleBulkCompleteRetry(session, peerName, key);
+    }
+
+    private void scheduleBulkCompleteRetry(Session session, String peerName, BulkCompleteKey key) {
         boolean scheduled = FoliaScheduler.runAsync(Wormholes.instance,
             () -> attemptBulkComplete(session, peerName, key), BULK_COMPLETE_RETRY_DELAY_TICKS);
         if (!scheduled) {

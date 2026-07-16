@@ -41,6 +41,7 @@ public final class WormholesPlatform {
     private static final Method BUKKIT_GET_WORLD = resolveMethod(Bukkit.class, "getWorld", NamespacedKey.class);
     private static final Method BUKKIT_ADD_RECIPE = resolveMethod(Bukkit.class, "addRecipe", Recipe.class, boolean.class);
     private static final Method BUKKIT_REMOVE_RECIPE = resolveMethod(Bukkit.class, "removeRecipe", NamespacedKey.class, boolean.class);
+    private static final Method SERVER_IS_ACCEPTING_TRANSFERS = resolveMethod(Server.class, "isAcceptingTransfers");
     private static final Method BUKKIT_IS_OWNED_BY_CURRENT_REGION = resolveMethod(
         Bukkit.class,
         "isOwnedByCurrentRegion",
@@ -74,6 +75,7 @@ public final class WormholesPlatform {
         "canUseEquipmentSlot",
         EquipmentSlot.class
     );
+    private static final Method LIVING_IS_LEASHED = resolveMethod(LivingEntity.class, "isLeashed");
     private static final Method ENTITY_GET_SCHEDULER = resolveMethod(Entity.class, "getScheduler");
     private static final Method ENTITY_SCHEDULER_EXECUTE = ENTITY_GET_SCHEDULER == null
         ? null
@@ -120,6 +122,11 @@ public final class WormholesPlatform {
         return activePlugin.getName()
             .toLowerCase(Locale.ENGLISH)
             .replaceAll("[^a-z0-9._-]", "_");
+    }
+
+    public static boolean isAcceptingTransfers(Server server) {
+        Object result = invokeNoThrow(SERVER_IS_ACCEPTING_TRANSFERS, Objects.requireNonNull(server));
+        return result instanceof Boolean accepting && accepting.booleanValue();
     }
 
     public static World getWorld(NamespacedKey key) {
@@ -235,19 +242,7 @@ public final class WormholesPlatform {
                 return scheduled;
             }
         }
-        if (FoliaScheduler.isFoliaThreading(activePlugin.getServer())) {
-            return FoliaScheduler.runEntity(activePlugin, activeEntity, activeTask, safeDelay);
-        }
-        try {
-            if (safeDelay == 0L && Bukkit.isPrimaryThread()) {
-                activeTask.run();
-            } else {
-                Bukkit.getScheduler().runTaskLater(activePlugin, activeTask, safeDelay);
-            }
-            return true;
-        } catch (RuntimeException exception) {
-            return false;
-        }
+        return FoliaScheduler.runEntity(activePlugin, activeEntity, activeTask, safeDelay, retiredTask);
     }
 
     public static int sendViewDistance(Player player) {
@@ -259,6 +254,14 @@ public final class WormholesPlatform {
             return number.intValue();
         }
         return player.getClientViewDistance();
+    }
+
+    public static boolean isLeashed(LivingEntity entity) {
+        LivingEntity living = Objects.requireNonNull(entity, "entity");
+        Method method = LIVING_IS_LEASHED == null
+            ? resolveMethod(living.getClass(), "isLeashed")
+            : LIVING_IS_LEASHED;
+        return Boolean.TRUE.equals(invokeNoThrow(method, living));
     }
 
     public static boolean hasChangedPosition(PlayerMoveEvent event) {

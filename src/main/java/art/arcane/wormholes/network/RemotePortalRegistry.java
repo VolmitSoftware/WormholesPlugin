@@ -60,6 +60,7 @@ public final class RemotePortalRegistry {
             return refreshed;
         }
         refreshed.setMirroredProjectionMode(existing.getMirroredProjectionMode());
+        refreshed.setMirroredMirrorMode(existing.isMirroredMirrorMode());
         refreshed.setMirroredProjectionRotation(existing.getMirroredProjectionRotation());
         refreshed.setMirroredPermissionMode(existing.getMirroredPermissionMode());
         refreshed.setMirroredOutgoingTraversalsEnabled(existing.isMirroredOutgoingTraversalsEnabled());

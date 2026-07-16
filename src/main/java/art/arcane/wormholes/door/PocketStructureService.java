@@ -14,7 +14,7 @@ import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.type.Door;
 
-/** Region-thread world mutations for the small protected pocket core. */
+/** Region-thread world mutations for the protected pocket room. */
 public final class PocketStructureService {
     public static final Material PLATFORM_MATERIAL = Material.SMOOTH_STONE;
     /** Manually operable: a pocket must never require redstone to escape. */
@@ -40,16 +40,26 @@ public final class PocketStructureService {
         return layout(space).isProtected(x, y, z);
     }
 
-    /** Checks the durable floor invariant before a player is allowed to arrive. */
+    /** Checks the durable shell invariant before a player is allowed to arrive. */
     public boolean isInitialized(World world, PocketSpace space) {
         Objects.requireNonNull(world, "world");
         PocketLayout layout = layout(space);
         requireWorldHeight(world, layout);
         requireRegionOwnership(world, layout);
+        PocketBlockPosition lower = layout.returnDoorLower();
+        PocketBlockPosition upper = layout.returnDoorUpper();
         for (int x = layout.minX(); x <= layout.maxX(); x++) {
-            for (int z = layout.minZ(); z <= layout.maxZ(); z++) {
-                if (world.getBlockAt(x, layout.platformY(), z).getType() != PLATFORM_MATERIAL) {
-                    return false;
+            for (int y = layout.minY(); y <= layout.maxY(); y++) {
+                for (int z = layout.minZ(); z <= layout.maxZ(); z++) {
+                    if (!layout.isShellBlock(x, y, z)) {
+                        continue;
+                    }
+                    Material expected = isAt(lower, x, y, z) || isAt(upper, x, y, z)
+                        ? RETURN_DOOR_MATERIAL
+                        : PLATFORM_MATERIAL;
+                    if (world.getBlockAt(x, y, z).getType() != expected) {
+                        return false;
+                    }
                 }
             }
         }
@@ -69,39 +79,49 @@ public final class PocketStructureService {
     /**
      * Provisions a pocket on the owning region thread.
      *
-     * <p>When {@code initializePlatform} is true, the 9x9 floor is created and
-     * its three-block-high interior is cleared. Later calls leave player space
-     * untouched, but always repair the exit door and its support.</p>
+     * <p>When {@code initializeRoom} is true, the 32-block shell is created.
+     * Later calls leave player space untouched, but always repair the exit door
+     * and its support.</p>
      *
      * @return the stable placed endpoint; callers decide when to persist/register it
      */
-    public PlacedDoorEndpoint provision(World world, PocketSpace space, boolean initializePlatform) {
+    public PlacedDoorEndpoint provision(World world, PocketSpace space, boolean initializeRoom) {
         Objects.requireNonNull(world, "world");
         PocketLayout layout = layout(space);
         requireWorldHeight(world, layout);
         requireRegionOwnership(world, layout);
 
-        if (initializePlatform) {
-            initializePlatform(world, layout);
-            clearInitialInterior(world, layout);
+        if (initializeRoom) {
+            initializeShell(world, layout);
         }
         repairReturnDoor(world, layout);
         return returnEndpoint(world, space);
     }
 
-    private static void initializePlatform(World world, PocketLayout layout) {
-        for (int x = layout.minX(); x <= layout.maxX(); x++) {
-            for (int z = layout.minZ(); z <= layout.maxZ(); z++) {
-                setType(world.getBlockAt(x, layout.platformY(), z), PLATFORM_MATERIAL);
-            }
+    public void retireReturnDoor(World world, PlacedDoorEndpoint endpoint) {
+        Objects.requireNonNull(world, "world");
+        Objects.requireNonNull(endpoint, "endpoint");
+        if (endpoint.identity().kind() != DoorKind.RETURN
+            || !endpoint.position().worldId().equals(world.getUID())) {
+            throw new IllegalArgumentException("return endpoint must belong to the pocket world");
         }
+        DoorPosition position = endpoint.position();
+        int chunkX = position.x() >> 4;
+        int chunkZ = position.z() >> 4;
+        if (!WormholesPlatform.isOwnedByCurrentRegion(world, chunkX, chunkZ, chunkX, chunkZ)) {
+            throw new IllegalStateException("return-door retirement must run on the owning region thread");
+        }
+        clearDoorBlock(world.getBlockAt(position.x(), position.y() + 1, position.z()));
+        clearDoorBlock(world.getBlockAt(position.x(), position.y(), position.z()));
     }
 
-    private static void clearInitialInterior(World world, PocketLayout layout) {
+    private static void initializeShell(World world, PocketLayout layout) {
         for (int x = layout.minX(); x <= layout.maxX(); x++) {
-            for (int y = layout.clearMinY(); y <= layout.clearMaxY(); y++) {
+            for (int y = layout.minY(); y <= layout.maxY(); y++) {
                 for (int z = layout.minZ(); z <= layout.maxZ(); z++) {
-                    setType(world.getBlockAt(x, y, z), Material.AIR);
+                    if (layout.isShellBlock(x, y, z)) {
+                        setType(world.getBlockAt(x, y, z), PLATFORM_MATERIAL);
+                    }
                 }
             }
         }
@@ -135,9 +155,19 @@ public final class PocketStructureService {
         }
     }
 
+    private static void clearDoorBlock(Block block) {
+        if (block.getBlockData() instanceof Door) {
+            block.setType(Material.AIR, false);
+        }
+    }
+
+    private static boolean isAt(PocketBlockPosition position, int x, int y, int z) {
+        return position.x() == x && position.y() == y && position.z() == z;
+    }
+
     private static void requireWorldHeight(World world, PocketLayout layout) {
-        if (layout.platformY() < world.getMinHeight() || layout.clearMaxY() >= world.getMaxHeight()) {
-            throw new IllegalArgumentException("pocket core does not fit world height range");
+        if (layout.minY() < world.getMinHeight() || layout.maxY() >= world.getMaxHeight()) {
+            throw new IllegalArgumentException("pocket room does not fit world height range");
         }
     }
 

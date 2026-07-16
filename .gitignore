@@ -16,3 +16,7 @@ dependency-reduced-pom.xml
 .codegraph/
 
 docs/
+
+.qa/
+
+logs/

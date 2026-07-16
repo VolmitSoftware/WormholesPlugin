@@ -178,6 +178,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             registerStatusBridgeListener(networkManager);
             getServer().getPluginManager().registerEvents(traversalService, this);
             getServer().getPluginManager().registerEvents(viewServer, this);
+            traversalService.sweepStrandedTransitEntities();
             getServer().getMessenger().registerOutgoingPluginChannel(this, PlayerTransfer.PROXY_CHANNEL);
             packetEvents().registerTransferGate();
             networkManager.start();
@@ -704,6 +705,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         registerStatusBridgeListener(networkManager);
         getServer().getPluginManager().registerEvents(traversalService, this);
         getServer().getPluginManager().registerEvents(viewServer, this);
+        traversalService.sweepStrandedTransitEntities();
         networkManager.start();
         startCaptureRuntime();
     }

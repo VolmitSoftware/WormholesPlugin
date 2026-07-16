@@ -191,6 +191,43 @@ class DoorStateServiceTest {
             DoorStateService.load(new DimensionalDoorRepository(service.repository().stateFile())).endpoints());
     }
 
+    @Test
+    void returnEndpointRelocationIsAtomicAndPersistsAcrossRestart() throws Exception {
+        DoorStateService service = DoorStateService.load(repository());
+        DoorItemIdentity identity = DoorItemIdentity.returnDoor(id(110), id(111));
+        PlacedDoorEndpoint previous = placed(id(112), "wormholes:pockets", 8, 128, 11, identity);
+        PlacedDoorEndpoint replacement = placed(id(112), "wormholes:pockets", 15, 128, 31, identity);
+        service.registerEndpoint(previous);
+
+        assertTrue(service.relocateEndpoint(previous, replacement));
+        assertTrue(service.findEndpoint(previous.position()).isEmpty());
+        assertEquals(replacement, service.findEndpoint(replacement.position()).orElseThrow());
+        assertEquals(replacement, service.findEndpointByItem(identity.itemId()).orElseThrow());
+
+        DoorStateService restarted = DoorStateService.load(
+            new DimensionalDoorRepository(service.repository().stateFile()));
+        assertEquals(List.of(replacement), restarted.endpoints());
+        assertFalse(restarted.relocateEndpoint(replacement, replacement));
+    }
+
+    @Test
+    void failedEndpointRelocationLeavesTheRegisteredEndpointUntouched() throws Exception {
+        DoorStateService service = DoorStateService.load(repository());
+        DoorItemIdentity identity = DoorItemIdentity.returnDoor(id(120), id(121));
+        PlacedDoorEndpoint previous = placed(id(122), "wormholes:pockets", 8, 128, 11, identity);
+        PlacedDoorEndpoint occupied = placed(
+            id(122), "wormholes:pockets", 15, 128, 31, DoorItemIdentity.publicDoor(id(123)));
+        PlacedDoorEndpoint replacement = placed(id(122), "wormholes:pockets", 15, 128, 31, identity);
+        service.registerEndpoint(previous);
+        service.registerEndpoint(occupied);
+
+        assertThrows(IllegalStateException.class, () -> service.relocateEndpoint(previous, replacement));
+        assertThrows(IllegalArgumentException.class, () -> service.relocateEndpoint(previous, occupied));
+        assertEquals(List.of(previous, occupied), service.endpoints());
+        assertEquals(List.of(previous, occupied),
+            DoorStateService.load(new DimensionalDoorRepository(service.repository().stateFile())).endpoints());
+    }
+
     private DimensionalDoorRepository repository() {
         return new DimensionalDoorRepository(temporaryDirectory.resolve("state.json"));
     }

@@ -31,14 +31,18 @@ class ViewBulkCompleteWireTest {
         UUID portalId = UUID.randomUUID();
         Map<String, String> settings = new LinkedHashMap<>();
         settings.put(PortalSyncService.KEY_PROJECTION_MODE, "MIRROR");
+        settings.put(PortalSyncService.KEY_PROJECTION_ENABLED, "false");
+        settings.put(PortalSyncService.KEY_MIRROR_MODE, "true");
         settings.put(PortalSyncService.KEY_MIRROR_ROTATION, "90");
         settings.put(PortalSyncService.KEY_VIEW_DEPTH, "24");
         settings.put(PortalSyncService.KEY_OUTGOING_TRAVERSALS, "false");
         WireMessage.PortalSettingsUpdate decoded = assertInstanceOf(WireMessage.PortalSettingsUpdate.class,
             roundTrip(new WireMessage.PortalSettingsUpdate(portalId, settings)));
         assertEquals(portalId, decoded.portalId());
-        assertEquals(4, decoded.settings().size());
+        assertEquals(6, decoded.settings().size());
         assertEquals("MIRROR", decoded.settings().get(PortalSyncService.KEY_PROJECTION_MODE));
+        assertEquals("false", decoded.settings().get(PortalSyncService.KEY_PROJECTION_ENABLED));
+        assertEquals("true", decoded.settings().get(PortalSyncService.KEY_MIRROR_MODE));
         assertEquals("90", decoded.settings().get(PortalSyncService.KEY_MIRROR_ROTATION));
         assertEquals("24", decoded.settings().get(PortalSyncService.KEY_VIEW_DEPTH));
         assertEquals("false", decoded.settings().get(PortalSyncService.KEY_OUTGOING_TRAVERSALS));

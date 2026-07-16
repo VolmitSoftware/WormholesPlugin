@@ -38,7 +38,6 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEn
 
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.portal.ILocalPortal;
-import art.arcane.wormholes.portal.ProjectionMode;
 import art.arcane.wormholes.network.view.ViewServer;
 import art.arcane.wormholes.render.ProjectionClaimArbiter;
 import art.arcane.wormholes.render.PortalProjector;
@@ -57,6 +56,7 @@ public class ProjectionManager implements Listener {
     private final Map<UUID, Map<UUID, PortalProjector>> projectors;
     private final Map<UUID, Map<UUID, Long>> interestGraceUntil;
     private final Set<UUID> observerTasksInFlight;
+    private final Map<PortalProjector, CloseTaskState> closingProjectors;
     private final AtomicInteger lastInterestedObservers;
     private final AtomicInteger lastScheduledProjectors;
     private final AtomicInteger lastDeferredProjectors;
@@ -77,6 +77,7 @@ public class ProjectionManager implements Listener {
         this.projectors = new ConcurrentHashMap<UUID, Map<UUID, PortalProjector>>();
         this.interestGraceUntil = new ConcurrentHashMap<UUID, Map<UUID, Long>>();
         this.observerTasksInFlight = ConcurrentHashMap.newKeySet();
+        this.closingProjectors = new ConcurrentHashMap<PortalProjector, CloseTaskState>();
         this.lastInterestedObservers = new AtomicInteger();
         this.lastScheduledProjectors = new AtomicInteger();
         this.lastDeferredProjectors = new AtomicInteger();
@@ -142,6 +143,7 @@ public class ProjectionManager implements Listener {
             return;
         }
         tickCount++;
+        retryPendingCloses();
 
         if (!firstTickLogged) {
             firstTickLogged = true;
@@ -160,9 +162,15 @@ public class ProjectionManager implements Listener {
         lastDeferredProjectors.set(0);
         List<ILocalPortal> active = collectActiveProjectors();
         cleanupInactivePortals(active);
+        long frameTick = tickCount;
+        if (active.isEmpty() && projectors.isEmpty() && closingProjectors.isEmpty() && claimArbiter.isIdle()) {
+            pruneInterestGrace(frameTick);
+            WormholesTelemetry.setProjectionGauges(0, observerTasksInFlight.size(), countSpoofedEntities());
+            emitDiagnostics(active);
+            return;
+        }
         boolean updateBlocks = shouldUpdateBlocks();
         boolean updateEntities = shouldUpdateEntities();
-        long frameTick = tickCount;
         List<Player> onlinePlayers = new ArrayList<Player>(Wormholes.instance.getServer().getOnlinePlayers());
         int totalBudget = updateBlocks ? Math.max(0, Settings.PROJECTION_MAX_PROJECTORS_PER_TICK) : 0;
         int perObserverBudget = Math.max(0, Settings.PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK);
@@ -211,6 +219,9 @@ public class ProjectionManager implements Listener {
                 total += projector.getSpoofedEntityCount();
             }
         }
+        for (PortalProjector projector : closingProjectors.keySet()) {
+            total += projector.getSpoofedEntityCount();
+        }
         return total;
     }
 
@@ -252,7 +263,7 @@ public class ProjectionManager implements Listener {
             if (!portal.isOpen()) {
                 continue;
             }
-            if (portal.getProjectionMode() != ProjectionMode.MIRROR && !portal.hasTunnel()) {
+            if (!portal.isMirrorMode() && !portal.hasTunnel()) {
                 continue;
             }
             active.add(portal);
@@ -460,7 +471,7 @@ public class ProjectionManager implements Listener {
         if (portal == null || !portal.supportsProjections() || !portal.isProjecting() || !portal.isOpen()) {
             return false;
         }
-        if (portal.getProjectionMode() != ProjectionMode.MIRROR && !portal.hasTunnel()) {
+        if (!portal.isMirrorMode() && !portal.hasTunnel()) {
             return false;
         }
         return true;
@@ -608,7 +619,8 @@ public class ProjectionManager implements Listener {
                 .append(" center=").append(formatLoc(portal.getCenter()))
                 .append(" direction=").append(portal.getDirection())
                 .append(" projecting=").append(portal.isProjecting())
-                .append(" mode=").append(portal.getProjectionMode());
+				.append(" mode=").append(portal.getProjectionMode())
+				.append(" mirror=").append(portal.isMirrorMode());
         return sb.toString();
     }
 
@@ -670,7 +682,9 @@ public class ProjectionManager implements Listener {
             J.csr(taskId);
             taskId = -1;
         }
-        List<PortalProjector> closing = snapshotProjectors();
+        Set<PortalProjector> closingSet = new HashSet<PortalProjector>(snapshotProjectors());
+        closingSet.addAll(closingProjectors.keySet());
+        List<PortalProjector> closing = new ArrayList<PortalProjector>(closingSet);
         AtomicInteger pending = new AtomicInteger(closing.size());
         CountDownLatch completion = new CountDownLatch(closing.size());
         if (closing.isEmpty()) {
@@ -693,6 +707,7 @@ public class ProjectionManager implements Listener {
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
         } finally {
+            forceDiscardClosingProjectors();
             finalizeShutdown();
         }
     }
@@ -807,27 +822,81 @@ public class ProjectionManager implements Listener {
         });
     }
 
+    private void retryPendingCloses() {
+        for (CloseTaskState state : closingProjectors.values()) {
+            if (state.isPending()) {
+                attemptClose(state);
+            }
+        }
+    }
+
     private void scheduleClose(PortalProjector projector, Runnable onComplete) {
-        Player observer = projector.getObserver();
-        if (observer == null) {
-            projector.requestDiscard();
-            onComplete.run();
+        CloseTaskState state = closingProjectors.computeIfAbsent(projector, CloseTaskState::new);
+        state.addCompletion(onComplete);
+        attemptClose(state);
+    }
+
+    private void attemptClose(CloseTaskState state) {
+        if (!state.trySchedule()) {
             return;
         }
-        boolean scheduled = FoliaScheduler.runEntity(Wormholes.instance, observer, () -> {
-            try {
-                if (observer.isOnline()) {
-                    projector.close();
-                } else {
-                    projector.discard();
+        PortalProjector projector = state.projector;
+        Player observer = projector.getObserver();
+        if (observer == null || !observer.isOnline()) {
+            projector.discard();
+            completeClose(state);
+            return;
+        }
+        boolean scheduled;
+        try {
+            scheduled = FoliaScheduler.runEntity(Wormholes.instance, observer, () -> {
+                try {
+                    if (observer.isOnline()) {
+                        projector.close();
+                    } else {
+                        projector.discard();
+                    }
+                } finally {
+                    completeClose(state);
                 }
-            } finally {
-                onComplete.run();
-            }
-        });
+            }, 0L, () -> retireClose(state));
+        } catch (RuntimeException error) {
+            scheduled = false;
+        }
         if (!scheduled) {
-            projector.requestDiscard();
-            onComplete.run();
+            state.markRejected();
+            if (closed) {
+                projector.discard();
+                completeClose(state);
+            }
+        }
+    }
+
+    private void retireClose(CloseTaskState state) {
+        state.markRejected();
+        Player observer = state.projector.getObserver();
+        if (closed || observer == null || !observer.isOnline()) {
+            state.projector.discard();
+            completeClose(state);
+        }
+    }
+
+    private void completeClose(CloseTaskState state) {
+        List<Runnable> completions = state.complete();
+        if (completions == null) {
+            return;
+        }
+        closingProjectors.remove(state.projector, state);
+        for (Runnable completion : completions) {
+            completion.run();
+        }
+    }
+
+    private void forceDiscardClosingProjectors() {
+        for (CloseTaskState state : closingProjectors.values()) {
+            state.projector.requestDiscard();
+            state.projector.discard();
+            completeClose(state);
         }
     }
 
@@ -837,5 +906,58 @@ public class ProjectionManager implements Listener {
         }
         claimArbiter.clear();
         viewProvider.close();
+    }
+
+    private static final class CloseTaskState {
+        private final PortalProjector projector;
+        private final List<Runnable> completions = new ArrayList<Runnable>(1);
+        private boolean scheduled;
+        private boolean completed;
+
+        private CloseTaskState(PortalProjector projector) {
+            this.projector = projector;
+        }
+
+        private void addCompletion(Runnable completion) {
+            boolean runNow;
+            synchronized (this) {
+                runNow = completed;
+                if (!runNow) {
+                    completions.add(completion);
+                }
+            }
+            if (runNow) {
+                completion.run();
+            }
+        }
+
+        private synchronized boolean trySchedule() {
+            if (completed || scheduled) {
+                return false;
+            }
+            scheduled = true;
+            return true;
+        }
+
+        private synchronized void markRejected() {
+            if (!completed) {
+                scheduled = false;
+            }
+        }
+
+        private synchronized boolean isPending() {
+            return !completed && !scheduled;
+        }
+
+        private synchronized List<Runnable> complete() {
+            if (completed) {
+                return null;
+            }
+            completed = true;
+            scheduled = false;
+            List<Runnable> result = new ArrayList<Runnable>(completions);
+            completions.clear();
+            return result;
+        }
     }
 }

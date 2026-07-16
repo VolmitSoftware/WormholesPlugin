@@ -42,6 +42,10 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
     static final int MAX_PACKET_BYTES = 24000;
     static final int MAX_FRAME_BYTES = 5000;
     static final int MAX_MESSAGES = 64;
+    static final int MAX_UNSIGNED_PACKET_BYTES = 384 * 1024;
+    private static final int MAX_SERVER_NAME_CHARS = 128;
+    private static final int MAX_VERSION_CHARS = 128;
+    private static final int MAX_REPLY_HOST_CHARS = 255;
     private static final long PENDING_TTL_MS = 10_000L;
     private static final int MAX_PENDING_REQUESTS = 1024;
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -67,13 +71,16 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
             if (address == null || !address.startsWith(HOST_PREFIX)) {
                 return;
             }
-            StatusPacket packet = StatusPacket.decode(address.substring(HOST_PREFIX.length()), network.compression());
             long now = System.currentTimeMillis();
             purgePending(now);
             if (pending.size() >= MAX_PENDING_REQUESTS) {
                 return;
             }
-            pending.put(event.getChannel(), new PendingRequest(packet, now));
+            StatusPacket request = StatusPacket.decode(address.substring(HOST_PREFIX.length()), network.compression());
+            StatusPacket response = network.handleStatusBridgeRequest(request);
+            if (response != null) {
+                pending.put(event.getChannel(), new PendingRequest(response, now));
+            }
         } catch (IOException | RuntimeException ignored) {
         }
     }
@@ -88,11 +95,7 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
             return;
         }
         try {
-            StatusPacket request = pendingRequest.packet();
-            StatusPacket response = network.handleStatusBridgeRequest(request);
-            if (response == null) {
-                return;
-            }
+            StatusPacket response = pendingRequest.packet();
             String encoded = response.encode(network.compression());
             if (encoded.length() > MAX_ENCODED_CHARS) {
                 throw new IllegalStateException("status sideband response is too large: " + encoded.length() + " chars");
@@ -115,9 +118,9 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
     }
 
     public StatusPacket poll(NetworkConfig.PeerEntry peer, StatusPacket request) throws IOException {
-        String host = peer.publicHost == null || peer.publicHost.isBlank() ? peer.host : peer.publicHost;
-        int port = peer.publicPort > 0 ? peer.publicPort : 25565;
-        if (host == null || host.isBlank()) {
+        List<String> hosts = gamePortHosts(peer);
+        int port = PeerEndpointResolver.gamePort(peer);
+        if (hosts.isEmpty()) {
             throw new IOException("no game-port host available");
         }
         String encoded = request.encode(network.compression());
@@ -125,17 +128,34 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
         if (handshakeHost.length() > MAX_HOST_LENGTH) {
             throw new IOException("status sideband request is too large: " + handshakeHost.length() + " chars");
         }
+        byte[] requestBytes = requestBytes(handshakeHost, port);
+        RequestUndeliveredException lastFailure = null;
+        for (String host : hosts) {
+            try {
+                return poll(host, port, requestBytes);
+            } catch (RequestUndeliveredException error) {
+                lastFailure = error;
+            }
+        }
+        throw lastFailure;
+    }
+
+    static List<String> gamePortHosts(NetworkConfig.PeerEntry peer) {
+        return PeerEndpointResolver.gameHosts(peer);
+    }
+
+    private StatusPacket poll(String host, int port, byte[] requestBytes) throws IOException {
         try (Socket socket = new Socket()) {
             try {
                 socket.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
             } catch (IOException e) {
-                throw new RequestUndeliveredException(e);
+                throw new RequestUndeliveredException(host, port, e);
             }
             socket.setTcpNoDelay(true);
             socket.setSoTimeout(READ_TIMEOUT_MS);
             OutputStream output = socket.getOutputStream();
             InputStream input = socket.getInputStream();
-            output.write(requestBytes(handshakeHost, port));
+            output.write(requestBytes);
             output.flush();
             String responseJson = readStatusResponse(input);
             JsonObject root = JsonParser.parseString(responseJson).getAsJsonObject();
@@ -380,11 +400,11 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
                 ByteArrayOutputStream buffer = new ByteArrayOutputStream(512);
                 DataOutputStream out = new DataOutputStream(buffer);
                 out.writeInt(FORMAT_VERSION);
-                out.writeUTF(sourceServer == null ? "" : sourceServer);
-                out.writeUTF(targetServer == null ? "" : targetServer);
-                out.writeUTF(mcVersion == null ? "" : mcVersion);
-                out.writeUTF(pluginVersion == null ? "" : pluginVersion);
-                out.writeUTF(replyHost == null ? "" : replyHost);
+                writeUtf(out, sourceServer, MAX_SERVER_NAME_CHARS, "source server");
+                writeUtf(out, targetServer, MAX_SERVER_NAME_CHARS, "target server");
+                writeUtf(out, mcVersion, MAX_VERSION_CHARS, "Minecraft version");
+                writeUtf(out, pluginVersion, MAX_VERSION_CHARS, "plugin version");
+                writeUtf(out, replyHost, MAX_REPLY_HOST_CHARS, "reply host");
                 out.writeShort(Math.max(0, Math.min(65535, replyPort)));
                 WireCodec.writeByteArray(out, publicKey, Handshake.PUBLIC_KEY_MAX_LENGTH);
                 out.writeLong(nonce);
@@ -407,21 +427,32 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
         }
 
         public static StatusPacket decode(String encoded, WireCompression compression) throws IOException {
-            byte[] envelope = Base64.getUrlDecoder().decode(encoded);
+            if (encoded == null || encoded.length() > MAX_ENCODED_CHARS) {
+                throw new IOException("status bridge packet exceeds encoded size limit");
+            }
+            byte[] envelope;
+            try {
+                envelope = Base64.getUrlDecoder().decode(encoded);
+            } catch (IllegalArgumentException error) {
+                throw new IOException("status bridge packet is not valid base64", error);
+            }
             DataInputStream envelopeIn = new DataInputStream(new ByteArrayInputStream(envelope));
             byte[] transport = WireCodec.readByteArray(envelopeIn, MAX_PACKET_BYTES);
             byte[] signature = WireCodec.readByteArray(envelopeIn, Handshake.SIGNATURE_MAX_LENGTH);
-            byte[] unsigned = compression.decode(transport).payload();
+            if (envelopeIn.available() != 0) {
+                throw new IOException("status bridge envelope has trailing bytes");
+            }
+            byte[] unsigned = compression.decode(transport, MAX_UNSIGNED_PACKET_BYTES).payload();
             DataInputStream in = new DataInputStream(new ByteArrayInputStream(unsigned));
             int version = in.readInt();
             if (version != FORMAT_VERSION) {
                 throw new IOException("unsupported status bridge packet version: " + version);
             }
-            String sourceServer = in.readUTF();
-            String targetServer = in.readUTF();
-            String mcVersion = in.readUTF();
-            String pluginVersion = in.readUTF();
-            String replyHost = in.readUTF();
+            String sourceServer = readUtf(in, MAX_SERVER_NAME_CHARS, "source server");
+            String targetServer = readUtf(in, MAX_SERVER_NAME_CHARS, "target server");
+            String mcVersion = readUtf(in, MAX_VERSION_CHARS, "Minecraft version");
+            String pluginVersion = readUtf(in, MAX_VERSION_CHARS, "plugin version");
+            String replyHost = readUtf(in, MAX_REPLY_HOST_CHARS, "reply host");
             int replyPort = in.readUnsignedShort();
             byte[] publicKey = WireCodec.readByteArray(in, Handshake.PUBLIC_KEY_MAX_LENGTH);
             long nonce = in.readLong();
@@ -433,16 +464,41 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
             List<WireMessage> messages = new ArrayList<>(messageCount);
             for (int i = 0; i < messageCount; i++) {
                 byte[] frame = WireCodec.readByteArray(in, MAX_FRAME_BYTES);
-                messages.add(WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(frame))));
+                DataInputStream frameIn = new DataInputStream(new ByteArrayInputStream(frame));
+                messages.add(WireCodec.readFrame(frameIn));
+                if (frameIn.available() != 0) {
+                    throw new IOException("status bridge message frame has trailing bytes");
+                }
             }
-            return new StatusPacket(sourceServer, targetServer, mcVersion, pluginVersion, replyHost, replyPort,
-                publicKey, nonce, ackNonce, messages, null, signature);
+            if (in.available() != 0) {
+                throw new IOException("status bridge payload has trailing bytes");
+            }
+            StatusPacket packet = new StatusPacket(sourceServer, targetServer, mcVersion, pluginVersion, replyHost,
+                replyPort, publicKey, nonce, ackNonce, messages, null, signature);
+            packet.unsignedBytesCache = unsigned;
+            return packet;
+        }
+
+        private static void writeUtf(DataOutputStream out, String value, int maxChars, String field) throws IOException {
+            String normalized = value == null ? "" : value;
+            if (normalized.length() > maxChars) {
+                throw new IOException(field + " exceeds " + maxChars + " characters");
+            }
+            out.writeUTF(normalized);
+        }
+
+        private static String readUtf(DataInputStream in, int maxChars, String field) throws IOException {
+            String value = in.readUTF();
+            if (value.length() > maxChars) {
+                throw new IOException(field + " exceeds " + maxChars + " characters");
+            }
+            return value;
         }
     }
 
     public static final class RequestUndeliveredException extends IOException {
-        RequestUndeliveredException(IOException cause) {
-            super(cause.getMessage(), cause);
+        RequestUndeliveredException(String host, int port, IOException cause) {
+            super(host + ":" + port + " - " + cause.getMessage(), cause);
         }
     }
 }

@@ -2,29 +2,27 @@ package art.arcane.wormholes.door;
 
 import java.util.Objects;
 
-public final class PersonalPocketRescuePolicy
+public final class PocketRescuePolicy
 {
 	public static final double ONE_HEART = 2.0D;
 
-	private PersonalPocketRescuePolicy()
+	private PocketRescuePolicy()
 	{
 	}
 
 	public static Decision evaluate(
-		PocketBindingKind pocketKind,
 		double currentHealth,
 		double maximumHealth,
 		double finalDamage,
 		boolean rescueInFlight)
 	{
-		Objects.requireNonNull(pocketKind, "pocketKind");
 		requireHealth(currentHealth, maximumHealth);
 		if(!Double.isFinite(finalDamage))
 		{
 			throw new IllegalArgumentException("Final damage must be finite");
 		}
 
-		if(pocketKind != PocketBindingKind.PERSONAL || finalDamage <= 0.0D)
+		if(finalDamage <= 0.0D)
 		{
 			return new Decision(Action.PASS, currentHealth);
 		}

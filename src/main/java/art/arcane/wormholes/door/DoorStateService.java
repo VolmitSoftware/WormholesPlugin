@@ -122,6 +122,32 @@ public final class DoorStateService {
         return true;
     }
 
+    public synchronized boolean relocateEndpoint(
+        PlacedDoorEndpoint expected,
+        PlacedDoorEndpoint replacement
+    ) throws IOException {
+        Objects.requireNonNull(expected, "expected");
+        Objects.requireNonNull(replacement, "replacement");
+        if (!expected.identity().equals(replacement.identity())) {
+            throw new IllegalArgumentException("endpoint relocation must preserve identity");
+        }
+        PlacedDoorEndpoint current = registry.byItemId(expected.identity().itemId())
+            .orElseThrow(() -> new IllegalStateException("endpoint is not registered"));
+        if (!current.equals(expected)) {
+            throw new IllegalStateException("registered endpoint does not match relocation source");
+        }
+        if (expected.equals(replacement)) {
+            return false;
+        }
+
+        DoorRegistry candidateRegistry = copyRegistry();
+        candidateRegistry.remove(expected.position())
+            .orElseThrow(() -> new IllegalStateException("endpoint relocation source is missing"));
+        candidateRegistry.register(replacement);
+        persistAndPublish(candidateRegistry, allocator, pairsById, ticketsByPlayer);
+        return true;
+    }
+
     public synchronized Optional<PlacedDoorEndpoint> removeEndpoint(DoorPosition position) throws IOException {
         Objects.requireNonNull(position, "position");
         DoorRegistry candidateRegistry = copyRegistry();

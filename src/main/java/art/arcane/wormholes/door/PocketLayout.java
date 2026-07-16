@@ -5,15 +5,13 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * World-independent, deterministic layout of one pocket's protected starter
- * core. The 9x9 floor is centered on the allocator's pocket center.
+ * World-independent, deterministic layout of one protected pocket room.
  */
 public record PocketLayout(PocketSpace space) {
-    public static final int CORE_RADIUS = 4;
-    public static final int CORE_DIAMETER = CORE_RADIUS * 2 + 1;
-    public static final int CLEAR_HEIGHT = 3;
-    public static final int RETURN_DOOR_X_OFFSET = 0;
-    public static final int RETURN_DOOR_Z_OFFSET = 3;
+    public static final int CHUNK_SIZE = 16;
+    public static final int ROOM_CHUNKS = 2;
+    public static final int ROOM_SIZE = CHUNK_SIZE * ROOM_CHUNKS;
+    public static final int RETURN_DOOR_CENTER_OFFSET = ROOM_SIZE / 2 - 1;
     public static final float ENTRY_YAW = 0.0F;
     public static final float ENTRY_PITCH = 0.0F;
 
@@ -22,38 +20,34 @@ public record PocketLayout(PocketSpace space) {
     }
 
     public int minX() {
-        return Math.subtractExact(space.centerX(), CORE_RADIUS);
+        return alignedMinimum(Math.subtractExact(space.centerX(), PocketAllocator.CHUNK_CENTER_OFFSET));
     }
 
     public int maxX() {
-        return Math.addExact(space.centerX(), CORE_RADIUS);
+        return Math.addExact(minX(), ROOM_SIZE - 1);
     }
 
     public int minZ() {
-        return Math.subtractExact(space.centerZ(), CORE_RADIUS);
+        return alignedMinimum(Math.subtractExact(space.centerZ(), PocketAllocator.CHUNK_CENTER_OFFSET));
     }
 
     public int maxZ() {
-        return Math.addExact(space.centerZ(), CORE_RADIUS);
+        return Math.addExact(minZ(), ROOM_SIZE - 1);
     }
 
-    public int platformY() {
+    public int minY() {
         return Math.subtractExact(space.centerY(), 1);
     }
 
-    public int clearMinY() {
-        return space.centerY();
-    }
-
-    public int clearMaxY() {
-        return Math.addExact(space.centerY(), CLEAR_HEIGHT - 1);
+    public int maxY() {
+        return Math.addExact(minY(), ROOM_SIZE - 1);
     }
 
     public PocketBlockPosition returnDoorLower() {
         return new PocketBlockPosition(
-            Math.addExact(space.centerX(), RETURN_DOOR_X_OFFSET),
-            space.centerY(),
-            Math.addExact(space.centerZ(), RETURN_DOOR_Z_OFFSET)
+            Math.addExact(minX(), RETURN_DOOR_CENTER_OFFSET),
+            Math.addExact(minY(), 1),
+            maxZ()
         );
     }
 
@@ -68,10 +62,11 @@ public record PocketLayout(PocketSpace space) {
     }
 
     public PocketEntryCoordinates entry() {
+        PocketBlockPosition lower = returnDoorLower();
         return new PocketEntryCoordinates(
-            space.centerX() + 0.5,
-            space.centerY(),
-            space.centerZ() + 0.5,
+            lower.x() + 0.5D,
+            lower.y(),
+            lower.z() - 0.5D,
             ENTRY_YAW,
             ENTRY_PITCH
         );
@@ -84,24 +79,28 @@ public record PocketLayout(PocketSpace space) {
         return DoorItemIdentity.returnDoor(itemId, space.spaceId());
     }
 
-    public boolean isPlatformBlock(int x, int y, int z) {
-        return y == platformY()
-            && x >= minX() && x <= maxX()
+    public boolean contains(int x, int y, int z) {
+        return x >= minX() && x <= maxX()
+            && y >= minY() && y <= maxY()
             && z >= minZ() && z <= maxZ();
     }
 
-    public boolean isInitialInteriorBlock(int x, int y, int z) {
-        return x >= minX() && x <= maxX()
-            && z >= minZ() && z <= maxZ()
-            && y >= clearMinY() && y <= clearMaxY();
+    public boolean isShellBlock(int x, int y, int z) {
+        return contains(x, y, z)
+            && (x == minX() || x == maxX()
+                || y == minY() || y == maxY()
+                || z == minZ() || z == maxZ());
     }
 
-    /** Protect only the starter floor and the two exit-door blocks. */
+    public boolean isInteriorBlock(int x, int y, int z) {
+        return contains(x, y, z) && !isShellBlock(x, y, z);
+    }
+
     public boolean isProtected(int x, int y, int z) {
-        if (isPlatformBlock(x, y, z)) {
-            return true;
-        }
-        PocketBlockPosition lower = returnDoorLower();
-        return x == lower.x() && z == lower.z() && (y == lower.y() || y == lower.y() + 1);
+        return isShellBlock(x, y, z);
+    }
+
+    private static int alignedMinimum(int coordinate) {
+        return Math.multiplyExact(Math.floorDiv(coordinate, CHUNK_SIZE), CHUNK_SIZE);
     }
 }

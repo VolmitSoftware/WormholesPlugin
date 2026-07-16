@@ -8,39 +8,64 @@ import org.bukkit.entity.Player;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.util.Locale;
+import java.util.logging.Level;
 
 public final class PlayerTransfer {
+    public enum Method {
+        DIRECT,
+        PROXY
+    }
+
     public static final String PROXY_CHANNEL = "BungeeCord";
 
     private PlayerTransfer() {
     }
 
     public static boolean send(Player player, NetworkConfig.PeerEntry peer, String transferMode) {
-        String mode = transferMode == null ? "auto" : transferMode.toLowerCase(Locale.ROOT);
-        if (mode.equals("proxy")) {
-            return sendViaProxy(player, peer);
-        }
-        if (mode.equals("auto") && shouldUseProxy(peer)) {
+        return send(player, peer, resolveMethod(peer, transferMode));
+    }
+
+    public static boolean send(Player player, NetworkConfig.PeerEntry peer, Method method) {
+        if (method == Method.PROXY) {
             return sendViaProxy(player, peer);
         }
         return sendViaTransferPacket(player, peer);
     }
 
-    private static boolean shouldUseProxy(NetworkConfig.PeerEntry peer) {
-        return peer.useProxy;
+    static boolean usesProxy(NetworkConfig.PeerEntry peer, String transferMode) {
+        return resolveMethod(peer, transferMode) == Method.PROXY;
+    }
+
+    static Method resolveMethod(NetworkConfig.PeerEntry peer, String transferMode) {
+        String mode = transferMode == null ? "auto" : transferMode.toLowerCase(Locale.ROOT);
+        return mode.equals("proxy") || mode.equals("auto") && peer.useProxy ? Method.PROXY : Method.DIRECT;
+    }
+
+    static boolean hasDirectHost(NetworkConfig.PeerEntry peer) {
+        return !PeerEndpointResolver.gameHosts(peer).isEmpty();
+    }
+
+    static String directHost(InetSocketAddress clientAddress, NetworkConfig.PeerEntry peer) {
+        return PeerEndpointResolver.playerTransferHost(peer, clientAddress);
     }
 
     private static boolean sendViaTransferPacket(Player player, NetworkConfig.PeerEntry peer) {
-        String host = peer.publicHost == null || peer.publicHost.isBlank() ? peer.host : peer.publicHost;
-        int port = peer.publicPort > 0 ? peer.publicPort : 25565;
+        String host = directHost(player.getAddress(), peer);
+        int port = PeerEndpointResolver.gamePort(peer);
         if (host == null || host.isBlank()) {
             Wormholes.w("net: peer " + peer.name + " has no reachable host; cannot transfer " + player.getName());
             return false;
         }
         Wormholes.v("[xfer] transfer-packet " + player.getName() + " -> " + host + ":" + port + " (peer=" + peer.name + " publicHost=" + peer.publicHost + " publicPort=" + peer.publicPort + ")");
-        player.transfer(host, port);
-        return true;
+        try {
+            player.transfer(host, port);
+            return true;
+        } catch (IllegalStateException error) {
+            logTransferFailure("Direct transfer of " + player.getName() + " to " + peer.name + " failed", error);
+            return false;
+        }
     }
 
     private static boolean sendViaProxy(Player player, NetworkConfig.PeerEntry peer) {
@@ -51,9 +76,17 @@ public final class PlayerTransfer {
             out.writeUTF(peer.name);
             player.sendPluginMessage(Wormholes.instance, PROXY_CHANNEL, buffer.toByteArray());
             return true;
-        } catch (IOException e) {
-            Wormholes.w("net: proxy transfer of " + player.getName() + " to " + peer.name + " failed: " + e.getMessage());
+        } catch (IOException | RuntimeException error) {
+            logTransferFailure("Proxy transfer of " + player.getName() + " to " + peer.name + " failed", error);
             return false;
         }
+    }
+
+    private static void logTransferFailure(String message, Throwable error) {
+        if (Wormholes.instance == null) {
+            Wormholes.w(message + ": " + error);
+            return;
+        }
+        Wormholes.instance.getLogger().log(Level.WARNING, message, error);
     }
 }

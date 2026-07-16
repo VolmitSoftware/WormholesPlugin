@@ -83,7 +83,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private static final int DEFAULT_NETWORK_VIEW_ENTITY_INTERVAL_TICKS = 10;
 	private static final int DEFAULT_NETWORK_VIEW_UNSUBSCRIBE_GRACE_SECONDS = 30;
 	private static final String DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK = "minecraft:air";
-	private static final ParticleEffect.OrdinaryColor OUTLINE_PARTICLE_COLOR = new ParticleEffect.OrdinaryColor(150, 80, 255);
 	private static final ConcurrentHashMap<UUID, Long> TELEPORT_COOLDOWNS = new ConcurrentHashMap<UUID, Long>();
 	private static final ConcurrentHashMap<UUID, ReentryLatch> REENTRY_LATCHES = new ConcurrentHashMap<UUID, ReentryLatch>();
 	private static final Set<UUID> TELEPORT_IN_FLIGHT = ConcurrentHashMap.newKeySet();
@@ -106,6 +105,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private final AtomicBoolean saveInFlight = new AtomicBoolean();
 	private volatile long savedGeneration;
 	private ProjectionMode projectionMode;
+	private boolean mirrorMode;
 	private MirrorRotation mirrorRotation;
 	private AxisAlignedBB view;
 	private double viewRange;
@@ -143,6 +143,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		setName(F.capitalize(getType().name().toLowerCase()) + " " + id.toString().substring(0, 4));
 		savedGeneration = dirtyGeneration.get();
 		projectionMode = ProjectionMode.ON;
+		mirrorMode = false;
 		mirrorRotation = MirrorRotation.DEGREES_0;
 			permissionMode = PortalPermissionMode.BLACKLIST;
 			outgoingTraversalsEnabled = true;
@@ -165,6 +166,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		j.put("type", type.name());
 		j.put("owner", getOwner().toString());
 		j.put("projectionMode", projectionMode.name());
+		j.put("mirrorMode", mirrorMode);
 		j.put("mirrorRotationDegrees", mirrorRotation.getDegrees());
 			j.put("permissionMode", permissionMode.name());
 			j.put("outgoingTraversalsEnabled", outgoingTraversalsEnabled);
@@ -206,7 +208,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 		type = PortalType.valueOf(j.getString("type"));
 		owner = UUID.fromString(j.getString("owner"));
+		String storedProjectionMode = j.optString("projectionMode", ProjectionMode.ON.name());
 		projectionMode = resolveProjectionMode(j);
+		mirrorMode = resolveMirrorMode(j);
 		MirrorRotation storedMirrorRotation = resolveMirrorRotation(j);
 		mirrorRotation = storedMirrorRotation.coherentFor(getFrame());
 			permissionMode = resolvePermissionMode(j);
@@ -228,7 +232,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		dimensionalCounterpartId = resolveOptionalUuid(j.optString("dimensionalCounterpartId", ""));
 		dimensionalPortalKind = DimensionalPortalKind.fromName(j.optString("dimensionalPortalKind", ""));
 		boolean dimensionalStateNormalized = normalizeDimensionalState();
-		if(storedMirrorRotation != mirrorRotation || dimensionalStateNormalized)
+		boolean projectionStateNormalized = !j.has("mirrorMode") || !storedProjectionMode.equals(projectionMode.name());
+		if(storedMirrorRotation != mirrorRotation || dimensionalStateNormalized || projectionStateNormalized)
 		{
 			save();
 		}
@@ -276,11 +281,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			tunnel = null;
 		}
 
-		if(!projectionMode.isAllowedFor(type))
-		{
-			setProjectionMode(ProjectionMode.ON);
-		}
-
 		save();
 		syncGatewayTickets();
 	}
@@ -291,6 +291,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		ITunnel activeTunnel = tunnel;
 		IPortal destination = activeTunnel == null ? null : activeTunnel.getDestination();
 		boolean tunnelPresent = activeTunnel != null && destination != null;
+		boolean tunnelValid = tunnelPresent && activeTunnel.isValid();
+		boolean shouldBeOpen = tunnelValid || (mirrorMode && projectionMode == ProjectionMode.ON);
 
 		if(isOpen())
 		{
@@ -301,9 +303,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 			updateCaptures(activeTunnel, tunnelPresent);
 
-			if(tunnelPresent && !activeTunnel.isValid())
+			if(!shouldBeOpen)
 			{
-				if(activeTunnel.getTunnelType() != TunnelType.UNIVERSAL)
+				if(tunnelPresent && activeTunnel.getTunnelType() != TunnelType.UNIVERSAL)
 				{
 					tunnel = null;
 				}
@@ -319,7 +321,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				playEffect(PortalEffect.AMBIENT_CLOSED);
 			}
 
-			if((tunnelPresent && activeTunnel.isValid()) || projectionMode == ProjectionMode.MIRROR)
+			if(shouldBeOpen)
 			{
 				open();
 			}
@@ -338,7 +340,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			return;
 		}
 
-		if(projectionMode == ProjectionMode.MIRROR || isInboundDisabledByOneWay())
+		if(mirrorMode)
 		{
 			return;
 		}
@@ -389,11 +391,16 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 			if(isTeleportCoolingDown(entityId, now))
 			{
+				rejectCooldownTraversal(i, traversive);
 				continue;
 			}
 
 			markTeleportCooldown(entityId, now);
 			Wormholes.v("[cross] " + i.getName() + " crossing portal " + getId() + " -> " + (activeTunnel instanceof UniversalTunnel ? "CROSS-SERVER handoff" : "local teleport"));
+			if(!(activeTunnel instanceof UniversalTunnel && i instanceof Player))
+			{
+				playEffect(PortalEffect.PUSH, traversive.getInPoint().toLocation(getStructure().getWorld()));
+			}
 			pushTraversive(traversive, activeTunnel);
 		}
 	}
@@ -419,8 +426,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private Traversive rayTeleport(Entity i)
 	{
 		Vector velocity = Wormholes.traversableManager.getVelocity(i);
-		Location start = i.getLocation();
-		Location end = start.clone().add(velocity);
+		Location end = i.getLocation();
+		Location start = end.clone().subtract(velocity);
+		Vector crossingVelocity = velocity.lengthSquared() > 1.0E-4D ? velocity : end.getDirection().clone().multiply(0.2D);
 		Traversive[] f = new Traversive[1];
 
 		new Raycast(start, end, 0.09)
@@ -430,8 +438,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			{
 				if(getStructure().contains(l))
 				{
-					playEffect(PortalEffect.PUSH, l);
-					f[0] = buildCrossing(i, start, l.toVector(), velocity);
+					f[0] = buildCrossing(i, start, l.toVector(), crossingVelocity);
 					return false;
 				}
 
@@ -439,11 +446,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			}
 		};
 
-		if(f[0] == null && getStructure().contains(start))
+		if(f[0] == null && getStructure().contains(end))
 		{
-			Vector crossVelocity = velocity.lengthSquared() > 1.0E-4D ? velocity : start.getDirection().clone().multiply(0.2D);
-			playEffect(PortalEffect.PUSH, start);
-			f[0] = buildCrossing(i, start, start.toVector(), crossVelocity);
+			f[0] = buildCrossing(i, start, end.toVector(), crossingVelocity);
 		}
 
 		return f[0];
@@ -498,15 +503,27 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private void rejectTraversal(Entity entity, Traversive traversive)
 	{
-		Vector bounce = traversive.getInVelocity().clone().multiply(-6.0D);
-		if(bounce.lengthSquared() < 0.01D)
-		{
-			double side = traversive.isFrontSide() ? 1.0D : -1.0D;
-			bounce = getFrame().getNormal().toVector().normalize().multiply(side * 3.0D);
-		}
-		entity.setVelocity(bounce);
-		playEffect(PortalEffect.REJECT, traversive.getInPoint().toLocation(getStructure().getWorld()));
+		bounceRejectedTraversal(entity, traversive);
 		notifyPortalDenied(entity);
+	}
+
+	private void rejectCooldownTraversal(Entity entity, Traversive traversive)
+	{
+		bounceRejectedTraversal(entity, traversive);
+		if(entity instanceof Player player)
+		{
+			WormholesAudience.sendActionBar(player, Component.text("Portal cooling down", NamedTextColor.GOLD));
+		}
+	}
+
+	private void bounceRejectedTraversal(Entity entity, Traversive traversive)
+	{
+		armRejectedReentry(entity);
+		markTeleportCooldown(entity.getUniqueId(), System.currentTimeMillis());
+		entity.setVelocity(sourceRejectionVelocity(traversive));
+		PortalStructure portalStructure = getStructure();
+		World world = portalStructure == null || portalStructure.getWorld() == null ? entity.getWorld() : portalStructure.getWorld();
+		playEffect(PortalEffect.REJECT, traversive.getInPoint().toLocation(world));
 	}
 
 	private boolean allowsPortalPermission(Entity entity)
@@ -648,95 +665,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 	}
 
-	private void playStructureOutline()
-	{
-		if(!M.r(0.45))
-		{
-			return;
-		}
-
-		Axis normalAxis = getFrame().getNormal().getAxis();
-		for(Vector block : getStructure().getBlockPositions())
-		{
-			int x = block.getBlockX();
-			int y = block.getBlockY();
-			int z = block.getBlockZ();
-
-			for(Direction direction : Direction.values())
-			{
-				if(direction.getAxis().equals(normalAxis))
-				{
-					continue;
-				}
-
-				if(!getStructure().containsBlock(x + direction.x(), y + direction.y(), z + direction.z()))
-				{
-					playBoundaryEdge(x, y, z, normalAxis, direction);
-				}
-			}
-		}
-	}
-
-	private void playBoundaryEdge(int x, int y, int z, Axis normalAxis, Direction edgeDirection)
-	{
-		double normalX = x + 0.5D + (getFrame().getNormal().x() * 0.06D);
-		double normalY = y + 0.5D + (getFrame().getNormal().y() * 0.06D);
-		double normalZ = z + 0.5D + (getFrame().getNormal().z() * 0.06D);
-
-		switch(normalAxis)
-		{
-			case X:
-				if(edgeDirection.getAxis().equals(Axis.Y))
-				{
-					double edgeY = y + (edgeDirection.y() > 0 ? 1.0D : 0.0D);
-					playOutlineLine(normalX, edgeY, z, normalX, edgeY, z + 1.0D);
-				}
-				else
-				{
-					double edgeZ = z + (edgeDirection.z() > 0 ? 1.0D : 0.0D);
-					playOutlineLine(normalX, y, edgeZ, normalX, y + 1.0D, edgeZ);
-				}
-				break;
-			case Y:
-				if(edgeDirection.getAxis().equals(Axis.X))
-				{
-					double edgeX = x + (edgeDirection.x() > 0 ? 1.0D : 0.0D);
-					playOutlineLine(edgeX, normalY, z, edgeX, normalY, z + 1.0D);
-				}
-				else
-				{
-					double edgeZ = z + (edgeDirection.z() > 0 ? 1.0D : 0.0D);
-					playOutlineLine(x, normalY, edgeZ, x + 1.0D, normalY, edgeZ);
-				}
-				break;
-			case Z:
-				if(edgeDirection.getAxis().equals(Axis.X))
-				{
-					double edgeX = x + (edgeDirection.x() > 0 ? 1.0D : 0.0D);
-					playOutlineLine(edgeX, y, normalZ, edgeX, y + 1.0D, normalZ);
-				}
-				else
-				{
-					double edgeY = y + (edgeDirection.y() > 0 ? 1.0D : 0.0D);
-					playOutlineLine(x, edgeY, normalZ, x + 1.0D, edgeY, normalZ);
-				}
-				break;
-			default:
-				break;
-		}
-	}
-
-	private void playOutlineLine(double x0, double y0, double z0, double x1, double y1, double z1)
-	{
-		for(int i = 0; i <= 3; i++)
-		{
-			double t = i / 3.0D;
-			Location point = new Location(getWorld(), x0 + ((x1 - x0) * t), y0 + ((y1 - y0) * t), z0 + ((z1 - z0) * t));
-			ParticleEffect.REDSTONE.display(OUTLINE_PARTICLE_COLOR, point, 32);
-		}
-	}
-
-
 	@Override
 	public void playEffect(PortalEffect effect, Location location)
 	{
@@ -807,18 +735,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 							() -> Wormholes.effectManager.playPortalOpen(openWorld, openCenter, sx, sy, sz, () -> effectSequence.get() == openSequence), 1L);
 				}
 				break;
-			case AMBIENT_INSPECTING:
-				playStructureOutline();
-				if(M.r(0.325))
-				{
-					for(Location i : getStructure().getCorners())
-					{
-						ParticleEffect.FLAME.display(0f, 1, i, 32);
-					}
-				}
-
-				ParticleEffect.ENCHANTMENT_TABLE.display(0f, 1, getStructure().randomLocation(), 32);
-
 			case AMBIENT_DEBUG:
 
 				break;
@@ -863,8 +779,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	{
 		if(holdingWand)
 		{
-			playEffect(PortalEffect.AMBIENT_INSPECTING);
-
 			if(isShowingProgress())
 			{
 				sendShortTitle(p, spinner.toString() + ChatColor.RESET + ChatColor.GRAY + progress);
@@ -962,7 +876,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			}
 			Vector outVelocity = t.getOutVelocity(getFrame());
 			Vector outLook = t.getOutLook(getFrame());
-			Vector outOffset = t.getOutOffset(getFrame());
 			Direction dx = Direction.closest(outVelocity);
 			Location exit = t.getOutPoint(getFrame(), getOrigin()).toLocation(getStructure().getWorld());
 
@@ -1006,18 +919,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 							Wormholes.projectionManager.reprimeArrival((Player) p);
 						}
 					}
-
-					if(Settings.DEBUG_TRAVERSABLES)
-					{
-						p.sendMessage("     ");
-						p.sendMessage("     ");
-						p.sendMessage("ANG: " + t.getInDirection().toString() + " -> " + getDirection().toString());
-						p.sendMessage("FCE: " + Direction.getDirection(t.getInVelocity()).reverse().toString() + " -> " + Direction.closest(outVelocity).toString());
-						p.sendMessage("MOV: " + Direction.getDirection(t.getInVelocity()).toString() + " -> " + Direction.getDirection(outVelocity).toString());
-						p.sendMessage("LOK: " + Direction.getDirection(t.getInLook()).toString() + " -> " + Direction.getDirection(outLook).toString());
-						p.sendMessage("POS: " + "(" + F.f(t.getInOffset().getX(), 1) + ", " + F.f(t.getInOffset().getY(), 1) + ", " + F.f(t.getInOffset().getZ(), 1) + ") -> (" + F.f(outOffset.getX(), 1) + ", " + F.f(outOffset.getY(), 1) + ", " + F.f(outOffset.getZ(), 1) + ")");
-						p.sendMessage("MOT: " + "(" + F.f(t.getInVelocity().getX(), 1) + ", " + F.f(t.getInVelocity().getY(), 1) + ", " + F.f(t.getInVelocity().getZ(), 1) + ") -> (" + F.f(outVelocity.getX(), 1) + ", " + F.f(outVelocity.getY(), 1) + ", " + F.f(outVelocity.getZ(), 1) + ")");
-					}
 				});
 			});
 		}
@@ -1057,9 +958,124 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	}
 
 	@Override
+	public boolean canCompleteDeparture(Entity entity, Traversive traversive)
+	{
+		if(entity == null || traversive == null || !entity.isValid() || !isOpen() || !canDepart(entity))
+		{
+			return false;
+		}
+		PortalStructure portalStructure = getStructure();
+		Location location = entity.getLocation();
+		if(portalStructure == null || portalStructure.getWorld() == null || location.getWorld() == null
+			|| !portalStructure.getWorld().equals(location.getWorld()))
+		{
+			return false;
+		}
+		return remainsCommittedToDeparture(traversive, location.toVector());
+	}
+
+	@Override
+	public void confirmDeparture(Entity entity, Traversive t)
+	{
+		if(entity instanceof Player player)
+		{
+			player.playSound(player.getLocation(), MSound.ENDERMAN_TELEPORT.bukkitSound(), 0.5F, 1.5F);
+		}
+		PortalStructure portalStructure = getStructure();
+		World world = portalStructure == null ? null : portalStructure.getWorld();
+		if(world == null)
+		{
+			return;
+		}
+		Location location = t.getInPoint().toLocation(world);
+		if(!FoliaScheduler.runRegion(Wormholes.instance, location, () -> playEffect(PortalEffect.PUSH, location)))
+		{
+			Wormholes.w("Portal region rejected departure effect for " + getId());
+		}
+	}
+
+	@Override
 	public void rejectDeparture(Entity entity, Traversive t)
 	{
-		rejectTraversal(entity, t);
+		World world = getStructure() == null ? null : getStructure().getWorld();
+		if(world == null)
+		{
+			bounceRejectedTraversal(entity, t);
+			return;
+		}
+		armRejectedReentry(entity);
+		markTeleportCooldown(entity.getUniqueId(), System.currentTimeMillis());
+		Location current = entity.getLocation();
+		Location target = sourceRejectionPoint(t).toLocation(world);
+		target.setYaw(current.getYaw());
+		target.setPitch(current.getPitch());
+		playRejectedDepartureEffect(t, world);
+		WormholesPlatform.teleport(Wormholes.instance, entity, target, PlayerTeleportEvent.TeleportCause.PLUGIN).whenComplete((success, error) ->
+		{
+			if(error != null || !Boolean.TRUE.equals(success))
+			{
+				if(error == null)
+				{
+					Wormholes.w("Failed to return " + entity.getName() + " to the source side of portal " + getId() + ": teleport was rejected");
+				}
+				else
+				{
+					Wormholes.instance.getLogger().log(Level.WARNING, "Failed to return " + entity.getName() + " to the source side of portal " + getId(), error);
+				}
+			}
+			if(!FoliaScheduler.runEntity(Wormholes.instance, entity, () -> finishRejectedDeparture(entity, t)))
+			{
+				Wormholes.w("Entity scheduler rejected departure bounce for " + entity.getName() + " at portal " + getId());
+			}
+		});
+	}
+
+	private void finishRejectedDeparture(Entity entity, Traversive traversive)
+	{
+		if(!entity.isValid())
+		{
+			return;
+		}
+		entity.setVelocity(sourceRejectionVelocity(traversive));
+	}
+
+	private void playRejectedDepartureEffect(Traversive traversive, World world)
+	{
+		Location location = traversive.getInPoint().toLocation(world);
+		if(!FoliaScheduler.runRegion(Wormholes.instance, location, () -> playEffect(PortalEffect.REJECT, location)))
+		{
+			Wormholes.w("Portal region rejected departure bounce effect for " + getId());
+		}
+	}
+
+	private void armRejectedReentry(Entity entity)
+	{
+		PortalStructure portalStructure = getStructure();
+		if(portalStructure != null && portalStructure.getWorld() != null && portalStructure.getWorld().equals(entity.getWorld()))
+		{
+			latchRejectedReentry(entity.getUniqueId(), getId());
+		}
+	}
+
+	static Vector sourceRejectionPoint(Traversive traversive)
+	{
+		return traversive.getInPoint().clone().add(traversive.getInFrame().getNormal().toVector().normalize().multiply(1.25D));
+	}
+
+	static double sourceSideDistance(Traversive traversive, Vector point)
+	{
+		Vector normal = traversive.getInFrame().getNormal().toVector().normalize();
+		return point.clone().subtract(traversive.getInPoint()).dot(normal);
+	}
+
+	static boolean remainsCommittedToDeparture(Traversive traversive, Vector point)
+	{
+		return sourceSideDistance(traversive, point) <= REENTRY_EXIT_MARGIN;
+	}
+
+	static Vector sourceRejectionVelocity(Traversive traversive)
+	{
+		return traversive.getInFrame().getNormal().toVector().normalize().multiply(3.0D);
 	}
 
 	@Override
@@ -1097,13 +1113,13 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public boolean canDepart(Entity entity)
 	{
-		return projectionMode.allowsTraversal() && outgoingTraversalsEnabled && allowsPortalPermission(entity);
+		return !mirrorMode && outgoingTraversalsEnabled && allowsPortalPermission(entity);
 	}
 
 	@Override
 	public boolean canArrive(Entity entity)
 	{
-		return projectionMode.allowsTraversal() && incomingTraversalsEnabled && allowsPortalPermission(entity);
+		return !mirrorMode && incomingTraversalsEnabled && allowsPortalPermission(entity);
 	}
 
 	static boolean isTeleportCoolingDown(UUID entityId, long now)
@@ -1134,7 +1150,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	public static void latchReentry(UUID entityId, UUID portalId)
 	{
-		REENTRY_LATCHES.put(entityId, new ReentryLatch(portalId, System.currentTimeMillis()));
+		REENTRY_LATCHES.put(entityId, ReentryLatch.waiting(portalId, System.currentTimeMillis()));
+	}
+
+	private static void latchRejectedReentry(UUID entityId, UUID portalId)
+	{
+		REENTRY_LATCHES.put(entityId, ReentryLatch.armed(portalId, System.currentTimeMillis()));
 	}
 
 	public static boolean isReentryLatched(UUID entityId)
@@ -1220,6 +1241,18 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			this.portalId = portalId;
 			this.stampMillis = stampMillis;
 			this.armed = false;
+		}
+
+		private static ReentryLatch waiting(UUID portalId, long stampMillis)
+		{
+			return new ReentryLatch(portalId, stampMillis);
+		}
+
+		private static ReentryLatch armed(UUID portalId, long stampMillis)
+		{
+			ReentryLatch latch = new ReentryLatch(portalId, stampMillis);
+			latch.armed = true;
+			return latch;
 		}
 
 		private UUID portalId()
@@ -1510,6 +1543,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			type = PortalType.PORTAL;
 			changed = true;
 		}
+		if(mirrorMode)
+		{
+			mirrorMode = false;
+			changed = true;
+		}
 		if(dimensionalPortalKind == DimensionalPortalKind.NETHER)
 		{
 			if(!outgoingTraversalsEnabled)
@@ -1520,11 +1558,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			if(!incomingTraversalsEnabled)
 			{
 				incomingTraversalsEnabled = true;
-				changed = true;
-			}
-			if(projectionMode == ProjectionMode.MIRROR || !projectionMode.isAllowedFor(PortalType.PORTAL))
-			{
-				projectionMode = ProjectionMode.ON;
 				changed = true;
 			}
 			return changed;
@@ -1539,11 +1572,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			if(incomingTraversalsEnabled)
 			{
 				incomingTraversalsEnabled = false;
-				changed = true;
-			}
-			if(projectionMode == ProjectionMode.MIRROR || !projectionMode.isAllowedFor(PortalType.PORTAL))
-			{
-				projectionMode = ProjectionMode.ON;
 				changed = true;
 			}
 			return changed;
@@ -1763,7 +1791,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				notifySetting(viewer, "Dimensional portal travel is managed automatically.");
 				return;
 			}
-			if(getProjectionMode() == ProjectionMode.MIRROR)
+			if(isMirrorMode())
 			{
 				notifySetting(viewer, "Mirror mode never allows travel.");
 				return;
@@ -1820,7 +1848,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			endLore.add(ChatColor.GRAY + (dimensionalPortalKind == DimensionalPortalKind.NETHER ? "Both linked halves stay active." : "The return path stays disabled."));
 			return;
 		}
-		if(getProjectionMode() == ProjectionMode.MIRROR)
+		if(isMirrorMode())
 		{
 			element.setName(ChatColor.RED + "" + ChatColor.BOLD + "Travel: Mirror Locked");
 			element.setEnchanted(false);
@@ -2185,7 +2213,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		UIElement element = new UIElement("portal-placard");
 		element.setName(ChatColor.GOLD + "" + ChatColor.BOLD + getName());
 		element.setMaterial(new MaterialBlock(Material.BOOK));
-		element.addLore(ChatColor.GRAY + "Type: " + ChatColor.YELLOW + F.capitalize(getType().name().toLowerCase()));
+		element.addLore(ChatColor.GRAY + "Type: " + ChatColor.YELLOW + currentModeLabel());
 		element.addLore(ChatColor.GRAY + "Facing: " + ChatColor.BLUE + getDirection().toString());
 		if(hasTunnel())
 		{
@@ -2234,9 +2262,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	{
 		UIElement element = new UIElement("set-mode");
 		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Mode");
-		element.setMaterial(new MaterialBlock(modeIcon(getType())));
+		element.setMaterial(new MaterialBlock(isMirrorMode() ? Material.COPPER_TORCH : modeIcon(getType())));
 		element.setEnchanted(true);
-		element.addLore(ChatColor.GRAY + modeDescription(getType()));
+		element.addLore(ChatColor.GRAY + (isMirrorMode() ? "Reflect the local world back with travel locked." : modeDescription(getType())));
 		element.addLore(" ");
 		element.addLore(ChatColor.GRAY + "Currently: " + ChatColor.YELLOW + currentModeLabel());
 		element.addLore(" ");
@@ -2355,28 +2383,13 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				notifySetting(viewer, "The End arrival stays visually inactive.");
 				return;
 			}
-			if(dimensionalPortalKind.isManagedPortal())
-			{
-				setProjectionMode(previous == ProjectionMode.OFF ? ProjectionMode.ON : ProjectionMode.OFF);
-			}
-			else
-			{
-				setProjectionMode(getProjectionMode().nextFor(getType()));
-			}
+			setProjectionMode(previous.next());
 			applyProjectionMode(element);
 			window.updateInventory();
 			if(previous != getProjectionMode())
 			{
 				notifySetting(viewer, "Projections: " + ChatColor.AQUA + getProjectionMode().getDisplayName());
 			}
-		});
-		element.onRightClick((e) ->
-		{
-			rotateMirrorImage(element, window, viewer, getMirrorRotation().clockwiseFor(getFrame()));
-		});
-		element.onShiftRightClick((e) ->
-		{
-			rotateMirrorImage(element, window, viewer, getMirrorRotation().counterClockwiseFor(getFrame()));
 		});
 		applyProjectionMode(element);
 		return element;
@@ -2395,42 +2408,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		lore.add(" ");
 		lore.add(ChatColor.GRAY + "Currently: " + ChatColor.AQUA + mode.getDisplayName());
 		lore.add(" ");
-		if(isGateway())
-		{
-			lore.add(ChatColor.DARK_GRAY + "Click to cycle: Off > On > One-Way > Mirror");
-		}
-		else
-		{
-			lore.add(ChatColor.DARK_GRAY + "Click to cycle: Off > On > Mirror");
-		}
-		if(mode == ProjectionMode.MIRROR)
-		{
-			lore.add(ChatColor.GRAY + "Image rotation: " + ChatColor.AQUA + getMirrorRotation().getDegrees() + " degrees");
-			if(MirrorRotation.supportsQuarterTurns(getFrame()))
-			{
-				lore.add(ChatColor.DARK_GRAY + "Right click: rotate clockwise.");
-				lore.add(ChatColor.DARK_GRAY + "Shift + right click: rotate counterclockwise.");
-			}
-			else
-			{
-				lore.add(ChatColor.GRAY + "Wall mirrors flip in 180 degree steps");
-				lore.add(ChatColor.GRAY + "so reflected entities stay aligned.");
-				lore.add(ChatColor.DARK_GRAY + "Right click: flip the reflected image.");
-			}
-		}
-	}
-
-	private void rotateMirrorImage(Element element, Window window, Player viewer, MirrorRotation rotation)
-	{
-		if(getProjectionMode() != ProjectionMode.MIRROR)
-		{
-			notifySetting(viewer, "Choose Mirror before rotating the image.");
-			return;
-		}
-		setMirrorRotation(rotation);
-		applyProjectionMode(element);
-		window.updateInventory();
-		notifySetting(viewer, "Mirror Rotation " + ChatColor.AQUA + getMirrorRotation().getDegrees() + " degrees");
+		lore.add(ChatColor.DARK_GRAY + "Click to toggle On / Off.");
 	}
 
 	private Element settingsOpenerElement(Window window, Player viewer)
@@ -2531,7 +2509,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private Element modeOption(PortalType target, Player p, Window window)
 	{
-		boolean current = getType() == target && getProjectionMode() != ProjectionMode.MIRROR;
+		boolean current = getType() == target && !isMirrorMode();
 		String label = F.capitalize(target.name().toLowerCase());
 		UIElement element = new UIElement("mode-" + target.name().toLowerCase());
 		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + label);
@@ -2543,9 +2521,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () ->
 		{
 			boolean changed = false;
-			if(getProjectionMode() == ProjectionMode.MIRROR)
+			if(isMirrorMode())
 			{
-				setProjectionMode(ProjectionMode.ON);
+				setMirrorMode(false);
 				changed = true;
 			}
 			if(getType() != target)
@@ -2564,26 +2542,62 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private Element mirrorModeOption(Player p, Window window)
 	{
-		boolean current = getProjectionMode() == ProjectionMode.MIRROR;
 		UIElement element = new UIElement("mode-mirror");
-		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Mirror");
-		element.setMaterial(new MaterialBlock(ProjectionMode.MIRROR.getIcon()));
-		element.setEnchanted(current);
-		element.addLore(ChatColor.GRAY + ProjectionMode.MIRROR.getLoreLine1());
-		element.addLore(ChatColor.GRAY + ProjectionMode.MIRROR.getLoreLine2());
-		element.addLore(ChatColor.GRAY + "No travel while mirrored.");
-		element.addLore(" ");
-		element.addLore(current ? ChatColor.GREEN + "Currently Selected" : ChatColor.GRAY + "Click to select");
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () ->
 		{
-			if(getProjectionMode() != ProjectionMode.MIRROR)
+			if(!isMirrorMode())
 			{
-				setProjectionMode(ProjectionMode.MIRROR);
+				setMirrorMode(true);
 				Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " mode set to Mirror.", getStructure().getCenter());
 			}
 			window.close();
 		}));
+		element.onRightClick((e) -> rotateMirrorImage(element, window, p, getMirrorRotation().clockwiseFor(getFrame())));
+		element.onShiftRightClick((e) -> rotateMirrorImage(element, window, p, getMirrorRotation().counterClockwiseFor(getFrame())));
+		applyMirrorModeOption(element);
 		return element;
+	}
+
+	private void applyMirrorModeOption(Element element)
+	{
+		boolean current = isMirrorMode();
+		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Mirror");
+		element.setMaterial(new MaterialBlock(Material.COPPER_TORCH));
+		element.setEnchanted(current);
+		KList<String> lore = element.getLore();
+		lore.clear();
+		lore.add(ChatColor.GRAY + "Reflect the local world back.");
+		lore.add(ChatColor.GRAY + "See yourself looking through the frame.");
+		lore.add(ChatColor.GRAY + "No travel while mirrored.");
+		lore.add(" ");
+		lore.add(current ? ChatColor.GREEN + "Currently Selected" : ChatColor.GRAY + "Left click to select");
+		if(!current)
+		{
+			return;
+		}
+		lore.add(ChatColor.GRAY + "Image rotation: " + ChatColor.AQUA + getMirrorRotation().getDegrees() + " degrees");
+		if(MirrorRotation.supportsQuarterTurns(getFrame()))
+		{
+			lore.add(ChatColor.DARK_GRAY + "Right click: rotate clockwise.");
+			lore.add(ChatColor.DARK_GRAY + "Shift + right click: rotate counterclockwise.");
+			return;
+		}
+		lore.add(ChatColor.GRAY + "Wall mirrors flip in 180 degree steps");
+		lore.add(ChatColor.GRAY + "so reflected entities stay aligned.");
+		lore.add(ChatColor.DARK_GRAY + "Right click: flip the reflected image.");
+	}
+
+	private void rotateMirrorImage(Element element, Window window, Player viewer, MirrorRotation rotation)
+	{
+		if(!isMirrorMode())
+		{
+			notifySetting(viewer, "Choose Mirror before rotating the image.");
+			return;
+		}
+		setMirrorRotation(rotation);
+		applyMirrorModeOption(element);
+		window.updateInventory();
+		notifySetting(viewer, "Mirror Rotation " + ChatColor.AQUA + getMirrorRotation().getDegrees() + " degrees");
 	}
 
 	private void notifySetting(Player viewer, String message)
@@ -2597,7 +2611,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private String currentModeLabel()
 	{
-		return getProjectionMode() == ProjectionMode.MIRROR ? "Mirror" : F.capitalize(getType().name().toLowerCase());
+		return isMirrorMode() ? "Mirror" : F.capitalize(getType().name().toLowerCase());
 	}
 
 	private static Material modeIcon(PortalType type)
@@ -2899,15 +2913,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public boolean isProjecting()
 	{
-		if(projectionMode == ProjectionMode.OFF)
-		{
-			return false;
-		}
-		if(projectionMode == ProjectionMode.MIRROR)
-		{
-			return true;
-		}
-		return !isInboundDisabledByOneWay();
+		return projectionMode == ProjectionMode.ON;
 	}
 
 	@Override
@@ -2924,15 +2930,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		{
 			normalized = ProjectionMode.OFF;
 		}
-		else if(dimensionalPortalKind.isManagedPortal()
-				&& (normalized == ProjectionMode.MIRROR || !normalized.isAllowedFor(PortalType.PORTAL)))
-		{
-			normalized = ProjectionMode.ON;
-		}
-		if(!normalized.isAllowedFor(getType()))
-		{
-			normalized = ProjectionMode.ON;
-		}
 		if(this.projectionMode == normalized)
 		{
 			return;
@@ -2940,6 +2937,31 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		this.projectionMode = normalized;
 		invalidateProjection();
 		save();
+		broadcastSettingsIfEnabled();
+		refreshOpenMenusUnlessApplyingRemote();
+	}
+
+	@Override
+	public boolean isMirrorMode()
+	{
+		return mirrorMode;
+	}
+
+	@Override
+	public void setMirrorMode(boolean mirrorMode)
+	{
+		boolean normalized = mirrorMode && !dimensionalPortalKind.isManagedPortal();
+		if(this.mirrorMode == normalized)
+		{
+			return;
+		}
+		this.mirrorMode = normalized;
+		invalidateProjection();
+		save();
+		if(Wormholes.portalSyncService != null)
+		{
+			Wormholes.portalSyncService.broadcastRemoteCache(this);
+		}
 		broadcastSettingsIfEnabled();
 		refreshOpenMenusUnlessApplyingRemote();
 	}
@@ -2976,13 +2998,19 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		return true;
 	}
 
-	private static ProjectionMode resolveProjectionMode(JSONObject j)
+	static ProjectionMode resolveProjectionMode(JSONObject j)
 	{
-		if(j.has("projectionMode"))
+		return "OFF".equalsIgnoreCase(j.optString("projectionMode", ProjectionMode.ON.name()))
+				? ProjectionMode.OFF : ProjectionMode.ON;
+	}
+
+	static boolean resolveMirrorMode(JSONObject j)
+	{
+		if(j.has("mirrorMode"))
 		{
-			return ProjectionMode.fromName(j.getString("projectionMode"));
+			return j.getBoolean("mirrorMode");
 		}
-		return ProjectionMode.ON;
+		return "MIRROR".equalsIgnoreCase(j.optString("projectionMode", ""));
 	}
 
 	static MirrorRotation resolveMirrorRotation(JSONObject j)
@@ -3346,35 +3374,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		{
 			Wormholes.projectionManager.removeProjector(this);
 		}
-	}
-
-	public boolean isInboundDisabledByOneWay()
-	{
-		ITunnel activeTunnel = tunnel;
-		if(activeTunnel == null)
-		{
-			return false;
-		}
-		IPortal destination = activeTunnel.getDestination();
-		if(!(destination instanceof ILocalPortal localDestination))
-		{
-			return false;
-		}
-		if(localDestination.getProjectionMode() != ProjectionMode.ONE_WAY)
-		{
-			return false;
-		}
-		ITunnel destinationTunnel = localDestination.getTunnel();
-		if(destinationTunnel == null)
-		{
-			return false;
-		}
-		IPortal destinationOfDestination = destinationTunnel.getDestination();
-		if(destinationOfDestination == null)
-		{
-			return false;
-		}
-		return getId().equals(destinationOfDestination.getId());
 	}
 
 	@Override

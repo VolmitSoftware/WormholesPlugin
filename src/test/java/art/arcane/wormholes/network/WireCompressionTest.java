@@ -142,6 +142,46 @@ class WireCompressionTest {
     }
 
     @Test
+    void boundedDecodeRejectsPayloadBeforeAllocatingItsDeclaredSize() throws IOException {
+        WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        try {
+            byte[] payload = compressibleBytes(8192, 401L);
+            byte[] encoded = compression.encode(payload, 0);
+
+            assertEquals(WireCompression.MODE_ZSTD_DICTLESS, encoded[0]);
+            assertThrows(IOException.class, () -> compression.decode(encoded, 4096));
+            assertArrayEquals(payload, compression.decode(encoded, payload.length).payload());
+        } finally {
+            compression.close();
+        }
+    }
+
+    @Test
+    void boundedDecodeAlsoRejectsOversizedPlainFrames() {
+        WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        try {
+            byte[] plain = new byte[257];
+            plain[0] = WireCompression.MODE_NONE;
+
+            assertThrows(IOException.class, () -> compression.decode(plain, 255));
+        } finally {
+            compression.close();
+        }
+    }
+
+    @Test
+    void closedCompressionRejectsNewCodecWork() {
+        WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        compression.close();
+
+        assertThrows(IOException.class, () -> compression.encode(new byte[32], 0));
+        assertThrows(IOException.class, () -> compression.encodeFramedFrame((byte) 1, new byte[32], 0));
+        assertThrows(IOException.class, () -> compression.decode(new byte[] { WireCompression.MODE_NONE }));
+        assertThrows(IllegalStateException.class, () -> compression.setCompressionLevel(5));
+        compression.close();
+    }
+
+    @Test
     void dictModeEncodesWithVersionPrefix() throws IOException {
         WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
         try {
@@ -171,6 +211,30 @@ class WireCompressionTest {
             assertEquals(WireCompression.MODE_ZSTD_DICTLESS, encoded[0]);
         } finally {
             compression.close();
+        }
+    }
+
+    @Test
+    void dictlessFrameAfterDictionaryFrameDoesNotReuseThePooledDictionary() throws IOException {
+        WireCompression sender = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        WireCompression receiver = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        try {
+            CompressionDictionary dictionary = trainDictionary();
+            sender.installDictionary(dictionary);
+            receiver.installDictionary(dictionary);
+            byte[] dictionaryPayload = compressibleBytes(4096, 61L);
+            byte[] dictionaryFrame = sender.encode(dictionaryPayload, dictionary.version());
+            assertEquals(WireCompression.MODE_ZSTD_DICT, dictionaryFrame[0]);
+            assertArrayEquals(dictionaryPayload, receiver.decode(dictionaryFrame).payload());
+
+            byte[] dictlessPayload = compressibleBytes(4096, 62L);
+            byte[] dictlessFrame = sender.encode(dictlessPayload, 0);
+
+            assertEquals(WireCompression.MODE_ZSTD_DICTLESS, dictlessFrame[0]);
+            assertArrayEquals(dictlessPayload, receiver.decode(dictlessFrame).payload());
+        } finally {
+            sender.close();
+            receiver.close();
         }
     }
 

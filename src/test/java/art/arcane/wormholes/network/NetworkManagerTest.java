@@ -640,13 +640,13 @@ class NetworkManagerTest {
         alphaConfig.listenEnabled = false;
         NetworkConfig.PeerEntry betaRoute = route(BETA_NAME, rawBeta);
         betaRoute.publicHost = "127.0.0.1";
-        betaRoute.publicPort = BETA_GAME_PORT;
+        betaRoute.publicPort = rawBeta;
 
         NetworkConfig betaConfig = config(rawBeta, BETA_NAME);
         betaConfig.listenEnabled = false;
         NetworkConfig.PeerEntry alphaRoute = route(ALPHA_NAME, rawAlpha);
         alphaRoute.publicHost = "127.0.0.1";
-        alphaRoute.publicPort = ALPHA_GAME_PORT;
+        alphaRoute.publicPort = rawAlpha;
 
         NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "jumbo-alpha");
         NetworkManager beta = manager(betaConfig, BETA_GAME_PORT, "jumbo-beta");
@@ -687,13 +687,13 @@ class NetworkManagerTest {
         alphaConfig.listenEnabled = false;
         NetworkConfig.PeerEntry betaRoute = route(BETA_NAME, rawBeta);
         betaRoute.publicHost = "127.0.0.1";
-        betaRoute.publicPort = BETA_GAME_PORT;
+        betaRoute.publicPort = rawBeta;
 
         NetworkConfig betaConfig = config(rawBeta, BETA_NAME);
         betaConfig.listenEnabled = false;
         NetworkConfig.PeerEntry alphaRoute = route(ALPHA_NAME, rawAlpha);
         alphaRoute.publicHost = "127.0.0.1";
-        alphaRoute.publicPort = ALPHA_GAME_PORT;
+        alphaRoute.publicPort = rawAlpha;
 
         NetworkManager alpha = manager(alphaConfig, ALPHA_GAME_PORT, "zip-alpha");
         NetworkManager beta = manager(betaConfig, BETA_GAME_PORT, "zip-beta");
@@ -885,7 +885,7 @@ class NetworkManagerTest {
         alpha.statusPollInFlight.add(BETA_NAME);
         alpha.start();
 
-        WireMessage.HandoffRequest handoff = new WireMessage.HandoffRequest(UUID.randomUUID(), UUID.randomUUID(), "Steve", UUID.randomUUID(), traversive());
+        WireMessage.HandoffRequest handoff = new WireMessage.HandoffRequest(UUID.randomUUID(), UUID.randomUUID(), "Steve", UUID.randomUUID(), true, traversive());
         assertTrue(alpha.send(BETA_NAME, handoff));
 
         assertEquals(0L, alpha.nextStatusAttempt.get(BETA_NAME));

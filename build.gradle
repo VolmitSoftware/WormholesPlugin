@@ -110,6 +110,7 @@ tasks.named('compileJava', JavaCompile).configure {
 
 tasks.named('test').configure {
     useJUnitPlatform()
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
 }
 
 configurations {
@@ -120,6 +121,7 @@ tasks.register('compileSpigotCompatibility', JavaCompile) {
     source = fileTree('src/main/java') {
         exclude '**/WormholesBootstrap.java'
         exclude '**/PaperCommandRegistrar.java'
+        exclude '**/PaperLivingEntityMoveListener.java'
     }
     classpath = files(sourceSets.main.compileClasspath.filter { File dependency ->
         !dependency.name.startsWith('paper-api-')
@@ -147,6 +149,7 @@ tasks.register('bandwidthHarness', JavaExec) {
     dependsOn(tasks.named('testClasses'))
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'art.arcane.wormholes.perf.WormholesBandwidthHarness'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
     systemProperties = System.properties.findAll {
         String key = it.key.toString()
         return key.startsWith('scenarios') || key.startsWith('duration') || key.startsWith('subscribers') || key.startsWith('chunks') || key.startsWith('activity')
@@ -188,7 +191,7 @@ repositories {
 
 dependencies {
     implementation('de.crazydev22.slimjar.helper:spigot:2.1.9')
-    implementation('com.github.luben:zstd-jni:1.5.6-9')
+    implementation('com.github.luben:zstd-jni:1.5.7-11')
     compileOnly(libs.paper)
     compileOnly(libs.fastutil)
     spigotCompatibility("org.spigotmc:spigot-api:${spigotApiVersion}")

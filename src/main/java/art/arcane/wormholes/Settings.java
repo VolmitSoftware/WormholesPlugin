@@ -12,7 +12,6 @@ public final class Settings {
     public static volatile double PORTAL_CONSTRUCT_SPEED = 0.975D;
     public static volatile double PORTAL_COLAPSE_SPEED = 0.91D;
     public static volatile boolean DEBUG_RENDERING = false;
-    public static volatile boolean DEBUG_TRAVERSABLES = true;
     public static volatile double FRUSTUM_CULLING_RATIO = 0.2D;
     public static volatile double CAPTURE_ZONE_RADIUS = 8.0D;
     public static volatile double PROJECTION_RANGE = 32.0D;
@@ -67,7 +66,6 @@ public final class Settings {
         PORTAL_CONSTRUCT_SPEED = clampDouble(main.portalConstructSpeed, 0.0D, 1.0D);
         PORTAL_COLAPSE_SPEED = clampDouble(main.portalCollapseSpeed, 0.0D, 1.0D);
         DEBUG_RENDERING = main.debugRendering;
-        DEBUG_TRAVERSABLES = main.debugTraversables;
         TELEPORT_COOLDOWN_MILLIS = clampInt(main.teleportCooldownMillis, 0, 60_000);
         ARRIVAL_PREWARM_ON_INTEREST = main.arrivalPrewarmOnInterest;
         ARRIVAL_WARM_RADIUS_CHUNKS = clampInt(main.arrivalWarmRadiusChunks, 0, 12);

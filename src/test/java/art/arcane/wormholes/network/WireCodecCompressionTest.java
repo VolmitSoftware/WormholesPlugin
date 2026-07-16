@@ -145,4 +145,28 @@ class WireCodecCompressionTest {
             dictMode.close();
         }
     }
+
+    @Test
+    void framedCodecClearsPooledDictionaryWhenNegotiationChanges() throws IOException {
+        WireCompression sender = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        WireCompression receiver = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        try {
+            CompressionDictionary dictionary = trainDictionary();
+            sender.installDictionary(dictionary);
+            receiver.installDictionary(dictionary);
+            WireMessage.Hello dictionaryMessage = bigCompressibleHello(8192);
+            byte[] dictionaryFrame = WireCodec.encodeFrame(dictionaryMessage, sender, dictionary.version());
+            WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(dictionaryFrame)), receiver);
+
+            WireMessage.Hello dictlessMessage = bigCompressibleHello(8193);
+            byte[] dictlessFrame = WireCodec.encodeFrame(dictlessMessage, sender, 0);
+            WireMessage decoded = WireCodec.readFrame(new DataInputStream(new ByteArrayInputStream(dictlessFrame)), receiver);
+
+            assertEquals(WireCompression.MODE_ZSTD_DICTLESS, dictlessFrame[5]);
+            assertEquals(dictlessMessage.pluginVersion(), assertInstanceOf(WireMessage.Hello.class, decoded).pluginVersion());
+        } finally {
+            sender.close();
+            receiver.close();
+        }
+    }
 }

@@ -12,6 +12,7 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
@@ -153,16 +154,18 @@ class MinecraftStatusBridgeWireTest {
         beta.start();
 
         AtomicReference<Throwable> serverFailure = new AtomicReference<>();
-        try (ServerSocket serverSocket = new ServerSocket(0)) {
+        try (ServerSocket serverSocket = new ServerSocket()) {
+            serverSocket.bind(new InetSocketAddress("127.0.0.1", 0));
             Thread server = new Thread(() -> serveStatusBridgeOnce(serverSocket, beta, serverFailure), "wire-test-status-server");
             server.setDaemon(true);
             server.start();
 
             NetworkConfig.PeerEntry peerEntry = new NetworkConfig.PeerEntry();
             peerEntry.name = BETA_NAME;
-            peerEntry.host = "";
+            peerEntry.host = "127.0.0.2";
             peerEntry.port = 0;
-            peerEntry.publicHost = "127.0.0.1";
+            peerEntry.fallbackHosts = "127.0.0.1";
+            peerEntry.publicHost = "127.0.0.2";
             peerEntry.publicPort = serverSocket.getLocalPort();
 
             MinecraftStatusBridge.StatusPacket response = alpha.statusBridge().poll(peerEntry, alpha.createStatusBridgePacket(BETA_NAME, List.of()));
@@ -174,6 +177,17 @@ class MinecraftStatusBridgeWireTest {
             assertEquals(BETA_NAME, response.sourceServer());
             assertTrue(beta.isPeerReady(ALPHA_NAME));
         }
+    }
+
+    @Test
+    void gamePortHostsPreferPublicAndDeduplicateFallbacks() {
+        NetworkConfig.PeerEntry peer = new NetworkConfig.PeerEntry();
+        peer.publicHost = "play.example.test";
+        peer.host = "play.example.test";
+        peer.fallbackHosts = "192.168.1.42, play.example.test, 127.0.0.1";
+
+        assertEquals(List.of("play.example.test", "192.168.1.42", "127.0.0.1"),
+            MinecraftStatusBridge.gamePortHosts(peer));
     }
 
     private static void serveStatusBridgeOnce(ServerSocket serverSocket, NetworkManager beta, AtomicReference<Throwable> failure) {

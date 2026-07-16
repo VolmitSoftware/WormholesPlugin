@@ -46,6 +46,10 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 
 	public void completeRemoteArrival(Entity entity, Traversive t);
 
+	public boolean canCompleteDeparture(Entity entity, Traversive traversive);
+
+	public void confirmDeparture(Entity entity, Traversive t);
+
 	public void rejectRemoteArrival(Entity entity, Traversive t);
 
 	public void rejectDeparture(Entity entity, Traversive t);
@@ -105,6 +109,10 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 	public ProjectionMode getProjectionMode();
 
 	public void setProjectionMode(ProjectionMode mode);
+
+	public boolean isMirrorMode();
+
+	public void setMirrorMode(boolean mirrorMode);
 
 	public MirrorRotation getMirrorRotation();
 

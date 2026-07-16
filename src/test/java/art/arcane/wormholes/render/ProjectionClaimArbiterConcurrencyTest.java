@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
@@ -16,7 +17,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.bukkit.World;
 import org.bukkit.block.data.BlockData;
@@ -24,6 +27,7 @@ import org.bukkit.entity.Player;
 import org.junit.jupiter.api.Test;
 
 import art.arcane.wormholes.portal.ILocalPortal;
+import art.arcane.wormholes.render.view.ProjectionWorldView;
 
 public final class ProjectionClaimArbiterConcurrencyTest {
     private static final long CELL_KEY = 42L;
@@ -36,7 +40,9 @@ public final class ProjectionClaimArbiterConcurrencyTest {
         World world = world();
         ILocalPortal portalA = portal(UUID.fromString("00000000-0000-0000-0000-000000000021"));
 
+        assertTrue(arbiter.isIdle());
         arbiter.beginFrame(observer, world, false);
+        assertFalse(arbiter.isIdle());
         ProjectionClaimArbiter.ClaimUpdateResult submitResult = arbiter.submit(observer, portalA, world, singleClaim(blockData("a")), 2.0D, false);
         assertEquals(0, submitResult.getBlockChanges());
         assertEquals(1, submitResult.getWinnerChanges());
@@ -48,6 +54,7 @@ public final class ProjectionClaimArbiterConcurrencyTest {
 
         ProjectionClaimArbiter.ClaimUpdateResult releaseResult = arbiter.release(observer, portalA, world, false);
         assertEquals(1, releaseResult.getReverts());
+        assertTrue(arbiter.isIdle());
         assertTrue(observersMap(arbiter).isEmpty());
     }
 
@@ -102,6 +109,38 @@ public final class ProjectionClaimArbiterConcurrencyTest {
         assertTrue(sentBlocks.containsKey(portalBKey));
         assertTrue(pendingLighting.contains(portalBKey));
         assertEquals(1, arbiter.release(observer, portalB, world, false).getReverts());
+    }
+
+    @Test
+    public void unresolvedLightingRevertKeepsObserverStateAlive() throws Exception {
+        ProjectionWorldView unavailableView = unavailableLightView();
+        ProjectionClaimArbiter arbiter = new ProjectionClaimArbiter(ignored -> unavailableView);
+        UUID observerId = UUID.fromString("00000000-0000-0000-0000-000000000015");
+        World world = world();
+        AtomicReference<World> playerWorld = new AtomicReference<World>();
+        AtomicBoolean online = new AtomicBoolean(true);
+        Player observer = player(observerId, playerWorld, online);
+        ILocalPortal portal = portal(UUID.fromString("00000000-0000-0000-0000-000000000026"));
+
+        arbiter.submit(observer, portal, world, singleClaim(blockData("a")), 2.0D, false);
+        Object observerState = observersMap(arbiter).get(observerId);
+        ProjectorLighting lighting = lighting(observerState);
+        Field field = ProjectorLighting.class.getDeclaredField("sentChunkSections");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Long2ObjectOpenHashMap<IntOpenHashSet> sent = (Long2ObjectOpenHashMap<IntOpenHashSet>) field.get(lighting);
+        sent.put(7L, new IntOpenHashSet(new int[] { 2 }));
+
+        playerWorld.set(world);
+        arbiter.release(observer, portal, world, true);
+
+        assertFalse(arbiter.isIdle());
+        assertTrue(arbiter.hasPendingLighting(observer));
+
+        online.set(false);
+        arbiter.retryPending(observer, world);
+
+        assertTrue(arbiter.isIdle());
     }
 
     @Test
@@ -230,6 +269,12 @@ public final class ProjectionClaimArbiterConcurrencyTest {
         return (LongOpenHashSet) field.get(observerState);
     }
 
+    private static ProjectorLighting lighting(Object observerState) throws Exception {
+        Field field = observerState.getClass().getDeclaredField("lighting");
+        field.setAccessible(true);
+        return (ProjectorLighting) field.get(observerState);
+    }
+
     private static Long2ObjectOpenHashMap<ProjectedBlockClaim> singleClaim(BlockData data) {
         return singleClaim(CELL_KEY, data);
     }
@@ -255,6 +300,62 @@ public final class ProjectionClaimArbiterConcurrencyTest {
             return defaultValue(proxy, method, args, "player-" + id);
         };
         return (Player) Proxy.newProxyInstance(Player.class.getClassLoader(), new Class<?>[] { Player.class }, handler);
+    }
+
+    private static Player player(UUID id, AtomicReference<World> playerWorld, AtomicBoolean online) {
+        InvocationHandler handler = (proxy, method, args) -> {
+            String methodName = method.getName();
+            if ("getUniqueId".equals(methodName)) {
+                return id;
+            }
+            if ("isOnline".equals(methodName)) {
+                return Boolean.valueOf(online.get());
+            }
+            if ("getWorld".equals(methodName)) {
+                return playerWorld.get();
+            }
+            return defaultValue(proxy, method, args, "player-" + id);
+        };
+        return (Player) Proxy.newProxyInstance(Player.class.getClassLoader(), new Class<?>[] { Player.class }, handler);
+    }
+
+    private static ProjectionWorldView unavailableLightView() {
+        return new ProjectionWorldView() {
+            @Override
+            public World getWorld() {
+                return null;
+            }
+
+            @Override
+            public int getMinHeight() {
+                return -64;
+            }
+
+            @Override
+            public int getMaxHeight() {
+                return 320;
+            }
+
+            @Override
+            public BlockData sampleBlockData(int x, int y, int z) {
+                return null;
+            }
+
+            @Override
+            public String sampleBiome(int x, int y, int z) {
+                return "minecraft:plains";
+            }
+
+            @Override
+            public int getLight(int x, int y, int z) {
+                return ProjectionWorldView.LIGHT_UNAVAILABLE;
+            }
+
+            @Override
+            public int getSkyDarken() {
+                return 0;
+            }
+        };
     }
 
     private static World world() {

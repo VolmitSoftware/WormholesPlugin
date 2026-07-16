@@ -31,6 +31,7 @@ public class PortalStructure implements IWritable
 	private final ConcurrentHashMap<Direction, List<AxisAlignedBB>> apertureFaceCache = new ConcurrentHashMap<>();
 	private KSet<Location> cornerCache;
 	private volatile Location centerCache;
+	private volatile long revision;
 	private long[] blockKeys = new long[0];
 	private int blockKeyCount;
 	private final KList<Vector> blockPositions = new KList<Vector>();
@@ -182,6 +183,11 @@ public class PortalStructure implements IWritable
 		return area;
 	}
 
+	public long getRevision()
+	{
+		return revision;
+	}
+
 	public void setArea(Cuboid area)
 	{
 		this.area = new AxisAlignedBB(area);
@@ -308,6 +314,7 @@ public class PortalStructure implements IWritable
 		cornerCache = null;
 		box = null;
 		centerCache = null;
+		revision++;
 	}
 
 	public double getSize()

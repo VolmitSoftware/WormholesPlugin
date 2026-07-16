@@ -27,7 +27,6 @@ import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.IPortal;
 import art.arcane.wormholes.portal.PortalFrame;
 import art.arcane.wormholes.portal.PortalStructure;
-import art.arcane.wormholes.portal.ProjectionMode;
 import art.arcane.wormholes.portal.RemotePortal;
 import art.arcane.wormholes.portal.UniversalTunnel;
 import art.arcane.wormholes.render.view.ProjectionEntityView;
@@ -57,15 +56,21 @@ public final class PortalProjector {
     private final HashMap<World, ProjectionWorldView> liveViews;
     private final ArrayList<RecursivePortalIndex> recursivePortalIndexes;
     private final BlockData airBlockData;
+    private final ProjectedSample maskAirSample;
     private final double[] scratchRot = new double[3];
     private final double[] scratchRemotePoint = new double[3];
     private final double[] scratchRemoteEye = new double[3];
+    private final int[] scratchAxisMin = new int[3];
+    private final int[] scratchAxisMax = new int[3];
+    private final double[] scratchAxisOrigin = new double[3];
+    private final double[] scratchSlabWindowBounds = new double[4];
+    private final int[] scratchCellCoords = new int[3];
     private final HoistedFrameTransform cellTransform = new HoistedFrameTransform();
 
     private final ProjectedEntityRenderer entityRenderer = new ProjectedEntityRenderer();
 
     private boolean firstProjectionDone;
-    private boolean closed;
+    private volatile boolean closed;
     private volatile boolean discardRequested;
     private long projectCallCount;
     private long lastDiagLogCall;
@@ -103,6 +108,16 @@ public final class PortalProjector {
     private int remoteResendStage;
     private long lastResampleVersion = -1L;
     private long lastSourceViewRevision = -1L;
+    private Frustum4D cachedFrustum;
+    private PortalStructure cachedFrustumStructure;
+    private long cachedFrustumStructureRevision = Long.MIN_VALUE;
+    private double cachedFrustumEyeX;
+    private double cachedFrustumEyeY;
+    private double cachedFrustumEyeZ;
+    private double cachedFrustumRange;
+    private double cachedFrustumNearPlanePadding;
+    private double cachedFrustumCullingRatio;
+    private double cachedFrustumAperturePadding;
 
     public PortalProjector(ILocalPortal portal, Player observer, ProjectionClaimArbiter claimArbiter,
                            ProjectionWorldViewProvider viewProvider, BooleanSupplier activeGuard) {
@@ -120,6 +135,7 @@ public final class PortalProjector {
         this.liveViews = new HashMap<World, ProjectionWorldView>(4);
         this.recursivePortalIndexes = new ArrayList<RecursivePortalIndex>(4);
         this.airBlockData = Material.AIR.createBlockData();
+        this.maskAirSample = ProjectedSample.maskAir(airBlockData);
         this.firstProjectionDone = false;
         this.closed = false;
         this.discardRequested = false;
@@ -233,8 +249,7 @@ public final class PortalProjector {
             return;
         }
 
-        ProjectionMode mode = portal.getProjectionMode();
-        boolean mirrorMode = mode == ProjectionMode.MIRROR;
+        boolean mirrorMode = portal.isMirrorMode();
         int mirrorRotationQuarterTurns = mirrorMode ? portal.getMirrorRotation().getQuarterTurns() : 0;
         if (!mirrorMode && !portal.hasTunnel()) {
             Wormholes.v("[Projector] portal " + portal.getName() + " no longer linked, closing projector");
@@ -338,7 +353,7 @@ public final class PortalProjector {
         double depthBlocks = range;
         Frustum4D next;
         try {
-            next = new Frustum4D(eye, portal.getStructure(), range);
+            next = frustumFor(eye, portal.getStructure(), range);
         } catch (RuntimeException ex) {
             Wormholes.w("[Projector] failed to build frustum for portal " + portal.getName() + " observer " + observer.getName() + ": " + ex);
             ex.printStackTrace();
@@ -461,12 +476,21 @@ public final class PortalProjector {
         int rightSign = projectionRightDirection.x() + projectionRightDirection.y() + projectionRightDirection.z();
         int upAxis = projectionUpDirection.x() != 0 ? 0 : (projectionUpDirection.y() != 0 ? 1 : 2);
         int upSign = projectionUpDirection.x() + projectionUpDirection.y() + projectionUpDirection.z();
-        int[] axisMin = new int[] { xa, ya, za };
-        int[] axisMax = new int[] { xb, yb, zb };
-        double[] axisOrigin = new double[] { localOriginX, localOriginY, localOriginZ };
+        int[] axisMin = scratchAxisMin;
+        axisMin[0] = xa;
+        axisMin[1] = ya;
+        axisMin[2] = za;
+        int[] axisMax = scratchAxisMax;
+        axisMax[0] = xb;
+        axisMax[1] = yb;
+        axisMax[2] = zb;
+        double[] axisOrigin = scratchAxisOrigin;
+        axisOrigin[0] = localOriginX;
+        axisOrigin[1] = localOriginY;
+        axisOrigin[2] = localOriginZ;
         double projectionFacingNormal = normalAxis == 0 ? projectionFacingX : (normalAxis == 1 ? projectionFacingY : projectionFacingZ);
-        double[] slabWindowBounds = new double[4];
-        int[] cellCoords = new int[3];
+        double[] slabWindowBounds = scratchSlabWindowBounds;
+        int[] cellCoords = scratchCellCoords;
 
         for (int n = axisMin[normalAxis]; n <= axisMax[normalAxis]; n++) {
             double slabSignedDistance = projectionFacingNormal * ((n + 0.5D) - axisOrigin[normalAxis]);
@@ -654,7 +678,7 @@ public final class PortalProjector {
         double depthBlocks = range;
         Frustum4D frustum;
         try {
-            frustum = new Frustum4D(eye, portal.getStructure(), range);
+            frustum = frustumFor(eye, portal.getStructure(), range);
         } catch (RuntimeException ex) {
             Wormholes.w("[Projector] failed to build entity frustum for portal " + portal.getName() + " observer " + observer.getName() + ": " + ex);
             ex.printStackTrace();
@@ -698,7 +722,7 @@ public final class PortalProjector {
         RecursivePortalHit hit = remainingDepth < 0 || world == null ? null : findRecursivePortalHit(world, sampleX, sampleY, sampleZ, eyeX, eyeY, eyeZ, excludedPortal, remainingDepth);
         if (hit != null) {
             if (shouldMaskRecursivePortalAperture(hit.traversable, hit.cycle, remainingDepth)) {
-                return ProjectedSample.maskAir(airBlockData);
+                return maskAirSample;
             }
             ProjectedSample nested = resolveProjectedSample(liveView(hit.world),
                 hit.pointX, hit.pointY, hit.pointZ,
@@ -706,7 +730,7 @@ public final class PortalProjector {
                 hit.destinationPortal,
                 remainingDepth - 1);
             if (nested.kind == ProjectedSampleKind.NO_SAMPLE) {
-                return ProjectedSample.maskAir(airBlockData);
+                return maskAirSample;
             }
             if (nested.kind != ProjectedSampleKind.BLOCK || !ProjectedBlockDataTransformer.requiresTransform(nested.data)) {
                 return nested;
@@ -1030,6 +1054,38 @@ public final class PortalProjector {
         hasCameraSnapshot = true;
     }
 
+    private Frustum4D frustumFor(Location eye, PortalStructure structure, double range) {
+        long structureRevision = structure.getRevision();
+        double nearPlanePadding = Settings.NEAR_PLANE_PADDING;
+        double cullingRatio = Settings.FRUSTUM_CULLING_RATIO;
+        double aperturePadding = Settings.PROJECTION_APERTURE_PADDING_BLOCKS;
+        Frustum4D cached = cachedFrustum;
+        if (cached != null
+            && cachedFrustumStructure == structure
+            && cachedFrustumStructureRevision == structureRevision
+            && cachedFrustumEyeX == eye.getX()
+            && cachedFrustumEyeY == eye.getY()
+            && cachedFrustumEyeZ == eye.getZ()
+            && cachedFrustumRange == range
+            && cachedFrustumNearPlanePadding == nearPlanePadding
+            && cachedFrustumCullingRatio == cullingRatio
+            && cachedFrustumAperturePadding == aperturePadding) {
+            return cached;
+        }
+        Frustum4D built = new Frustum4D(eye, structure, range);
+        cachedFrustum = built;
+        cachedFrustumStructure = structure;
+        cachedFrustumStructureRevision = structureRevision;
+        cachedFrustumEyeX = eye.getX();
+        cachedFrustumEyeY = eye.getY();
+        cachedFrustumEyeZ = eye.getZ();
+        cachedFrustumRange = range;
+        cachedFrustumNearPlanePadding = nearPlanePadding;
+        cachedFrustumCullingRatio = cullingRatio;
+        cachedFrustumAperturePadding = aperturePadding;
+        return built;
+    }
+
     private boolean computeStableResample(World destWorld, IPortal destAnchor, ProjectionWorldView sourceView) {
         if (!firstProjectionDone) {
             return true;
@@ -1116,7 +1172,7 @@ public final class PortalProjector {
         return transformed;
     }
 
-    public void close() {
+    public synchronized void close() {
         if (closed) {
             return;
         }
@@ -1156,7 +1212,7 @@ public final class PortalProjector {
         lastRenderedCells = 0;
     }
 
-    public void discard() {
+    public synchronized void discard() {
         if (closed) {
             return;
         }
@@ -1255,6 +1311,9 @@ public final class PortalProjector {
     }
 
     private static final class ProjectedSample {
+        private static final ProjectedSample NO_SAMPLE = new ProjectedSample(
+            ProjectedSampleKind.NO_SAMPLE, null, null, ProjectedBlockClaim.NO_REMOTE_KEY);
+
         private final ProjectedSampleKind kind;
         private final BlockData data;
         private final ProjectionWorldView lightView;
@@ -1268,7 +1327,7 @@ public final class PortalProjector {
         }
 
         private static ProjectedSample noSample() {
-            return new ProjectedSample(ProjectedSampleKind.NO_SAMPLE, null, null, ProjectedBlockClaim.NO_REMOTE_KEY);
+            return NO_SAMPLE;
         }
 
         private static ProjectedSample maskAir(BlockData airBlockData) {
@@ -1502,7 +1561,7 @@ public final class PortalProjector {
             boolean canTraverse;
             boolean mirrors;
             int mirrorQuarterTurns;
-            if (candidate.getProjectionMode() == ProjectionMode.MIRROR) {
+            if (candidate.isMirrorMode()) {
                 destination = candidate;
                 destinationWorld = candidate.getWorld();
                 destinationFrame = viewFrame(frame.flipNormal(), frontSide);

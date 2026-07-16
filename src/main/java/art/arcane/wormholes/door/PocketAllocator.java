@@ -20,7 +20,7 @@ import java.util.UUID;
 public final class PocketAllocator {
     public static final int DEFAULT_STRIDE = 8_192;
     public static final int DEFAULT_CENTER_Y = 128;
-    /** Keeps the complete 9x9 starter core inside one chunk for Folia ownership. */
+    /** Keeps the allocation seed inside its first room chunk. */
     public static final int CHUNK_CENTER_OFFSET = 8;
 
     private final int stride;

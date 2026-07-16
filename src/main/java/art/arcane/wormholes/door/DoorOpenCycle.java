@@ -5,7 +5,7 @@ package art.arcane.wormholes.door;
  *
  * <p>A successful transit consumes the current physical open cycle. If
  * redstone holds the block open, the cycle remains consumed and no second
- * player can trigger it. The state arms again only after the real door is
+ * traveler can trigger it. The state arms again only after the real door is
  * observed closed and then open.</p>
  */
 public final class DoorOpenCycle
@@ -45,7 +45,7 @@ public final class DoorOpenCycle
 	}
 
 	/**
-	 * Atomically claims the current open cycle for one player transit.
+	 * Atomically claims the current open cycle for one traveler transit.
 	 */
 	public synchronized boolean tryBegin(boolean open)
 	{

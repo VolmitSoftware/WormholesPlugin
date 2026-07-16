@@ -82,14 +82,23 @@ import art.arcane.wormholes.service.WormholesTelemetry;
 
 public final class ProjectedEntityRenderer {
     private static final AtomicInteger NEXT_FAKE_ID = new AtomicInteger(1_900_000_000);
+    private static final AtomicInteger NEXT_NAME_TEAM_ID = new AtomicInteger();
     private static final int METADATA_REFRESH_PASSES = 10;
     private static final String FLIP_NAME = "Dinnerbone";
     private static final String FLIP_NAME_ALT = "Grumm";
-    private static final String FLIP_TEAM_NAME = "wh_flip";
     private static final String NEUTRAL_PROFILE_NAME = "PortalPlayer";
     private static final int CUSTOM_NAME_INDEX = 2;
     private static final int CUSTOM_NAME_VISIBLE_INDEX = 3;
     private static final int PLAYER_SKIN_PARTS_INDEX = 17;
+    private static final int DISPLAY_POSITION_ROTATION_INTERPOLATION_INDEX = 10;
+    private static final int DISPLAY_BILLBOARD_INDEX = 15;
+    private static final int DISPLAY_BRIGHTNESS_INDEX = 16;
+    private static final int TEXT_DISPLAY_TEXT_INDEX = 23;
+    private static final int TEXT_DISPLAY_BACKGROUND_INDEX = 25;
+    private static final byte CENTER_BILLBOARD = 3;
+    private static final int FULL_BRIGHT = (15 << 4) | (15 << 20);
+    private static final int LABEL_INTERPOLATION_TICKS = 3;
+    private static final double LABEL_VERTICAL_MARGIN = 0.5D;
     private static final byte CAPE_PART_BIT = 0x01;
     private static final double MIN_POSITION_DELTA_SQUARED = 1.0E-6D;
     private static final double MAX_RELATIVE_MOVE_DELTA = 7.75D;
@@ -113,8 +122,9 @@ public final class ProjectedEntityRenderer {
     private boolean metadataBridgeFailed;
     private boolean localHideOwnershipWarningSent;
     private volatile boolean restoreAllRequested;
-    private boolean flipTeamSent;
-    private final Set<String> flipTeamMembers;
+    private final String vanillaNameTeamName;
+    private boolean vanillaNameTeamSent;
+    private final Map<String, Integer> vanillaNameTeamMembers;
     private User batchUser;
     private volatile int publishedSpoofedCount;
 
@@ -132,8 +142,9 @@ public final class ProjectedEntityRenderer {
         this.metadataBridgeFailed = false;
         this.localHideOwnershipWarningSent = false;
         this.restoreAllRequested = false;
-        this.flipTeamSent = false;
-        this.flipTeamMembers = new HashSet<String>(4);
+        this.vanillaNameTeamName = "whpn" + Integer.toUnsignedString(NEXT_NAME_TEAM_ID.getAndIncrement(), 36);
+        this.vanillaNameTeamSent = false;
+        this.vanillaNameTeamMembers = new HashMap<String, Integer>(4);
         this.batchUser = null;
     }
 
@@ -443,6 +454,7 @@ public final class ProjectedEntityRenderer {
             WrapperPlayServerSpawnEntity spawn = new WrapperPlayServerSpawnEntity(state.fakeId, Optional.of(state.fakeUuid),
                 packetType, position, pitch, yaw, yaw, 0, Optional.of(velocity));
             sendCounted(observer, spawn);
+            spawnPlayerLabel(observer, state, position, visual.height());
             state.updateRotation(yaw, pitch);
             state.rememberPosition(position);
             sendHeadLook(observer, state, yaw);
@@ -457,6 +469,8 @@ public final class ProjectedEntityRenderer {
         EntityMove move = state.updatePosition(position);
         boolean rotationChanged = state.updateRotation(yaw, pitch);
         sendEntityMovement(observer, state, move, rotationChanged, position, yaw, pitch, visual.onGround());
+        updatePlayerLabelPosition(observer, state, position, visual.height());
+        updatePlayerLabelText(observer, state, remoteView.getProfile(visual.id()));
         if (rotationChanged) {
             sendHeadLook(observer, state, yaw);
         }
@@ -550,6 +564,7 @@ public final class ProjectedEntityRenderer {
             WrapperPlayServerSpawnEntity spawn = new WrapperPlayServerSpawnEntity(state.fakeId, Optional.of(state.fakeUuid),
                 packetType, position, pitch, yaw, yaw, 0, Optional.of(velocity));
             sendCounted(observer, spawn);
+            spawnPlayerLabel(observer, state, position, visual.height());
             state.updateRotation(yaw, pitch);
             state.rememberPosition(position);
             sendHeadLook(observer, state, yaw);
@@ -561,6 +576,8 @@ public final class ProjectedEntityRenderer {
         EntityMove move = state.updatePosition(position);
         boolean rotationChanged = state.updateRotation(yaw, pitch);
         sendEntityMovement(observer, state, move, rotationChanged, position, yaw, pitch, visual.onGround());
+        updatePlayerLabelPosition(observer, state, position, visual.height());
+        updatePlayerLabelText(observer, state, entityView.getProfile(visual.id()));
         if (rotationChanged) {
             sendHeadLook(observer, state, yaw);
         }
@@ -603,12 +620,10 @@ public final class ProjectedEntityRenderer {
 
     private void sendRemotePlayerInfo(Player observer, RemoteViewCache.RemoteProfile profile, SpoofedEntity state, boolean upsideDown) {
         String sourceName = profile == null ? null : profile.name();
-        String name = upsideDown
-            ? (isFlipName(sourceName) ? NEUTRAL_PROFILE_NAME : FLIP_NAME)
-            : limitedProfileName(sourceName);
-        if (upsideDown) {
-            hideFlipNametag(observer, name);
-        }
+        String label = playerLabelText(sourceName);
+        String name = projectedProfileName(sourceName, state.fakeUuid, upsideDown);
+        state.setPlayerIdentity(name, label);
+        hideVanillaNametag(observer, name);
         UserProfile userProfile = new UserProfile(state.fakeUuid, name);
         if (profile != null && profile.textureValue() != null && !profile.textureValue().isEmpty()) {
             String signature = profile.textureSignature() == null || profile.textureSignature().isEmpty() ? null : profile.textureSignature();
@@ -623,6 +638,82 @@ public final class ProjectedEntityRenderer {
                 WrapperPlayServerPlayerInfoUpdate.Action.UPDATE_LATENCY,
                 WrapperPlayServerPlayerInfoUpdate.Action.UPDATE_HAT),
             info));
+    }
+
+    private void spawnPlayerLabel(Player observer, SpoofedEntity state, Vector3d playerPosition, double playerHeight) {
+        if (!state.playerEntry) {
+            return;
+        }
+        Vector3d labelPosition = playerLabelPosition(playerPosition, playerHeight);
+        WrapperPlayServerSpawnEntity spawn = new WrapperPlayServerSpawnEntity(state.labelFakeId, Optional.of(state.labelFakeUuid),
+            EntityTypes.TEXT_DISPLAY, labelPosition, 0.0F, 0.0F, 0.0F, 0, Optional.empty());
+        sendCounted(observer, spawn);
+        sendCounted(observer, new WrapperPlayServerEntityMetadata(state.labelFakeId, playerLabelMetadata(state.playerLabelText)));
+        state.rememberLabelPosition(labelPosition);
+    }
+
+    private void updatePlayerLabelPosition(Player observer, SpoofedEntity state, Vector3d playerPosition, double playerHeight) {
+        if (!state.playerEntry) {
+            return;
+        }
+        Vector3d labelPosition = playerLabelPosition(playerPosition, playerHeight);
+        EntityMove move = state.updateLabelPosition(labelPosition);
+        if (!move.moved) {
+            return;
+        }
+        if (move.relative) {
+            sendCounted(observer, new WrapperPlayServerEntityRelativeMove(
+                state.labelFakeId, move.deltaX, move.deltaY, move.deltaZ, false));
+            return;
+        }
+        sendCounted(observer, new WrapperPlayServerEntityTeleport(state.labelFakeId, labelPosition, 0.0F, 0.0F, false));
+    }
+
+    private void updatePlayerLabelText(Player observer, SpoofedEntity state, RemoteViewCache.RemoteProfile profile) {
+        if (!state.playerEntry) {
+            return;
+        }
+        String sourceName = profile == null ? null : profile.name();
+        String label = playerLabelText(sourceName);
+        if (!state.updatePlayerLabelText(label)) {
+            return;
+        }
+        sendCounted(observer, new WrapperPlayServerEntityMetadata(state.labelFakeId, playerLabelTextMetadata(label)));
+    }
+
+    static Vector3d playerLabelPosition(Vector3d playerPosition, double playerHeight) {
+        double safeHeight = Double.isFinite(playerHeight) ? Math.max(0.0D, playerHeight) : 0.0D;
+        return new Vector3d(playerPosition.getX(), playerPosition.getY() + safeHeight + LABEL_VERTICAL_MARGIN, playerPosition.getZ());
+    }
+
+    static List<EntityData<?>> playerLabelMetadata(String label) {
+        PlayerLabelMetadataSpec spec = playerLabelMetadataSpec(label);
+        return List.of(
+            new EntityData<Integer>(spec.interpolationIndex(), EntityDataTypes.INT, Integer.valueOf(spec.interpolationTicks())),
+            new EntityData<Byte>(spec.billboardIndex(), EntityDataTypes.BYTE, Byte.valueOf(spec.billboard())),
+            new EntityData<Integer>(spec.brightnessIndex(), EntityDataTypes.INT, Integer.valueOf(spec.brightness())),
+            new EntityData<Component>(spec.textIndex(), EntityDataTypes.ADV_COMPONENT, spec.text()),
+            new EntityData<Integer>(spec.backgroundIndex(), EntityDataTypes.INT, Integer.valueOf(spec.background()))
+        );
+    }
+
+    static PlayerLabelMetadataSpec playerLabelMetadataSpec(String label) {
+        return new PlayerLabelMetadataSpec(
+            DISPLAY_POSITION_ROTATION_INTERPOLATION_INDEX,
+            LABEL_INTERPOLATION_TICKS,
+            DISPLAY_BILLBOARD_INDEX,
+            CENTER_BILLBOARD,
+            DISPLAY_BRIGHTNESS_INDEX,
+            FULL_BRIGHT,
+            TEXT_DISPLAY_TEXT_INDEX,
+            Component.text(playerLabelText(label), NamedTextColor.WHITE),
+            TEXT_DISPLAY_BACKGROUND_INDEX,
+            0);
+    }
+
+    static List<EntityData<?>> playerLabelTextMetadata(String label) {
+        return List.of(new EntityData<Component>(TEXT_DISPLAY_TEXT_INDEX, EntityDataTypes.ADV_COMPONENT,
+            Component.text(playerLabelText(label), NamedTextColor.WHITE)));
     }
 
     private EntityType packetEntityTypeByKey(String typeKey) {
@@ -659,6 +750,7 @@ public final class ProjectedEntityRenderer {
                 beginBatch(observer);
                 try {
                     destroySpoofedEntities(observer, spoofed.values());
+                    removeVanillaNameTeam(observer);
                 } finally {
                     endBatch();
                 }
@@ -668,6 +760,8 @@ public final class ProjectedEntityRenderer {
             spoofed.clear();
             visible.clear();
             visibleLocalHides.clear();
+            vanillaNameTeamMembers.clear();
+            vanillaNameTeamSent = false;
             publishedSpoofedCount = 0;
         }
     }
@@ -678,6 +772,8 @@ public final class ProjectedEntityRenderer {
         spoofed.clear();
         visible.clear();
         visibleLocalHides.clear();
+        vanillaNameTeamMembers.clear();
+        vanillaNameTeamSent = false;
         publishedSpoofedCount = 0;
     }
 
@@ -781,6 +877,7 @@ public final class ProjectedEntityRenderer {
             WrapperPlayServerSpawnEntity spawn = new WrapperPlayServerSpawnEntity(state.fakeId, Optional.of(state.fakeUuid),
                 packetType, position, pitch, yaw, yaw, 0, Optional.of(velocity));
             sendCounted(observer, spawn);
+            spawnPlayerLabel(observer, state, position, entity.getHeight());
             state.updateRotation(yaw, pitch);
             state.rememberPosition(position);
             sendHeadLook(observer, state, yaw);
@@ -792,6 +889,7 @@ public final class ProjectedEntityRenderer {
         EntityMove move = state.updatePosition(position);
         boolean rotationChanged = state.updateRotation(yaw, pitch);
         sendEntityMovement(observer, state, move, rotationChanged, position, yaw, pitch, entity.isOnGround());
+        updatePlayerLabelPosition(observer, state, position, entity.getHeight());
         if (rotationChanged) {
             sendHeadLook(observer, state, yaw);
         }
@@ -857,6 +955,7 @@ public final class ProjectedEntityRenderer {
 
         int[] ids = null;
         List<UUID> playerInfos = null;
+        List<SpoofedEntity> playerStates = null;
         int count = 0;
         Iterator<Map.Entry<UUID, SpoofedEntity>> iterator = spoofed.entrySet().iterator();
         while (iterator.hasNext()) {
@@ -866,13 +965,17 @@ public final class ProjectedEntityRenderer {
             }
             SpoofedEntity state = entry.getValue();
             if (ids == null) {
-                ids = new int[spoofed.size()];
+                ids = new int[spoofed.size() * 2];
                 playerInfos = new ArrayList<UUID>(4);
+                playerStates = new ArrayList<SpoofedEntity>(4);
             }
             ids[count] = state.fakeId;
             count++;
             if (state.playerEntry) {
+                ids[count] = state.labelFakeId;
+                count++;
                 playerInfos.add(state.fakeUuid);
+                playerStates.add(state);
             }
             if (Settings.DEBUG) {
                 Wormholes.v("[spoof] CULL " + (state.playerEntry ? "player" : "entity") + " src=" + entry.getKey() + " fakeId=" + state.fakeId + " -> " + observer.getName() + " (no longer in view)");
@@ -888,6 +991,9 @@ public final class ProjectedEntityRenderer {
         sendCounted(observer, new WrapperPlayServerDestroyEntities(trimmed));
         if (!playerInfos.isEmpty()) {
             sendCounted(observer, new WrapperPlayServerPlayerInfoRemove(playerInfos));
+            for (SpoofedEntity state : playerStates) {
+                releaseVanillaNametag(observer, state);
+            }
         }
     }
 
@@ -895,16 +1001,19 @@ public final class ProjectedEntityRenderer {
         List<UUID> players = new ArrayList<UUID>();
         int size = spoofed.size();
         if (size > 0) {
-            int[] ids = new int[size];
+            int[] ids = new int[size * 2];
             int index = 0;
             for (SpoofedEntity state : states) {
                 ids[index] = state.fakeId;
                 index++;
                 if (state.playerEntry) {
+                    ids[index] = state.labelFakeId;
+                    index++;
                     players.add(state.fakeUuid);
                 }
             }
-            sendCounted(observer, new WrapperPlayServerDestroyEntities(ids));
+            int[] trimmed = index == ids.length ? ids : Arrays.copyOf(ids, index);
+            sendCounted(observer, new WrapperPlayServerDestroyEntities(trimmed));
         }
         if (!players.isEmpty()) {
             sendCounted(observer, new WrapperPlayServerPlayerInfoRemove(players));
@@ -1029,10 +1138,11 @@ public final class ProjectedEntityRenderer {
     }
 
     private void sendPlayerInfo(Player observer, Player player, SpoofedEntity state, boolean upsideDown) {
-        String name = profileName(player, upsideDown);
-        if (upsideDown) {
-            hideFlipNametag(observer, name);
-        }
+        String sourceName = player.getName();
+        String label = playerLabelText(sourceName);
+        String name = projectedProfileName(sourceName, state.fakeUuid, upsideDown);
+        state.setPlayerIdentity(name, label);
+        hideVanillaNametag(observer, name);
         UserProfile userProfile = new UserProfile(state.fakeUuid, name);
         try {
             UserProfile sourceProfile = PacketEvents.getAPI().getPlayerManager().getUser(player).getProfile();
@@ -1055,15 +1165,19 @@ public final class ProjectedEntityRenderer {
             info));
     }
 
-    private String profileName(Player player, boolean upsideDown) {
-        String name = player.getName();
+    static String projectedProfileName(String sourceName, UUID fakeUuid, boolean upsideDown) {
         if (upsideDown) {
-            return isFlipName(name) ? NEUTRAL_PROFILE_NAME : FLIP_NAME;
+            return isFlipName(sourceName) ? NEUTRAL_PROFILE_NAME : FLIP_NAME;
         }
-        return limitedProfileName(name);
+        return syntheticProfileName(fakeUuid);
     }
 
-    private String limitedProfileName(String name) {
+    static String syntheticProfileName(UUID fakeUuid) {
+        String compact = fakeUuid.toString().replace("-", "");
+        return "wh" + compact.substring(0, 14);
+    }
+
+    static String playerLabelText(String name) {
         String safe = name == null || name.isBlank() ? NEUTRAL_PROFILE_NAME : name;
         if (safe.length() <= 16) {
             return safe;
@@ -1071,17 +1185,21 @@ public final class ProjectedEntityRenderer {
         return safe.substring(0, 16);
     }
 
-    private void hideFlipNametag(Player observer, String name) {
-        ensureFlipTeam(observer);
-        if (name == null || name.isEmpty() || !flipTeamMembers.add(name)) {
+    private void hideVanillaNametag(Player observer, String name) {
+        if (name == null || name.isEmpty()) {
             return;
         }
-        sendCounted(observer, new WrapperPlayServerTeams(FLIP_TEAM_NAME,
-            WrapperPlayServerTeams.TeamMode.ADD_ENTITIES, Optional.<WrapperPlayServerTeams.ScoreBoardTeamInfo>empty(), name));
+        ensureVanillaNameTeam(observer);
+        int references = vanillaNameTeamMembers.getOrDefault(name, 0);
+        vanillaNameTeamMembers.put(name, references + 1);
+        if (references == 0) {
+            sendCounted(observer, new WrapperPlayServerTeams(vanillaNameTeamName,
+                WrapperPlayServerTeams.TeamMode.ADD_ENTITIES, (WrapperPlayServerTeams.ScoreBoardTeamInfo) null, name));
+        }
     }
 
-    private void ensureFlipTeam(Player observer) {
-        if (flipTeamSent) {
+    private void ensureVanillaNameTeam(Player observer) {
+        if (vanillaNameTeamSent) {
             return;
         }
         WrapperPlayServerTeams.ScoreBoardTeamInfo info = new WrapperPlayServerTeams.ScoreBoardTeamInfo(
@@ -1090,15 +1208,48 @@ public final class ProjectedEntityRenderer {
             WrapperPlayServerTeams.CollisionRule.NEVER,
             NamedTextColor.WHITE,
             WrapperPlayServerTeams.OptionData.NONE);
-        sendCounted(observer, new WrapperPlayServerTeams(FLIP_TEAM_NAME, WrapperPlayServerTeams.TeamMode.CREATE, info, FLIP_NAME, FLIP_NAME_ALT));
-        flipTeamMembers.add(FLIP_NAME);
-        flipTeamMembers.add(FLIP_NAME_ALT);
-        flipTeamSent = true;
+        sendCounted(observer, new WrapperPlayServerTeams(vanillaNameTeamName,
+            WrapperPlayServerTeams.TeamMode.CREATE, info, List.of()));
+        vanillaNameTeamSent = true;
+    }
+
+    private void releaseVanillaNametag(Player observer, SpoofedEntity state) {
+        String name = state.playerProfileName;
+        if (name == null) {
+            return;
+        }
+        Integer references = vanillaNameTeamMembers.get(name);
+        if (references == null) {
+            return;
+        }
+        if (references.intValue() > 1) {
+            vanillaNameTeamMembers.put(name, references.intValue() - 1);
+            return;
+        }
+        vanillaNameTeamMembers.remove(name);
+        if (vanillaNameTeamSent) {
+            sendCounted(observer, new WrapperPlayServerTeams(vanillaNameTeamName,
+                WrapperPlayServerTeams.TeamMode.REMOVE_ENTITIES, (WrapperPlayServerTeams.ScoreBoardTeamInfo) null, name));
+        }
+    }
+
+    private void removeVanillaNameTeam(Player observer) {
+        if (!vanillaNameTeamSent) {
+            return;
+        }
+        sendCounted(observer, new WrapperPlayServerTeams(vanillaNameTeamName,
+            WrapperPlayServerTeams.TeamMode.REMOVE, (WrapperPlayServerTeams.ScoreBoardTeamInfo) null, List.of()));
+        vanillaNameTeamMembers.clear();
+        vanillaNameTeamSent = false;
     }
 
     private void destroySingleSpoof(Player observer, SpoofedEntity state) {
-        sendCounted(observer, new WrapperPlayServerDestroyEntities(state.fakeId));
+        int[] ids = state.playerEntry
+            ? new int[] { state.fakeId, state.labelFakeId }
+            : new int[] { state.fakeId };
+        sendCounted(observer, new WrapperPlayServerDestroyEntities(ids));
         if (state.playerEntry) {
+            releaseVanillaNametag(observer, state);
             sendCounted(observer, new WrapperPlayServerPlayerInfoRemove(List.of(state.fakeUuid)));
         }
     }
@@ -1391,6 +1542,8 @@ public final class ProjectedEntityRenderer {
         private final int fakeId;
         private final UUID fakeUuid;
         private final boolean playerEntry;
+        private final int labelFakeId;
+        private final UUID labelFakeUuid;
         private final boolean upsideDown;
         private final boolean living;
         private int leashedToFakeId = Integer.MIN_VALUE;
@@ -1404,17 +1557,25 @@ public final class ProjectedEntityRenderer {
         private double x;
         private double y;
         private double z;
+        private double labelX;
+        private double labelY;
+        private double labelZ;
         private boolean rotationKnown;
         private boolean velocityKnown;
         private boolean positionKnown;
+        private boolean labelPositionKnown;
         private int metadataRefreshPasses;
         private String lastMetadataSignature;
         private String lastEquipmentSignature;
+        private String playerProfileName;
+        private String playerLabelText;
 
         private SpoofedEntity(int fakeId, UUID fakeUuid, boolean playerEntry, boolean upsideDown, boolean living) {
             this.fakeId = fakeId;
             this.fakeUuid = fakeUuid;
             this.playerEntry = playerEntry;
+            this.labelFakeId = playerEntry ? NEXT_FAKE_ID.getAndIncrement() : -1;
+            this.labelFakeUuid = playerEntry ? UUID.randomUUID() : null;
             this.upsideDown = upsideDown;
             this.living = living;
             this.yaw = 0.0F;
@@ -1425,10 +1586,27 @@ public final class ProjectedEntityRenderer {
             this.x = 0.0D;
             this.y = 0.0D;
             this.z = 0.0D;
+            this.labelX = 0.0D;
+            this.labelY = 0.0D;
+            this.labelZ = 0.0D;
             this.rotationKnown = false;
             this.velocityKnown = false;
             this.positionKnown = false;
+            this.labelPositionKnown = false;
             this.metadataRefreshPasses = METADATA_REFRESH_PASSES;
+        }
+
+        private void setPlayerIdentity(String profileName, String labelText) {
+            this.playerProfileName = profileName;
+            this.playerLabelText = labelText;
+        }
+
+        private boolean updatePlayerLabelText(String labelText) {
+            if (labelText.equals(this.playerLabelText)) {
+                return false;
+            }
+            this.playerLabelText = labelText;
+            return true;
         }
 
         private void rememberPosition(Vector3d position) {
@@ -1436,6 +1614,41 @@ public final class ProjectedEntityRenderer {
             y = position.getY();
             z = position.getZ();
             positionKnown = true;
+        }
+
+        private void rememberLabelPosition(Vector3d position) {
+            labelX = position.getX();
+            labelY = position.getY();
+            labelZ = position.getZ();
+            labelPositionKnown = true;
+        }
+
+        private EntityMove updateLabelPosition(Vector3d position) {
+            double nextX = position.getX();
+            double nextY = position.getY();
+            double nextZ = position.getZ();
+            if (!labelPositionKnown) {
+                labelX = nextX;
+                labelY = nextY;
+                labelZ = nextZ;
+                labelPositionKnown = true;
+                return EntityMove.teleport();
+            }
+
+            double deltaX = nextX - labelX;
+            double deltaY = nextY - labelY;
+            double deltaZ = nextZ - labelZ;
+            double distanceSquared = (deltaX * deltaX) + (deltaY * deltaY) + (deltaZ * deltaZ);
+            labelX = nextX;
+            labelY = nextY;
+            labelZ = nextZ;
+            if (distanceSquared <= MIN_POSITION_DELTA_SQUARED) {
+                return EntityMove.none();
+            }
+            if (Math.abs(deltaX) > MAX_RELATIVE_MOVE_DELTA || Math.abs(deltaY) > MAX_RELATIVE_MOVE_DELTA || Math.abs(deltaZ) > MAX_RELATIVE_MOVE_DELTA) {
+                return EntityMove.teleport();
+            }
+            return EntityMove.relative(deltaX, deltaY, deltaZ);
         }
 
         private EntityMove updatePosition(Vector3d position) {
@@ -1498,6 +1711,18 @@ public final class ProjectedEntityRenderer {
         private void resetMetadataCooldown() {
             metadataRefreshPasses = METADATA_REFRESH_PASSES;
         }
+    }
+
+    record PlayerLabelMetadataSpec(int interpolationIndex,
+                                   int interpolationTicks,
+                                   int billboardIndex,
+                                   byte billboard,
+                                   int brightnessIndex,
+                                   int brightness,
+                                   int textIndex,
+                                   Component text,
+                                   int backgroundIndex,
+                                   int background) {
     }
 
     private static final class EntityStateSnapshot {

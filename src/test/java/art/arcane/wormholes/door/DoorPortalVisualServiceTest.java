@@ -1,5 +1,6 @@
 package art.arcane.wormholes.door;
 
+import org.bukkit.Axis;
 import org.bukkit.Material;
 import org.bukkit.Server;
 import org.bukkit.World;
@@ -23,35 +24,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class DoorPortalVisualServiceTest
 {
 	private static final float EPSILON = 0.00001F;
+	private static final float PIXEL = 0.0625F;
 
 	@Test
-	void northAndSouthSitOutsideTheirClosedDoorEdges()
+	void portalKeepsTheHingeInsetAndExtendsFlushToEveryLatchEdge()
 	{
-		DoorPortalVisualService.PortalPlaneGeometry north = DoorPortalVisualService.geometry(BlockFace.NORTH);
-		DoorPortalVisualService.PortalPlaneGeometry south = DoorPortalVisualService.geometry(BlockFace.SOUTH);
-
-		assertEquals(-0.4375F, north.translationX(), EPSILON);
-		assertEquals(0.0625F, north.translationY(), EPSILON);
-		assertEquals(0.5F, north.translationZ(), EPSILON);
-		assertEquals(-0.535F, south.translationZ(), EPSILON);
-		assertEquals(0.875F, north.scaleX(), EPSILON);
-		assertEquals(1.875F, north.scaleY(), EPSILON);
-		assertEquals(0.035F, north.scaleZ(), EPSILON);
-	}
-
-	@Test
-	void eastAndWestSitOutsideTheirClosedDoorEdges()
-	{
-		DoorPortalVisualService.PortalPlaneGeometry east = DoorPortalVisualService.geometry(BlockFace.EAST);
-		DoorPortalVisualService.PortalPlaneGeometry west = DoorPortalVisualService.geometry(BlockFace.WEST);
-
-		assertEquals(-0.535F, east.translationX(), EPSILON);
-		assertEquals(0.0625F, east.translationY(), EPSILON);
-		assertEquals(-0.4375F, east.translationZ(), EPSILON);
-		assertEquals(0.5F, west.translationX(), EPSILON);
-		assertEquals(0.035F, east.scaleX(), EPSILON);
-		assertEquals(1.875F, east.scaleY(), EPSILON);
-		assertEquals(0.875F, east.scaleZ(), EPSILON);
+		assertLateralBounds(BlockFace.NORTH, Door.Hinge.LEFT, PIXEL, 1.0F);
+		assertLateralBounds(BlockFace.NORTH, Door.Hinge.RIGHT, 0.0F, 1.0F - PIXEL);
+		assertLateralBounds(BlockFace.SOUTH, Door.Hinge.LEFT, 0.0F, 1.0F - PIXEL);
+		assertLateralBounds(BlockFace.SOUTH, Door.Hinge.RIGHT, PIXEL, 1.0F);
+		assertLateralBounds(BlockFace.EAST, Door.Hinge.LEFT, PIXEL, 1.0F);
+		assertLateralBounds(BlockFace.EAST, Door.Hinge.RIGHT, 0.0F, 1.0F - PIXEL);
+		assertLateralBounds(BlockFace.WEST, Door.Hinge.LEFT, 0.0F, 1.0F - PIXEL);
+		assertLateralBounds(BlockFace.WEST, Door.Hinge.RIGHT, PIXEL, 1.0F);
 	}
 
 	@Test
@@ -59,25 +44,86 @@ class DoorPortalVisualServiceTest
 	{
 		for(BlockFace facing : new BlockFace[] {BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST})
 		{
-			DoorPortalVisualService.PortalPlaneGeometry geometry = DoorPortalVisualService.geometry(facing);
-			assertEquals(0.0625F, geometry.translationY(), EPSILON);
-			assertEquals(1.9375F, geometry.translationY() + geometry.scaleY(), EPSILON);
-			assertEquals(1.875F, geometry.scaleY(), EPSILON);
-			assertEquals(0.875F, Math.max(geometry.scaleX(), geometry.scaleZ()), EPSILON);
+			for(Door.Hinge hinge : Door.Hinge.values())
+			{
+				DoorPortalVisualService.PortalPlaneGeometry geometry =
+					DoorPortalVisualService.geometry(facing, hinge);
+				assertEquals(PIXEL, geometry.translationY(), EPSILON);
+				assertEquals(1.9375F, geometry.translationY() + geometry.scaleY(), EPSILON);
+				assertEquals(1.875F, geometry.scaleY(), EPSILON);
+				assertEquals(0.9375F, Math.max(geometry.scaleX(), geometry.scaleZ()), EPSILON);
+			}
 		}
 	}
 
 	@Test
-	void portalSurfaceUsesAnOpaqueBlock()
+	void movementThresholdMatchesTheVisiblePortalSurface()
 	{
-		assertEquals(Material.LIGHT_BLUE_CONCRETE, DoorPortalVisualService.PORTAL_MATERIAL);
+		for(BlockFace facing : new BlockFace[] {BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST})
+		{
+			for(Door.Hinge hinge : Door.Hinge.values())
+			{
+				DoorPortalVisualService.PortalPlaneGeometry geometry =
+					DoorPortalVisualService.geometry(facing, hinge);
+				double localCenterX = geometry.translationX() + (geometry.scaleX() / 2.0D);
+				double localCenterZ = geometry.translationZ() + (geometry.scaleZ() / 2.0D);
+				double visibleOffset = (localCenterX * facing.getModX()) + (localCenterZ * facing.getModZ());
+				DoorwayPlane plane = new DoorwayPlane(0, 64, 0, facing);
+
+				assertEquals(DoorwayPlane.PORTAL_THRESHOLD_OFFSET, visibleOffset, EPSILON);
+				assertEquals(DoorwayPlane.PORTAL_THRESHOLD_OFFSET,
+					((plane.center().x() - 0.5D) * facing.getModX())
+						+ ((plane.center().z() - 0.5D) * facing.getModZ()),
+					EPSILON);
+			}
+		}
+	}
+
+	@Test
+	void portalUsesAnOpaqueBackingAndAnimatedOverlay()
+	{
+		assertEquals(Material.CRYING_OBSIDIAN, DoorPortalVisualService.PORTAL_MATERIAL);
+		assertEquals(Material.NETHER_PORTAL, DoorPortalVisualService.PORTAL_OVERLAY_MATERIAL);
+		assertEquals(Axis.X, DoorPortalVisualService.overlayAxis(BlockFace.NORTH));
+		assertEquals(Axis.X, DoorPortalVisualService.overlayAxis(BlockFace.SOUTH));
+		assertEquals(Axis.Z, DoorPortalVisualService.overlayAxis(BlockFace.EAST));
+		assertEquals(Axis.Z, DoorPortalVisualService.overlayAxis(BlockFace.WEST));
+	}
+
+	@Test
+	void animatedOverlayStraddlesBothBackingFacesWithoutZFighting()
+	{
+		for(BlockFace facing : new BlockFace[] {BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST})
+		{
+			for(Door.Hinge hinge : Door.Hinge.values())
+			{
+				DoorPortalVisualService.PortalPlaneGeometry backing =
+					DoorPortalVisualService.geometry(facing, hinge);
+				DoorPortalVisualService.PortalPlaneGeometry overlay =
+					DoorPortalVisualService.overlayGeometry(backing, facing);
+				float backingStart = normalTranslation(backing, facing);
+				float backingEnd = backingStart + normalScale(backing, facing);
+				float overlayStart = normalTranslation(overlay, facing);
+				float overlayScale = normalScale(overlay, facing);
+
+				assertEquals(backingStart - 0.00125F, overlayStart + (overlayScale * 0.375F), EPSILON);
+				assertEquals(backingEnd + 0.00125F, overlayStart + (overlayScale * 0.625F), EPSILON);
+				assertEquals(backing.translationY(), overlay.translationY(), EPSILON);
+				assertEquals(backing.scaleY(), overlay.scaleY(), EPSILON);
+			}
+		}
 	}
 
 	@Test
 	void nonCardinalFacingsAreRejected()
 	{
-		assertThrows(IllegalArgumentException.class, () -> DoorPortalVisualService.geometry(BlockFace.UP));
-		assertThrows(NullPointerException.class, () -> DoorPortalVisualService.geometry(null));
+		assertThrows(IllegalArgumentException.class,
+			() -> DoorPortalVisualService.geometry(BlockFace.UP, Door.Hinge.LEFT));
+		assertThrows(NullPointerException.class,
+			() -> DoorPortalVisualService.geometry(null, Door.Hinge.LEFT));
+		assertThrows(NullPointerException.class,
+			() -> DoorPortalVisualService.geometry(BlockFace.NORTH, null));
+		assertThrows(IllegalArgumentException.class, () -> DoorPortalVisualService.overlayAxis(BlockFace.UP));
 	}
 
 	@Test
@@ -109,6 +155,125 @@ class DoorPortalVisualServiceTest
 		assertDoesNotThrow(service::close);
 		assertDoesNotThrow(service::close);
 		assertDoesNotThrow(() -> service.show(endpoint, snapshot));
+	}
+
+	@Test
+	void hidingPortalRemovesBackingAndAnimatedOverlay()
+	{
+		UUID worldId = UUID.randomUUID();
+		DoorItemIdentity identity = DoorItemIdentity.personal(UUID.randomUUID());
+		AtomicBoolean backingRemoved = new AtomicBoolean();
+		AtomicBoolean overlayRemoved = new AtomicBoolean();
+		AtomicInteger spawnCalls = new AtomicInteger();
+		BlockDisplay backing = display(backingRemoved);
+		BlockDisplay overlay = display(overlayRemoved);
+		World world = (World) Proxy.newProxyInstance(
+			World.class.getClassLoader(),
+			new Class<?>[] {World.class},
+			(proxy, method, arguments) ->
+			{
+				if(method.getName().equals("spawn"))
+				{
+					return spawnCalls.getAndIncrement() == 0 ? backing : overlay;
+				}
+				throw new AssertionError("Unexpected world method " + method.getName());
+			});
+		Server server = (Server) Proxy.newProxyInstance(
+			Server.class.getClassLoader(),
+			new Class<?>[] {Server.class},
+			(proxy, method, arguments) ->
+			{
+				if(method.getName().equals("getWorld"))
+				{
+					return world;
+				}
+				throw new AssertionError("Unexpected server method " + method.getName());
+			});
+		Plugin plugin = (Plugin) Proxy.newProxyInstance(
+			Plugin.class.getClassLoader(),
+			new Class<?>[] {Plugin.class},
+			(proxy, method, arguments) -> switch(method.getName())
+			{
+				case "namespace" -> "test";
+				case "getServer" -> server;
+				default -> throw new AssertionError("Unexpected plugin method " + method.getName());
+			});
+		DoorPortalVisualService service = new DoorPortalVisualService(plugin);
+		PlacedDoorEndpoint endpoint = new PlacedDoorEndpoint(
+			new DoorPosition(worldId, "minecraft:overworld", 1, 2, 3),
+			identity);
+		VanillaDoorSnapshot snapshot = new VanillaDoorSnapshot(
+			worldId,
+			new DoorwayPlane(1, 2, 3, BlockFace.NORTH),
+			Door.Hinge.LEFT,
+			true,
+			false);
+
+		service.show(endpoint, snapshot);
+		service.hide(identity.itemId());
+
+		assertEquals(2, spawnCalls.get());
+		assertTrue(backingRemoved.get());
+		assertTrue(overlayRemoved.get());
+	}
+
+	@Test
+	void failedOverlaySpawnRemovesUntrackedBacking()
+	{
+		UUID worldId = UUID.randomUUID();
+		AtomicBoolean backingRemoved = new AtomicBoolean();
+		AtomicInteger spawnCalls = new AtomicInteger();
+		BlockDisplay backing = display(backingRemoved);
+		World world = (World) Proxy.newProxyInstance(
+			World.class.getClassLoader(),
+			new Class<?>[] {World.class},
+			(proxy, method, arguments) ->
+			{
+				if(method.getName().equals("spawn"))
+				{
+					if(spawnCalls.getAndIncrement() == 0)
+					{
+						return backing;
+					}
+					throw new IllegalStateException("overlay spawn failed");
+				}
+				throw new AssertionError("Unexpected world method " + method.getName());
+			});
+		Server server = (Server) Proxy.newProxyInstance(
+			Server.class.getClassLoader(),
+			new Class<?>[] {Server.class},
+			(proxy, method, arguments) ->
+			{
+				if(method.getName().equals("getWorld"))
+				{
+					return world;
+				}
+				throw new AssertionError("Unexpected server method " + method.getName());
+			});
+		Plugin plugin = (Plugin) Proxy.newProxyInstance(
+			Plugin.class.getClassLoader(),
+			new Class<?>[] {Plugin.class},
+			(proxy, method, arguments) -> switch(method.getName())
+			{
+				case "namespace" -> "test";
+				case "getServer" -> server;
+				default -> throw new AssertionError("Unexpected plugin method " + method.getName());
+			});
+		DoorPortalVisualService service = new DoorPortalVisualService(plugin);
+		PlacedDoorEndpoint endpoint = new PlacedDoorEndpoint(
+			new DoorPosition(worldId, "minecraft:overworld", 1, 2, 3),
+			DoorItemIdentity.personal(UUID.randomUUID()));
+		VanillaDoorSnapshot snapshot = new VanillaDoorSnapshot(
+			worldId,
+			new DoorwayPlane(1, 2, 3, BlockFace.NORTH),
+			Door.Hinge.LEFT,
+			true,
+			false);
+
+		assertThrows(IllegalStateException.class, () -> service.show(endpoint, snapshot));
+
+		assertEquals(2, spawnCalls.get());
+		assertTrue(backingRemoved.get());
 	}
 
 	@Test
@@ -181,5 +346,60 @@ class DoorPortalVisualServiceTest
 
 		assertTrue(removed.get());
 		assertEquals(1, spawnCalls.get());
+	}
+
+	private static void assertLateralBounds(
+		BlockFace facing,
+		Door.Hinge hinge,
+		float expectedMin,
+		float expectedMax)
+	{
+		DoorPortalVisualService.PortalPlaneGeometry geometry =
+			DoorPortalVisualService.geometry(facing, hinge);
+		float translation = facing == BlockFace.NORTH || facing == BlockFace.SOUTH
+			? geometry.translationX()
+			: geometry.translationZ();
+		float scale = facing == BlockFace.NORTH || facing == BlockFace.SOUTH
+			? geometry.scaleX()
+			: geometry.scaleZ();
+
+		assertEquals(expectedMin, translation + 0.5F, EPSILON, facing + " " + hinge + " min");
+		assertEquals(expectedMax, translation + 0.5F + scale, EPSILON, facing + " " + hinge + " max");
+		assertEquals(0.9375F, scale, EPSILON, facing + " " + hinge + " width");
+	}
+
+	private static float normalTranslation(
+		DoorPortalVisualService.PortalPlaneGeometry geometry,
+		BlockFace facing)
+	{
+		return facing == BlockFace.NORTH || facing == BlockFace.SOUTH
+			? geometry.translationZ()
+			: geometry.translationX();
+	}
+
+	private static float normalScale(
+		DoorPortalVisualService.PortalPlaneGeometry geometry,
+		BlockFace facing)
+	{
+		return facing == BlockFace.NORTH || facing == BlockFace.SOUTH
+			? geometry.scaleZ()
+			: geometry.scaleX();
+	}
+
+	private static BlockDisplay display(AtomicBoolean removed)
+	{
+		return (BlockDisplay) Proxy.newProxyInstance(
+			BlockDisplay.class.getClassLoader(),
+			new Class<?>[] {BlockDisplay.class},
+			(proxy, method, arguments) -> switch(method.getName())
+			{
+				case "isValid" -> !removed.get();
+				case "remove" ->
+				{
+					removed.set(true);
+					yield null;
+				}
+				default -> throw new AssertionError("Unexpected display method " + method.getName());
+			});
 	}
 }

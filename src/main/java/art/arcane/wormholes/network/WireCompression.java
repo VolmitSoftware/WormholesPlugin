@@ -32,6 +32,7 @@ public final class WireCompression {
     private static final Object ZSTD_PROBE_LOCK = new Object();
     private static final int MAX_RETIRED_DICTIONARIES = 2;
     private static final int SCRATCH_RETAIN_LIMIT_BYTES = 1024 * 1024;
+    private static final byte[] EMPTY_DICTIONARY = new byte[0];
     private static final ThreadLocal<byte[]> COMPRESS_SCRATCH = new ThreadLocal<>();
     private static volatile Boolean zstdUsable;
 
@@ -39,8 +40,8 @@ public final class WireCompression {
     private final AtomicReference<DictionaryState> dictionaryState = new AtomicReference<>(DictionaryState.EMPTY);
     private final ReentrantReadWriteLock dictLock = new ReentrantReadWriteLock();
     private final ArrayDeque<RetiredDictionary> retired = new ArrayDeque<>();
-    private final Deque<ZstdCompressCtx> compressPool = new ArrayDeque<>();
-    private final Deque<ZstdDecompressCtx> decompressPool = new ArrayDeque<>();
+    private final Deque<PooledCompressContext> compressPool = new ArrayDeque<>();
+    private final Deque<PooledDecompressContext> decompressPool = new ArrayDeque<>();
     private final AtomicLong rawBytesIn = new AtomicLong();
     private final AtomicLong wireBytesIn = new AtomicLong();
     private final AtomicLong rawBytesOut = new AtomicLong();
@@ -48,6 +49,7 @@ public final class WireCompression {
     private final AtomicLong noneCount = new AtomicLong();
     private final AtomicLong dictlessCount = new AtomicLong();
     private final AtomicLong dictModeCount = new AtomicLong();
+    private volatile boolean closed;
 
     public WireCompression(int compressionLevel) {
         this.compressionLevel = clampLevel(compressionLevel);
@@ -90,6 +92,7 @@ public final class WireCompression {
         int nextLevel = clampLevel(level);
         dictLock.writeLock().lock();
         try {
+            ensureMutable();
             if (compressionLevel == nextLevel) {
                 return;
             }
@@ -102,9 +105,11 @@ public final class WireCompression {
                     new ZstdDictDecompress(previous.dictionary.bytes())
                 );
                 dictionaryState.set(replacement);
+                clearPools();
                 previous.release();
+            } else {
+                clearPools();
             }
-            clearPools();
         } finally {
             dictLock.writeLock().unlock();
         }
@@ -114,9 +119,11 @@ public final class WireCompression {
         Objects.requireNonNull(dictionary, "dictionary");
         dictLock.writeLock().lock();
         try {
+            ensureMutable();
             ZstdDictCompress compress = new ZstdDictCompress(dictionary.bytes(), compressionLevel);
             ZstdDictDecompress decompress = new ZstdDictDecompress(dictionary.bytes());
             DictionaryState previous = dictionaryState.getAndSet(new DictionaryState(dictionary, compress, decompress));
+            clearPools();
             if (previous.dictionary != null) {
                 if (previous.dictionary.version() == dictionary.version()) {
                     previous.release();
@@ -138,7 +145,6 @@ public final class WireCompression {
             while (retired.size() > MAX_RETIRED_DICTIONARIES) {
                 retired.removeLast().release();
             }
-            clearPools();
         } finally {
             dictLock.writeLock().unlock();
         }
@@ -147,20 +153,26 @@ public final class WireCompression {
     public void clearDictionary() {
         dictLock.writeLock().lock();
         try {
-            DictionaryState previous = dictionaryState.getAndSet(DictionaryState.EMPTY);
-            previous.release();
-            while (!retired.isEmpty()) {
-                retired.removeFirst().release();
+            if (closed) {
+                return;
             }
-            clearPools();
+            clearDictionaryLocked();
         } finally {
             dictLock.writeLock().unlock();
         }
     }
 
     public void close() {
-        clearDictionary();
-        clearPools();
+        dictLock.writeLock().lock();
+        try {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            clearDictionaryLocked();
+        } finally {
+            dictLock.writeLock().unlock();
+        }
     }
 
     public CompressionDictionary currentDictionary() {
@@ -189,25 +201,39 @@ public final class WireCompression {
 
     private byte[] encode(byte[] payload, int negotiatedDictVersion, int levelOverride) throws IOException {
         Objects.requireNonNull(payload, "payload");
+        ensureOpen();
         if (payload.length < COMPRESS_THRESHOLD_BYTES || !isZstdUsable()) {
             return frameNone(payload);
         }
         dictLock.readLock().lock();
         try {
+            ensureOpen();
             DictionaryState state = dictionaryState.get();
             boolean useDict = usableDictVersion(state, negotiatedDictVersion);
-            ZstdCompressCtx ctx = borrowCompressCtx();
+            int headerLength = useDict ? 5 : 1;
+            long bound = Zstd.compressBound(payload.length);
+            if (bound + headerLength > Integer.MAX_VALUE - 8) {
+                return frameNone(payload);
+            }
+            byte[] scratch = compressScratch(headerLength + (int) bound);
             try {
-                ctx.setLevel(clampLevel(levelOverride));
-                if (useDict) {
-                    ctx.loadDict(state.compress);
+                PooledCompressContext pooled = borrowCompressCtx();
+                ZstdCompressCtx ctx = pooled.context;
+                long written;
+                try {
+                    ctx.setLevel(clampLevel(levelOverride));
+                    if (useDict) {
+                        ctx.loadDict(state.compress);
+                        pooled.dictionaryLoaded = true;
+                    } else if (pooled.dictionaryLoaded) {
+                        ctx.loadDict(EMPTY_DICTIONARY);
+                        pooled.dictionaryLoaded = false;
+                    }
+                    written = ctx.compressByteArray(scratch, headerLength, scratch.length - headerLength,
+                        payload, 0, payload.length);
+                } finally {
+                    recycleCompressCtx(pooled);
                 }
-                long bound = Zstd.compressBound(payload.length);
-                if (bound > Integer.MAX_VALUE - 5) {
-                    return frameNone(payload);
-                }
-                byte[] compressed = new byte[(int) bound];
-                long written = ctx.compressByteArray(compressed, 0, compressed.length, payload, 0, payload.length);
                 if (Zstd.isError(written)) {
                     return frameNone(payload);
                 }
@@ -215,19 +241,20 @@ public final class WireCompression {
                 if (compressedLength >= payload.length) {
                     return frameNone(payload);
                 }
-                byte[] body = new byte[compressedLength];
-                System.arraycopy(compressed, 0, body, 0, compressedLength);
+                byte mode = useDict ? MODE_ZSTD_DICT : MODE_ZSTD_DICTLESS;
+                byte[] framed = new byte[headerLength + compressedLength];
+                framed[0] = mode;
                 if (useDict) {
-                    byte[] framed = prependMode(body, MODE_ZSTD_DICT, state.dictionary.version(), true);
-                    recordOut(payload.length, framed.length, MODE_ZSTD_DICT);
-                    return framed;
+                    writeLittleEndianInt(framed, 1, state.dictionary.version());
                 }
-                byte[] framed = prependMode(body, MODE_ZSTD_DICTLESS, 0, false);
-                recordOut(payload.length, framed.length, MODE_ZSTD_DICTLESS);
+                System.arraycopy(scratch, headerLength, framed, headerLength, compressedLength);
+                recordOut(payload.length, framed.length, mode);
                 return framed;
             } finally {
-                recycleCompressCtx(ctx);
+                releaseCompressScratch(scratch);
             }
+        } catch (IOException ex) {
+            throw ex;
         } catch (Throwable ex) {
             markZstdUnusable(ex);
             return frameNone(payload);
@@ -238,11 +265,13 @@ public final class WireCompression {
 
     public byte[] encodeFramedFrame(byte typeId, byte[] payload, int negotiatedDictVersion) throws IOException {
         Objects.requireNonNull(payload, "payload");
+        ensureOpen();
         if (payload.length < COMPRESS_THRESHOLD_BYTES || !isZstdUsable()) {
             return plainFramed(typeId, payload);
         }
         dictLock.readLock().lock();
         try {
+            ensureOpen();
             DictionaryState state = dictionaryState.get();
             boolean useDict = usableDictVersion(state, negotiatedDictVersion);
             int headerLength = useDict ? 10 : 6;
@@ -251,37 +280,47 @@ public final class WireCompression {
                 return plainFramed(typeId, payload);
             }
             byte[] scratch = compressScratch(headerLength + (int) bound);
-            ZstdCompressCtx ctx = borrowCompressCtx();
-            long written;
             try {
-                ctx.setLevel(compressionLevel);
-                if (useDict) {
-                    ctx.loadDict(state.compress);
+                PooledCompressContext pooled = borrowCompressCtx();
+                ZstdCompressCtx ctx = pooled.context;
+                long written;
+                try {
+                    ctx.setLevel(compressionLevel);
+                    if (useDict) {
+                        ctx.loadDict(state.compress);
+                        pooled.dictionaryLoaded = true;
+                    } else if (pooled.dictionaryLoaded) {
+                        ctx.loadDict(EMPTY_DICTIONARY);
+                        pooled.dictionaryLoaded = false;
+                    }
+                    written = ctx.compressByteArray(scratch, headerLength, scratch.length - headerLength,
+                        payload, 0, payload.length);
+                } finally {
+                    recycleCompressCtx(pooled);
                 }
-                written = ctx.compressByteArray(scratch, headerLength, scratch.length - headerLength, payload, 0, payload.length);
+                if (Zstd.isError(written) || (int) written >= payload.length) {
+                    return plainFramed(typeId, payload);
+                }
+                int compressedLength = (int) written;
+                byte mode = useDict ? MODE_ZSTD_DICT : MODE_ZSTD_DICTLESS;
+                int frameLength = 1 + 1 + (useDict ? 4 : 0) + compressedLength;
+                byte[] frame = new byte[4 + frameLength];
+                writeBigEndianInt(frame, 0, frameLength);
+                frame[4] = typeId;
+                frame[5] = mode;
+                int bodyOffset = 6;
+                if (useDict) {
+                    writeLittleEndianInt(frame, 6, state.dictionary.version());
+                    bodyOffset = 10;
+                }
+                System.arraycopy(scratch, headerLength, frame, bodyOffset, compressedLength);
+                recordOut(payload.length, frameLength - 1, mode);
+                return frame;
             } finally {
-                recycleCompressCtx(ctx);
-            }
-            if (Zstd.isError(written) || (int) written >= payload.length) {
                 releaseCompressScratch(scratch);
-                return plainFramed(typeId, payload);
             }
-            int compressedLength = (int) written;
-            byte mode = useDict ? MODE_ZSTD_DICT : MODE_ZSTD_DICTLESS;
-            int frameLength = 1 + 1 + (useDict ? 4 : 0) + compressedLength;
-            byte[] frame = new byte[4 + frameLength];
-            writeBigEndianInt(frame, 0, frameLength);
-            frame[4] = typeId;
-            frame[5] = mode;
-            int bodyOffset = 6;
-            if (useDict) {
-                writeLittleEndianInt(frame, 6, state.dictionary.version());
-                bodyOffset = 10;
-            }
-            System.arraycopy(scratch, headerLength, frame, bodyOffset, compressedLength);
-            releaseCompressScratch(scratch);
-            recordOut(payload.length, frameLength - 1, mode);
-            return frame;
+        } catch (IOException ex) {
+            throw ex;
         } catch (Throwable ex) {
             markZstdUnusable(ex);
             return plainFramed(typeId, payload);
@@ -291,22 +330,39 @@ public final class WireCompression {
     }
 
     public DecodeResult decode(byte[] frameBody) throws IOException {
+        return decode(frameBody, MAX_DECOMPRESSED_BYTES);
+    }
+
+    public DecodeResult decode(byte[] frameBody, int maxDecompressedBytes) throws IOException {
         Objects.requireNonNull(frameBody, "frameBody");
+        ensureOpen();
+        if (maxDecompressedBytes <= 0 || maxDecompressedBytes > MAX_DECOMPRESSED_BYTES) {
+            throw new IllegalArgumentException("maxDecompressedBytes must be between 1 and " + MAX_DECOMPRESSED_BYTES);
+        }
         if (frameBody.length < 1) {
             throw new IOException("compression mode byte missing");
         }
         byte mode = frameBody[0];
         switch (mode) {
             case MODE_NONE: {
+                if (frameBody.length - 1 > maxDecompressedBytes) {
+                    throw new IOException("uncompressed payload exceeds " + maxDecompressedBytes + " bytes");
+                }
                 byte[] payload = new byte[frameBody.length - 1];
                 System.arraycopy(frameBody, 1, payload, 0, payload.length);
                 recordIn(payload.length, frameBody.length, MODE_NONE);
                 return new DecodeResult(mode, 0, payload);
             }
             case MODE_ZSTD_DICTLESS: {
-                byte[] payload = decompressDictless(frameBody, 1, frameBody.length - 1);
-                recordIn(payload.length, frameBody.length, MODE_ZSTD_DICTLESS);
-                return new DecodeResult(mode, 0, payload);
+                dictLock.readLock().lock();
+                try {
+                    ensureOpen();
+                    byte[] payload = decompressDictless(frameBody, 1, frameBody.length - 1, maxDecompressedBytes);
+                    recordIn(payload.length, frameBody.length, MODE_ZSTD_DICTLESS);
+                    return new DecodeResult(mode, 0, payload);
+                } finally {
+                    dictLock.readLock().unlock();
+                }
             }
             case MODE_ZSTD_DICT: {
                 if (frameBody.length < 5) {
@@ -315,11 +371,12 @@ public final class WireCompression {
                 int version = readLittleEndianInt(frameBody, 1);
                 dictLock.readLock().lock();
                 try {
+                    ensureOpen();
                     ZstdDictDecompress dictDecompress = resolveDecodeDictionary(version);
                     if (dictDecompress == null) {
                         throw new IOException("missing dictionary version " + version + " for inbound frame");
                     }
-                    byte[] payload = decompressWithDict(frameBody, 5, frameBody.length - 5, dictDecompress);
+                    byte[] payload = decompressWithDict(frameBody, 5, frameBody.length - 5, dictDecompress, maxDecompressedBytes);
                     recordIn(payload.length, frameBody.length, MODE_ZSTD_DICT);
                     return new DecodeResult(mode, version, payload);
                 } finally {
@@ -364,6 +421,27 @@ public final class WireCompression {
         if (zstdUsable != Boolean.FALSE) {
             zstdUsable = Boolean.FALSE;
             LOG.log(Level.WARNING, "zstd-jni compression failed; falling back to uncompressed wire frames (MODE_NONE)", ex);
+        }
+    }
+
+    private void ensureMutable() {
+        if (closed) {
+            throw new IllegalStateException("wire compression is closed");
+        }
+    }
+
+    private void ensureOpen() throws IOException {
+        if (closed) {
+            throw new IOException("wire compression is closed");
+        }
+    }
+
+    private void clearDictionaryLocked() {
+        DictionaryState previous = dictionaryState.getAndSet(DictionaryState.EMPTY);
+        clearPools();
+        previous.release();
+        while (!retired.isEmpty()) {
+            retired.removeFirst().release();
         }
     }
 
@@ -434,13 +512,21 @@ public final class WireCompression {
         }
     }
 
-    private byte[] decompressDictless(byte[] body, int offset, int length) throws IOException {
+    private byte[] decompressDictless(byte[] body, int offset, int length, int maxDecompressedBytes) throws IOException {
         long originalSize = Zstd.getFrameContentSize(body, offset, length);
-        if (originalSize < 0L || originalSize > MAX_DECOMPRESSED_BYTES) {
-            return streamDecompress(body, offset, length, null);
+        if (originalSize > maxDecompressedBytes) {
+            throw new IOException("zstd payload exceeds " + maxDecompressedBytes + " bytes");
         }
-        ZstdDecompressCtx ctx = borrowDecompressCtx();
+        if (originalSize < 0L) {
+            return streamDecompress(body, offset, length, null, maxDecompressedBytes);
+        }
+        PooledDecompressContext pooled = borrowDecompressCtx();
+        ZstdDecompressCtx ctx = pooled.context;
         try {
+            if (pooled.dictionaryLoaded) {
+                ctx.loadDict(EMPTY_DICTIONARY);
+                pooled.dictionaryLoaded = false;
+            }
             byte[] out = new byte[(int) originalSize];
             long written = ctx.decompressByteArray(out, 0, out.length, body, offset, length);
             if (Zstd.isError(written)) {
@@ -453,18 +539,24 @@ public final class WireCompression {
             }
             return out;
         } finally {
-            recycleDecompressCtx(ctx);
+            recycleDecompressCtx(pooled);
         }
     }
 
-    private byte[] decompressWithDict(byte[] body, int offset, int length, ZstdDictDecompress dictDecompress) throws IOException {
+    private byte[] decompressWithDict(byte[] body, int offset, int length, ZstdDictDecompress dictDecompress,
+                                      int maxDecompressedBytes) throws IOException {
         long originalSize = Zstd.getFrameContentSize(body, offset, length);
-        if (originalSize < 0L || originalSize > MAX_DECOMPRESSED_BYTES) {
-            return streamDecompress(body, offset, length, dictDecompress);
+        if (originalSize > maxDecompressedBytes) {
+            throw new IOException("zstd payload exceeds " + maxDecompressedBytes + " bytes");
         }
-        ZstdDecompressCtx ctx = borrowDecompressCtx();
+        if (originalSize < 0L) {
+            return streamDecompress(body, offset, length, dictDecompress, maxDecompressedBytes);
+        }
+        PooledDecompressContext pooled = borrowDecompressCtx();
+        ZstdDecompressCtx ctx = pooled.context;
         try {
             ctx.loadDict(dictDecompress);
+            pooled.dictionaryLoaded = true;
             byte[] out = new byte[(int) originalSize];
             long written = ctx.decompressByteArray(out, 0, out.length, body, offset, length);
             if (Zstd.isError(written)) {
@@ -477,25 +569,32 @@ public final class WireCompression {
             }
             return out;
         } finally {
-            recycleDecompressCtx(ctx);
+            recycleDecompressCtx(pooled);
         }
     }
 
-    private byte[] streamDecompress(byte[] body, int offset, int length, ZstdDictDecompress dictDecompress) throws IOException {
-        int probedSize = Math.min(MAX_DECOMPRESSED_BYTES, Math.max(length * 4, 1024));
-        ZstdDecompressCtx ctx = borrowDecompressCtx();
+    private byte[] streamDecompress(byte[] body, int offset, int length, ZstdDictDecompress dictDecompress,
+                                    int maxDecompressedBytes) throws IOException {
+        long requestedSize = Math.max((long) length * 4L, 1024L);
+        int probedSize = (int) Math.min((long) maxDecompressedBytes, requestedSize);
+        PooledDecompressContext pooled = borrowDecompressCtx();
+        ZstdDecompressCtx ctx = pooled.context;
         try {
             if (dictDecompress != null) {
                 ctx.loadDict(dictDecompress);
+                pooled.dictionaryLoaded = true;
+            } else if (pooled.dictionaryLoaded) {
+                ctx.loadDict(EMPTY_DICTIONARY);
+                pooled.dictionaryLoaded = false;
             }
             byte[] out = new byte[probedSize];
             long written = ctx.decompressByteArray(out, 0, out.length, body, offset, length);
             while (Zstd.isError(written)) {
                 String name = Zstd.getErrorName(written);
-                if (name != null && name.contains("dstSize_tooSmall") && out.length < MAX_DECOMPRESSED_BYTES) {
-                    int next = Math.min(MAX_DECOMPRESSED_BYTES, out.length * 2);
+                if (name != null && name.contains("dstSize_tooSmall") && out.length < maxDecompressedBytes) {
+                    int next = Math.min(maxDecompressedBytes, out.length * 2);
                     if (next == out.length) {
-                        throw new IOException("zstd payload exceeds " + MAX_DECOMPRESSED_BYTES + " bytes");
+                        throw new IOException("zstd payload exceeds " + maxDecompressedBytes + " bytes");
                     }
                     out = new byte[next];
                     written = ctx.decompressByteArray(out, 0, out.length, body, offset, length);
@@ -507,7 +606,7 @@ public final class WireCompression {
             System.arraycopy(out, 0, trimmed, 0, trimmed.length);
             return trimmed;
         } finally {
-            recycleDecompressCtx(ctx);
+            recycleDecompressCtx(pooled);
         }
     }
 
@@ -546,56 +645,56 @@ public final class WireCompression {
         data[offset + 3] = (byte) (value & 0xFF);
     }
 
-    private ZstdCompressCtx borrowCompressCtx() {
+    private PooledCompressContext borrowCompressCtx() {
         synchronized (compressPool) {
-            ZstdCompressCtx ctx = compressPool.pollFirst();
-            if (ctx != null) {
-                return ctx;
+            PooledCompressContext pooled = compressPool.pollFirst();
+            if (pooled != null) {
+                return pooled;
             }
         }
-        return new ZstdCompressCtx();
+        return new PooledCompressContext(new ZstdCompressCtx());
     }
 
-    private void recycleCompressCtx(ZstdCompressCtx ctx) {
+    private void recycleCompressCtx(PooledCompressContext pooled) {
         synchronized (compressPool) {
             if (compressPool.size() < MAX_POOL_SIZE) {
-                compressPool.addFirst(ctx);
+                compressPool.addFirst(pooled);
                 return;
             }
         }
-        ctx.close();
+        pooled.context.close();
     }
 
-    private ZstdDecompressCtx borrowDecompressCtx() {
+    private PooledDecompressContext borrowDecompressCtx() {
         synchronized (decompressPool) {
-            ZstdDecompressCtx ctx = decompressPool.pollFirst();
-            if (ctx != null) {
-                return ctx;
+            PooledDecompressContext pooled = decompressPool.pollFirst();
+            if (pooled != null) {
+                return pooled;
             }
         }
-        return new ZstdDecompressCtx();
+        return new PooledDecompressContext(new ZstdDecompressCtx());
     }
 
-    private void recycleDecompressCtx(ZstdDecompressCtx ctx) {
+    private void recycleDecompressCtx(PooledDecompressContext pooled) {
         synchronized (decompressPool) {
             if (decompressPool.size() < MAX_POOL_SIZE) {
-                decompressPool.addFirst(ctx);
+                decompressPool.addFirst(pooled);
                 return;
             }
         }
-        ctx.close();
+        pooled.context.close();
     }
 
     private void clearPools() {
         synchronized (compressPool) {
-            for (ZstdCompressCtx ctx : compressPool) {
-                ctx.close();
+            for (PooledCompressContext pooled : compressPool) {
+                pooled.context.close();
             }
             compressPool.clear();
         }
         synchronized (decompressPool) {
-            for (ZstdDecompressCtx ctx : decompressPool) {
-                ctx.close();
+            for (PooledDecompressContext pooled : decompressPool) {
+                pooled.context.close();
             }
             decompressPool.clear();
         }
@@ -609,6 +708,24 @@ public final class WireCompression {
 
         public double ratioOut() {
             return rawBytesOut <= 0L ? 0.0D : ((double) wireBytesOut) / ((double) rawBytesOut);
+        }
+    }
+
+    private static final class PooledCompressContext {
+        private final ZstdCompressCtx context;
+        private boolean dictionaryLoaded;
+
+        private PooledCompressContext(ZstdCompressCtx context) {
+            this.context = context;
+        }
+    }
+
+    private static final class PooledDecompressContext {
+        private final ZstdDecompressCtx context;
+        private boolean dictionaryLoaded;
+
+        private PooledDecompressContext(ZstdDecompressCtx context) {
+            this.context = context;
         }
     }
 

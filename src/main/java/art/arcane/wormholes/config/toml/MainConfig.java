@@ -27,8 +27,6 @@ public class MainConfig {
     @ConfigAdvanced
     public boolean debugRendering = false;
     @ConfigAdvanced
-    public boolean debugTraversables = true;
-    @ConfigAdvanced
     public int teleportCooldownMillis = 1000;
     @ConfigAdvanced
     public boolean arrivalPrewarmOnInterest = true;

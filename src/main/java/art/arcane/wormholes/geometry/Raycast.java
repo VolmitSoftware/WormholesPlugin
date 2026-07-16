@@ -1,9 +1,6 @@
 package art.arcane.wormholes.geometry;
 
 import org.bukkit.Location;
-import org.bukkit.util.Vector;
-
-import art.arcane.wormholes.util.VectorMath;
 
 public abstract class Raycast
 {
@@ -12,15 +9,37 @@ public abstract class Raycast
 
 	public Raycast(Location source, Location destination, double jumpSize)
 	{
+		if(!(jumpSize > 0.0D))
+		{
+			throw new IllegalArgumentException("Raycast jump size must be positive");
+		}
+
 		successf = false;
 		success = true;
-		Location cursor = source.clone();
-		Vector direction = VectorMath.direction(source, destination).multiply(jumpSize);
-		int tj = (int) (cursor.distance(destination) / jumpSize);
+		double distance = source.distance(destination);
+		int segmentCount = distance == 0.0D ? 0 : Math.max(1, (int) Math.ceil(distance / jumpSize));
+		double deltaX = destination.getX() - source.getX();
+		double deltaY = destination.getY() - source.getY();
+		double deltaZ = destination.getZ() - source.getZ();
 
-		for(int i = 0; i < tj; i++)
+		for(int i = 0; i <= segmentCount; i++)
 		{
-			if(!shouldContinue(cursor))
+			Location sample;
+			if(i == 0)
+			{
+				sample = source.clone();
+			}
+			else if(i == segmentCount)
+			{
+				sample = destination.clone();
+			}
+			else
+			{
+				double progress = (double) i / segmentCount;
+				sample = source.clone().add(deltaX * progress, deltaY * progress, deltaZ * progress);
+			}
+
+			if(!shouldContinue(sample))
 			{
 				if(successf)
 				{
@@ -31,8 +50,6 @@ public abstract class Raycast
 				success = false;
 				return;
 			}
-
-			cursor.add(direction);
 		}
 	}
 

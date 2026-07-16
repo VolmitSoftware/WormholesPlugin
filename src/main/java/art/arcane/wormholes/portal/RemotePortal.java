@@ -17,6 +17,7 @@ public class RemotePortal extends Portal implements IRemotePortal {
     private final boolean open;
     private final AxisAlignedBB area;
     private volatile ProjectionMode mirroredProjectionMode;
+    private volatile boolean mirroredMirrorMode;
     private volatile MirrorRotation mirroredProjectionRotation;
     private volatile PortalPermissionMode mirroredPermissionMode;
     private volatile boolean mirroredOutgoingTraversalsEnabled;
@@ -35,6 +36,7 @@ public class RemotePortal extends Portal implements IRemotePortal {
         this.open = open;
         this.area = area;
         this.mirroredProjectionMode = ProjectionMode.ON;
+        this.mirroredMirrorMode = false;
         this.mirroredProjectionRotation = MirrorRotation.DEGREES_0;
         this.mirroredPermissionMode = PortalPermissionMode.BLACKLIST;
         this.mirroredOutgoingTraversalsEnabled = true;
@@ -91,6 +93,14 @@ public class RemotePortal extends Portal implements IRemotePortal {
         this.mirroredProjectionMode = mode == null ? ProjectionMode.ON : mode;
     }
 
+    public boolean isMirroredMirrorMode() {
+        return mirroredMirrorMode;
+    }
+
+    public void setMirroredMirrorMode(boolean mirrorMode) {
+        this.mirroredMirrorMode = mirrorMode;
+    }
+
     public MirrorRotation getMirroredProjectionRotation() {
         return mirroredProjectionRotation;
     }
@@ -124,7 +134,7 @@ public class RemotePortal extends Portal implements IRemotePortal {
     }
 
     public boolean acceptsInboundTraversal(Entity entity) {
-        if (!open || !mirroredProjectionMode.allowsTraversal() || !mirroredIncomingTraversalsEnabled) {
+        if (!open || mirroredMirrorMode || !mirroredIncomingTraversalsEnabled) {
             return false;
         }
         if (!(entity instanceof Player player) || player.isOp()) {

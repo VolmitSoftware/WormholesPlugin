@@ -41,17 +41,20 @@ public final class ProjectorLighting {
         if (projectedClaims.isEmpty()) {
             return;
         }
-        if (dirtyLocalKeys != null && dirtyLocalKeys.isEmpty()) {
+        boolean hasDirtyKeys = dirtyLocalKeys == null || !dirtyLocalKeys.isEmpty();
+        if (!hasDirtyKeys && pendingChunkSections.isEmpty()) {
             return;
         }
 
         LongSet currentChunks = collectCurrentChunkKeys(localView, projectedClaims.keySet());
         revertStaleChunks(observer, localView, currentChunks);
 
-        LongSet dirtyKeys = dirtyLocalKeys == null ? projectedClaims.keySet() : dirtyLocalKeys;
-        chunkToSections.clear();
-        collectDirtySections(localView, dirtyKeys, chunkToSections);
-        mergePendingSections(chunkToSections);
+        if (hasDirtyKeys) {
+            LongSet dirtyKeys = dirtyLocalKeys == null ? projectedClaims.keySet() : dirtyLocalKeys;
+            chunkToSections.clear();
+            collectDirtySections(localView, dirtyKeys, chunkToSections);
+            mergePendingSections(chunkToSections);
+        }
 
         int remainingSections = lightingSectionBudget();
         Iterator<Long2ObjectMap.Entry<IntOpenHashSet>> iterator = pendingChunkSections.long2ObjectEntrySet().iterator();
@@ -143,10 +146,12 @@ public final class ProjectorLighting {
         }
         if (observer == null || !observer.isOnline()) {
             sentChunkSections.clear();
+            pendingChunkSections.clear();
             return;
         }
         if (localView == null) {
             sentChunkSections.clear();
+            pendingChunkSections.clear();
             return;
         }
 
@@ -163,6 +168,14 @@ public final class ProjectorLighting {
         if (sentChunkSections.isEmpty()) {
             pendingChunkSections.clear();
         }
+    }
+
+    boolean isIdle() {
+        return sentChunkSections.isEmpty() && pendingChunkSections.isEmpty();
+    }
+
+    boolean hasPendingUpdates() {
+        return !pendingChunkSections.isEmpty();
     }
 
     private void mergePendingSections(Long2ObjectOpenHashMap<IntOpenHashSet> sections) {

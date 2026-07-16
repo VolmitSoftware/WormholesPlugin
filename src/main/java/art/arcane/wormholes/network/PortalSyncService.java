@@ -23,6 +23,8 @@ import java.util.function.Supplier;
 
 public final class PortalSyncService {
     public static final String KEY_PROJECTION_MODE = "projectionMode";
+    public static final String KEY_PROJECTION_ENABLED = "projectionEnabled";
+    public static final String KEY_MIRROR_MODE = "mirrorMode";
     public static final String KEY_MIRROR_ROTATION = "mirrorRotationDegrees";
     public static final String KEY_PERMISSION_MODE = "permissionMode";
     public static final String KEY_OUTGOING_TRAVERSALS = "outgoingTraversalsEnabled";
@@ -118,6 +120,16 @@ public final class PortalSyncService {
         sendSettings(local);
     }
 
+    public void broadcastRemoteCache(ILocalPortal portal) {
+        if (portal == null || network == null || !network.isRunning() || APPLYING_REMOTE.get().booleanValue()) {
+            return;
+        }
+        if (!(portal instanceof LocalPortal local) || !local.isGateway()) {
+            return;
+        }
+        network.sendToPeers(peerNames(), settingsUpdate(local, true));
+    }
+
     private void sendSettings(LocalPortal local) {
         String linkedPeer = linkedPeerName(local);
         WireMessage.PortalSettingsUpdate update = settingsUpdate(local, false);
@@ -189,7 +201,9 @@ public final class PortalSyncService {
 
     static Map<String, String> collectSettings(LocalPortal portal) {
         Map<String, String> settings = new LinkedHashMap<>();
-        settings.put(KEY_PROJECTION_MODE, portal.getProjectionMode().name());
+        settings.put(KEY_PROJECTION_MODE, portal.isMirrorMode() ? "MIRROR" : portal.getProjectionMode().name());
+        settings.put(KEY_PROJECTION_ENABLED, Boolean.toString(portal.getProjectionMode() == ProjectionMode.ON));
+        settings.put(KEY_MIRROR_MODE, Boolean.toString(portal.isMirrorMode()));
         settings.put(KEY_MIRROR_ROTATION, Integer.toString(portal.getMirrorRotation().getDegrees()));
         settings.put(KEY_PERMISSION_MODE, portal.getPermissionMode().name());
         settings.put(KEY_OUTGOING_TRAVERSALS, Boolean.toString(portal.isOutgoingTraversalsEnabled()));
@@ -204,10 +218,14 @@ public final class PortalSyncService {
         return settings;
     }
 
-    private static void applyToLocal(LocalPortal portal, Map<String, String> settings) {
+    static void applyToLocal(LocalPortal portal, Map<String, String> settings) {
         APPLYING_REMOTE.set(Boolean.TRUE);
         try {
+            applyProjectionState(portal, settings);
             for (Map.Entry<String, String> entry : settings.entrySet()) {
+                if (isProjectionStateKey(entry.getKey())) {
+                    continue;
+                }
                 applyLocalKey(portal, entry.getKey(), entry.getValue());
             }
         } finally {
@@ -220,12 +238,6 @@ public final class PortalSyncService {
             return;
         }
         switch (key) {
-            case KEY_PROJECTION_MODE -> {
-                ProjectionMode mode = parseProjectionMode(value);
-                if (mode != null) {
-                    portal.setProjectionMode(mode);
-                }
-            }
             case KEY_MIRROR_ROTATION -> portal.setMirrorRotation(
                 MirrorRotation.fromDegrees(parseIntOr(value, portal.getMirrorRotation().getDegrees())));
             case KEY_PERMISSION_MODE -> {
@@ -249,19 +261,14 @@ public final class PortalSyncService {
     }
 
     static void applyToRemote(RemotePortal remote, Map<String, String> settings) {
+        applyProjectionState(remote, settings);
         for (Map.Entry<String, String> entry : settings.entrySet()) {
             String key = entry.getKey();
             String value = entry.getValue();
-            if (value == null) {
+            if (value == null || isProjectionStateKey(key)) {
                 continue;
             }
             switch (key) {
-                case KEY_PROJECTION_MODE -> {
-                    ProjectionMode mode = parseProjectionMode(value);
-                    if (mode != null) {
-                        remote.setMirroredProjectionMode(mode);
-                    }
-                }
                 case KEY_MIRROR_ROTATION -> remote.setMirroredProjectionRotation(
                     MirrorRotation.fromDegrees(parseIntOr(value, remote.getMirroredProjectionRotation().getDegrees())));
                 case KEY_PERMISSION_MODE -> {
@@ -284,12 +291,86 @@ public final class PortalSyncService {
         }
     }
 
+    private static void applyProjectionState(LocalPortal portal, Map<String, String> settings) {
+        String legacyValue = settings.get(KEY_PROJECTION_MODE);
+        ProjectionMode projection = null;
+        Boolean mirror = null;
+        if ("MIRROR".equals(legacyValue)) {
+            projection = ProjectionMode.ON;
+            mirror = Boolean.TRUE;
+        } else if (legacyValue != null) {
+            projection = parseProjectionMode(legacyValue);
+            if (projection != null && !settings.containsKey(KEY_MIRROR_MODE)) {
+                mirror = Boolean.FALSE;
+            }
+        }
+        Boolean projectionEnabled = parseBoolean(settings.get(KEY_PROJECTION_ENABLED));
+        if (projectionEnabled != null) {
+            projection = projectionEnabled.booleanValue() ? ProjectionMode.ON : ProjectionMode.OFF;
+        }
+        Boolean explicitMirror = parseBoolean(settings.get(KEY_MIRROR_MODE));
+        if (explicitMirror != null) {
+            mirror = explicitMirror;
+        }
+        if (projection != null) {
+            portal.setProjectionMode(projection);
+        }
+        if (mirror != null) {
+            portal.setMirrorMode(mirror.booleanValue());
+        }
+    }
+
+    private static void applyProjectionState(RemotePortal remote, Map<String, String> settings) {
+        String legacyValue = settings.get(KEY_PROJECTION_MODE);
+        ProjectionMode projection = null;
+        Boolean mirror = null;
+        if ("MIRROR".equals(legacyValue)) {
+            projection = ProjectionMode.ON;
+            mirror = Boolean.TRUE;
+        } else if (legacyValue != null) {
+            projection = parseProjectionMode(legacyValue);
+            if (projection != null && !settings.containsKey(KEY_MIRROR_MODE)) {
+                mirror = Boolean.FALSE;
+            }
+        }
+        Boolean projectionEnabled = parseBoolean(settings.get(KEY_PROJECTION_ENABLED));
+        if (projectionEnabled != null) {
+            projection = projectionEnabled.booleanValue() ? ProjectionMode.ON : ProjectionMode.OFF;
+        }
+        Boolean explicitMirror = parseBoolean(settings.get(KEY_MIRROR_MODE));
+        if (explicitMirror != null) {
+            mirror = explicitMirror;
+        }
+        if (projection != null) {
+            remote.setMirroredProjectionMode(projection);
+        }
+        if (mirror != null) {
+            remote.setMirroredMirrorMode(mirror.booleanValue());
+        }
+    }
+
+    private static boolean isProjectionStateKey(String key) {
+        return KEY_PROJECTION_MODE.equals(key)
+            || KEY_PROJECTION_ENABLED.equals(key)
+            || KEY_MIRROR_MODE.equals(key);
+    }
+
     private static ProjectionMode parseProjectionMode(String value) {
         try {
             return ProjectionMode.valueOf(value);
         } catch (IllegalArgumentException e) {
             return null;
         }
+    }
+
+    private static Boolean parseBoolean(String value) {
+        if (Boolean.TRUE.toString().equalsIgnoreCase(value)) {
+            return Boolean.TRUE;
+        }
+        if (Boolean.FALSE.toString().equalsIgnoreCase(value)) {
+            return Boolean.FALSE;
+        }
+        return null;
     }
 
     private static PortalPermissionMode parsePermissionMode(String value) {

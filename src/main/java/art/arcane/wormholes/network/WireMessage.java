@@ -313,7 +313,7 @@ public sealed interface WireMessage {
         }
     }
 
-    record HandoffRequest(UUID transferId, UUID playerId, String playerName, UUID destPortalId, WireTraversive traversive) implements WireMessage {
+    record HandoffRequest(UUID transferId, UUID playerId, String playerName, UUID destPortalId, boolean directTransfer, WireTraversive traversive) implements WireMessage {
         @Override
         public WireMessageType type() {
             return WireMessageType.HANDOFF_REQUEST;
@@ -325,11 +325,12 @@ public sealed interface WireMessage {
             writeUuid(out, playerId);
             out.writeUTF(playerName);
             writeUuid(out, destPortalId);
+            out.writeBoolean(directTransfer);
             traversive.write(out);
         }
 
         public static HandoffRequest read(DataInputStream in) throws IOException {
-            return new HandoffRequest(readUuid(in), readUuid(in), in.readUTF(), readUuid(in), WireTraversive.read(in));
+            return new HandoffRequest(readUuid(in), readUuid(in), in.readUTF(), readUuid(in), in.readBoolean(), WireTraversive.read(in));
         }
     }
 
@@ -349,7 +350,7 @@ public sealed interface WireMessage {
         }
     }
 
-    record HandoffDeny(UUID transferId, String reason) implements WireMessage {
+    record HandoffDeny(UUID transferId, String reason, long retryAfterMillis) implements WireMessage {
         @Override
         public WireMessageType type() {
             return WireMessageType.HANDOFF_DENY;
@@ -359,14 +360,15 @@ public sealed interface WireMessage {
         public void write(DataOutputStream out) throws IOException {
             writeUuid(out, transferId);
             out.writeUTF(reason);
+            out.writeLong(retryAfterMillis);
         }
 
         public static HandoffDeny read(DataInputStream in) throws IOException {
-            return new HandoffDeny(readUuid(in), in.readUTF());
+            return new HandoffDeny(readUuid(in), in.readUTF(), in.readLong());
         }
     }
 
-    record HandoffCancel(UUID playerId) implements WireMessage {
+    record HandoffCancel(UUID transferId, UUID playerId) implements WireMessage {
         @Override
         public WireMessageType type() {
             return WireMessageType.HANDOFF_CANCEL;
@@ -374,11 +376,12 @@ public sealed interface WireMessage {
 
         @Override
         public void write(DataOutputStream out) throws IOException {
+            writeUuid(out, transferId);
             writeUuid(out, playerId);
         }
 
         public static HandoffCancel read(DataInputStream in) throws IOException {
-            return new HandoffCancel(readUuid(in));
+            return new HandoffCancel(readUuid(in), readUuid(in));
         }
     }
 

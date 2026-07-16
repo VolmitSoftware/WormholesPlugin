@@ -49,6 +49,7 @@ import art.arcane.wormholes.portal.UniversalTunnel;
 import art.arcane.wormholes.network.view.RemoteViewCache;
 import art.arcane.wormholes.config.VisualQualityProfile;
 import art.arcane.wormholes.platform.WormholesPlatform;
+import art.arcane.wormholes.render.PortalToolPreviewRenderer;
 import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.volmlib.util.scheduling.AR;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
@@ -74,12 +75,14 @@ public class EffectManager implements Listener
 	private final Map<UUID, Boolean> portalSyncActive = new ConcurrentHashMap<>();
 	private final Map<VortexKey, VortexMarker> activeVortices = new ConcurrentHashMap<>();
 	private final Set<UUID> temporaryDisplays = ConcurrentHashMap.newKeySet();
+	private final PortalToolPreviewRenderer portalToolPreviewRenderer;
 	private final Object displayLifecycleLock = new Object();
 	private volatile boolean closing;
 
 	public EffectManager()
 	{
 		Wormholes.v("Starting Effect Manager");
+		portalToolPreviewRenderer = new PortalToolPreviewRenderer();
 		cleanupOrphanedDisplays();
 
 		new AR(LOOKING_SCAN_INTERVAL_TICKS)
@@ -127,6 +130,7 @@ public class EffectManager implements Listener
 		}
 		portalSyncActive.clear();
 		activeVortices.clear();
+		portalToolPreviewRenderer.clear();
 		boolean folia = FoliaScheduler.isFoliaThreading(Bukkit.getServer());
 		CountDownLatch removals = new CountDownLatch(displays.size());
 		for(UUID displayId : displays)
@@ -323,12 +327,14 @@ public class EffectManager implements Listener
 
 	private void scanLookingPortalsFor(Player player, List<ILocalPortal> portals)
 	{
-		ItemStack handItem = player.getInventory().getItemInMainHand();
-		if(!Wormholes.blockManager.isPortalTool(handItem))
+		ItemStack mainHandItem = player.getInventory().getItemInMainHand();
+		ItemStack offHandItem = player.getInventory().getItemInOffHand();
+		if(!Wormholes.blockManager.isPortalTool(mainHandItem) && !Wormholes.blockManager.isPortalTool(offHandItem))
 		{
 			return;
 		}
 
+		portalToolPreviewRenderer.render(player, portals);
 		for(ILocalPortal portal : portals)
 		{
 			if(portal.isLookingAt(player))

@@ -16,6 +16,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WireTraversiveTest {
     private static Traversive sampleTraversive(boolean frontSide) {
@@ -62,17 +63,21 @@ class WireTraversiveTest {
         UUID playerId = UUID.randomUUID();
         UUID portalId = UUID.randomUUID();
 
-        WireMessage.HandoffRequest request = roundTrip(new WireMessage.HandoffRequest(transferId, playerId, "Psycho", portalId, wire));
+        WireMessage.HandoffRequest request = roundTrip(new WireMessage.HandoffRequest(transferId, playerId, "Psycho", portalId, true, wire));
         assertEquals(transferId, request.transferId());
         assertEquals(playerId, request.playerId());
         assertEquals("Psycho", request.playerName());
         assertEquals(portalId, request.destPortalId());
+        assertTrue(request.directTransfer());
         assertEquals(wire, request.traversive());
 
         assertEquals(transferId, roundTrip(new WireMessage.HandoffAck(transferId)).transferId());
-        WireMessage.HandoffDeny deny = roundTrip(new WireMessage.HandoffDeny(transferId, "unknown portal"));
+        WireMessage.HandoffDeny deny = roundTrip(new WireMessage.HandoffDeny(transferId, "unknown portal", 1250L));
         assertEquals("unknown portal", deny.reason());
-        assertEquals(playerId, roundTrip(new WireMessage.HandoffCancel(playerId)).playerId());
+        assertEquals(1250L, deny.retryAfterMillis());
+        WireMessage.HandoffCancel cancel = roundTrip(new WireMessage.HandoffCancel(transferId, playerId));
+        assertEquals(transferId, cancel.transferId());
+        assertEquals(playerId, cancel.playerId());
     }
 
     @Test

@@ -4,8 +4,11 @@ import art.arcane.wormholes.network.replication.ChunkBulk;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -20,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StatusBridgeCompressionTest {
@@ -50,7 +55,9 @@ class StatusBridgeCompressionTest {
         assertTrue(transport.length < plainUnsigned.length, "compressed transport blob must be smaller than the plain unsigned bytes");
 
         MinecraftStatusBridge.StatusPacket decoded = MinecraftStatusBridge.StatusPacket.decode(encoded, decodeSide);
-        assertArrayEquals(plainUnsigned, unsignedBytes(decoded), "decoded packet must recover byte-identical plain unsigned bytes");
+        byte[] retainedUnsigned = retainedUnsignedBytes(decoded);
+        assertArrayEquals(plainUnsigned, retainedUnsigned, "decoded packet must retain the exact signed transport bytes");
+        assertSame(retainedUnsigned, unsignedBytes(decoded), "verification must reuse the retained bytes without rebuilding the packet");
         assertTrue(decoded.verify(), "signature must still verify against the plain unsigned bytes after compression round-trip");
 
         assertEquals("alpha", decoded.sourceServer());
@@ -161,6 +168,48 @@ class StatusBridgeCompressionTest {
         assertTrue(decoded.verify(), "signature must verify after a max-message round trip");
     }
 
+    @Test
+    void decodeRejectsTrailingEnvelopeBytes() throws Exception {
+        KeyPair keyPair = keyPair();
+        WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        MinecraftStatusBridge.StatusPacket packet = MinecraftStatusBridge.create(
+            "alpha", "beta", "26.2", "1.0.0", "10.0.0.5", 25565,
+            keyPair.getPublic().getEncoded(), keyPair.getPrivate(), 77L, List.of());
+        byte[] envelope = Base64.getUrlDecoder().decode(packet.encode(compression));
+        byte[] withTrailingByte = Arrays.copyOf(envelope, envelope.length + 1);
+        String encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(withTrailingByte);
+
+        assertThrows(IOException.class, () -> MinecraftStatusBridge.StatusPacket.decode(encoded, compression));
+    }
+
+    @Test
+    void decodeRejectsTrailingSignedPayloadBytes() throws Exception {
+        KeyPair keyPair = keyPair();
+        WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        MinecraftStatusBridge.StatusPacket packet = MinecraftStatusBridge.create(
+            "alpha", "beta", "26.2", "1.0.0", "10.0.0.5", 25565,
+            keyPair.getPublic().getEncoded(), keyPair.getPrivate(), 77L, List.of());
+        String original = packet.encode(compression);
+        byte[] unsigned = unsignedBytes(packet);
+        byte[] withTrailingByte = Arrays.copyOf(unsigned, unsigned.length + 1);
+        byte[] signature = signatureBlob(original);
+        byte[] transport = compression.encode(withTrailingByte, false);
+        String encoded = envelope(transport, signature);
+
+        assertThrows(IOException.class, () -> MinecraftStatusBridge.StatusPacket.decode(encoded, compression));
+    }
+
+    @Test
+    void statusDecodeUsesAProtocolSpecificExpansionLimit() throws Exception {
+        WireCompression compression = new WireCompression(WireCompression.DEFAULT_LEVEL);
+        byte[] payload = repeating((byte) 0, MinecraftStatusBridge.MAX_UNSIGNED_PACKET_BYTES + 1);
+        byte[] transport = compression.encode(payload, false);
+        String encoded = envelope(transport, new byte[0]);
+
+        assertTrue(encoded.length() < MinecraftStatusBridge.MAX_ENCODED_CHARS);
+        assertThrows(IOException.class, () -> MinecraftStatusBridge.StatusPacket.decode(encoded, compression));
+    }
+
     private static List<MinecraftStatusBridge.EncodedMessage> fragmentMessages(byte[] frame) throws IOException {
         int total = (frame.length + FRAGMENT_CHUNK_BYTES - 1) / FRAGMENT_CHUNK_BYTES;
         List<MinecraftStatusBridge.EncodedMessage> fragments = new ArrayList<>(total);
@@ -190,10 +239,32 @@ class StatusBridgeCompressionTest {
         return WireCodec.readByteArray(in, MinecraftStatusBridge.MAX_PACKET_BYTES);
     }
 
+    private static byte[] signatureBlob(String encoded) throws IOException {
+        byte[] envelope = Base64.getUrlDecoder().decode(encoded);
+        DataInputStream in = new DataInputStream(new ByteArrayInputStream(envelope));
+        WireCodec.readByteArray(in, MinecraftStatusBridge.MAX_PACKET_BYTES);
+        return WireCodec.readByteArray(in, Handshake.SIGNATURE_MAX_LENGTH);
+    }
+
+    private static String envelope(byte[] transport, byte[] signature) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        DataOutputStream out = new DataOutputStream(buffer);
+        WireCodec.writeByteArray(out, transport, MinecraftStatusBridge.MAX_PACKET_BYTES);
+        WireCodec.writeByteArray(out, signature, Handshake.SIGNATURE_MAX_LENGTH);
+        out.flush();
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(buffer.toByteArray());
+    }
+
     private static byte[] unsignedBytes(MinecraftStatusBridge.StatusPacket packet) throws Exception {
         Method method = MinecraftStatusBridge.StatusPacket.class.getDeclaredMethod("unsignedBytes");
         method.setAccessible(true);
         return (byte[]) method.invoke(packet);
+    }
+
+    private static byte[] retainedUnsignedBytes(MinecraftStatusBridge.StatusPacket packet) throws Exception {
+        Field field = MinecraftStatusBridge.StatusPacket.class.getDeclaredField("unsignedBytesCache");
+        field.setAccessible(true);
+        return (byte[]) field.get(packet);
     }
 
     private static byte[] repeating(byte value, int length) {

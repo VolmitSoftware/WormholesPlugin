@@ -16,19 +16,52 @@ import art.arcane.wormholes.util.JSONObject;
 
 public final class MirrorPortalStateTest {
     @Test
-    public void mirrorCategoricallyRejectsDepartureAndArrival() {
+    public void mirrorAndProjectionToggleRemainIndependent() {
         LocalPortal portal = portal(PortalType.WORMHOLE);
         portal.setOutgoingTraversalsEnabled(true);
         portal.setIncomingTraversalsEnabled(true);
 
-        portal.setProjectionMode(ProjectionMode.MIRROR);
+        portal.setMirrorMode(true);
 
+        assertTrue(portal.isMirrorMode());
+        assertEquals(ProjectionMode.ON, portal.getProjectionMode());
+        assertTrue(portal.isProjecting());
         assertFalse(portal.canDepart(null));
         assertFalse(portal.canArrive(null));
 
-        portal.setProjectionMode(ProjectionMode.ON);
+        portal.setProjectionMode(ProjectionMode.OFF);
+        assertTrue(portal.isMirrorMode());
+        assertFalse(portal.isProjecting());
+        assertFalse(portal.canDepart(null));
+        assertFalse(portal.canArrive(null));
+
+        portal.setMirrorMode(false);
+        assertFalse(portal.isMirrorMode());
+        assertEquals(ProjectionMode.OFF, portal.getProjectionMode());
         assertTrue(portal.canDepart(null));
         assertTrue(portal.canArrive(null));
+    }
+
+    @Test
+    public void mirrorOnlyPortalClosesWhenProjectionOrMirrorIsDisabled() {
+        LocalPortal portal = portal(PortalType.WORMHOLE);
+        portal.setAmbientAttended(false);
+        portal.setMirrorMode(true);
+
+        portal.update();
+        assertTrue(portal.isOpen());
+
+        portal.setProjectionMode(ProjectionMode.OFF);
+        portal.update();
+        assertFalse(portal.isOpen());
+
+        portal.setProjectionMode(ProjectionMode.ON);
+        portal.update();
+        assertTrue(portal.isOpen());
+
+        portal.setMirrorMode(false);
+        portal.update();
+        assertFalse(portal.isOpen());
     }
 
     @Test
@@ -67,12 +100,44 @@ public final class MirrorPortalStateTest {
     }
 
     @Test
-    public void everyPortalTypeAcceptsMirrorMode() {
+    public void everyPortalTypeAcceptsIndependentMirrorMode() {
         for(PortalType type : PortalType.values()) {
             LocalPortal portal = portal(type);
-            portal.setProjectionMode(ProjectionMode.MIRROR);
-            assertEquals(ProjectionMode.MIRROR, portal.getProjectionMode());
+            portal.setMirrorMode(true);
+            assertTrue(portal.isMirrorMode());
+            assertEquals(type, portal.getType());
+            assertEquals(ProjectionMode.ON, portal.getProjectionMode());
         }
+    }
+
+    @Test
+    public void legacyProjectionStatesMigrateToIndependentFields() {
+        JSONObject legacyMirror = new JSONObject();
+        legacyMirror.put("projectionMode", "MIRROR");
+        assertEquals(ProjectionMode.ON, LocalPortal.resolveProjectionMode(legacyMirror));
+        assertTrue(LocalPortal.resolveMirrorMode(legacyMirror));
+
+        JSONObject legacyOneWay = new JSONObject();
+        legacyOneWay.put("projectionMode", "ONE_WAY");
+        assertEquals(ProjectionMode.ON, LocalPortal.resolveProjectionMode(legacyOneWay));
+        assertFalse(LocalPortal.resolveMirrorMode(legacyOneWay));
+
+        JSONObject legacyOff = new JSONObject();
+        legacyOff.put("projectionMode", "OFF");
+        assertEquals(ProjectionMode.OFF, LocalPortal.resolveProjectionMode(legacyOff));
+        assertFalse(LocalPortal.resolveMirrorMode(legacyOff));
+
+        JSONObject explicitMirror = new JSONObject();
+        explicitMirror.put("projectionMode", "OFF");
+        explicitMirror.put("mirrorMode", true);
+        assertEquals(ProjectionMode.OFF, LocalPortal.resolveProjectionMode(explicitMirror));
+        assertTrue(LocalPortal.resolveMirrorMode(explicitMirror));
+
+        JSONObject explicitNormal = new JSONObject();
+        explicitNormal.put("projectionMode", "MIRROR");
+        explicitNormal.put("mirrorMode", false);
+        assertEquals(ProjectionMode.ON, LocalPortal.resolveProjectionMode(explicitNormal));
+        assertFalse(LocalPortal.resolveMirrorMode(explicitNormal));
     }
 
     private static LocalPortal portal(PortalType type) {

@@ -8,7 +8,7 @@ import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.type.Door;
 
 /**
- * The two-block-high aperture through the center of a vanilla door block.
+ * The two-block-high aperture at the recessed portal surface of a vanilla door block.
  *
  * <p>The plane intentionally uses the door's closed facing instead of its open
  * slab position. A door may swing left or right, but the opening that a player
@@ -17,6 +17,10 @@ import org.bukkit.block.data.type.Door;
 public record DoorwayPlane(int blockX, int blockY, int blockZ, BlockFace facing)
 {
 	private static final double EPSILON = 1.0E-7D;
+	private static final double MIN_VERTICAL_OFFSET = -0.6D;
+	static final double PORTAL_RECESS = 0.0625D;
+	static final double PORTAL_THICKNESS = 0.035D;
+	static final double PORTAL_THRESHOLD_OFFSET = -(0.5D - PORTAL_RECESS - (PORTAL_THICKNESS / 2.0D));
 
 	public DoorwayPlane
 	{
@@ -41,15 +45,18 @@ public record DoorwayPlane(int blockX, int blockY, int blockZ, BlockFace facing)
 
 	public DoorVec3 center()
 	{
-		return new DoorVec3(blockX + 0.5D, blockY + 1.0D, blockZ + 0.5D);
+		return new DoorVec3(
+			blockX + 0.5D + (facing.getModX() * PORTAL_THRESHOLD_OFFSET),
+			blockY + 1.0D,
+			blockZ + 0.5D + (facing.getModZ() * PORTAL_THRESHOLD_OFFSET));
 	}
 
 	/**
-	 * Intersects a player's movement segment with the doorway aperture.
+	 * Intersects a traveler's movement segment with the doorway aperture.
 	 *
 	 * <p>Merely moving along the plane is not a crossing. Starting exactly on the
 	 * plane and moving away is also ignored: the movement that arrived at the
-	 * plane is the crossing event, which prevents stationary players from being
+	 * plane is the crossing event, which prevents stationary travelers from being
 	 * pulled through when a door opens around them.</p>
 	 */
 	public Optional<DoorwayCrossing> crossing(DoorVec3 from, DoorVec3 to)
@@ -83,7 +90,7 @@ public record DoorwayPlane(int blockX, int blockY, int blockZ, BlockFace facing)
 		double verticalOffset = point.y() - blockY;
 
 		if(Math.abs(lateralOffset) > 0.5D + EPSILON
-			|| verticalOffset < -EPSILON
+			|| verticalOffset < MIN_VERTICAL_OFFSET - EPSILON
 			|| verticalOffset > 2.0D + EPSILON)
 		{
 			return Optional.empty();
@@ -123,6 +130,11 @@ public record DoorwayPlane(int blockX, int blockY, int blockZ, BlockFace facing)
 		}
 
 		return normalizeYaw(yaw + facingYaw(destination.facing) - facingYaw(facing));
+	}
+
+	public float rotateYawToMatchingSide(DoorwayPlane destination, float yaw)
+	{
+		return normalizeYaw(rotateYawTo(destination, yaw) + 180.0F);
 	}
 
 	private DoorVec3 sidePoint(int sign, double offset)

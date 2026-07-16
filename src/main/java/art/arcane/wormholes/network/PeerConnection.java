@@ -6,7 +6,6 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -48,6 +47,7 @@ public final class PeerConnection {
     private static final int HANDSHAKE_TIMEOUT_MS = 10_000;
     private static final int READ_TIMEOUT_MS = 30_000;
     private static final int WRITE_QUEUE_CAPACITY = 1024;
+    private static final int WRITE_CONTROL_RESERVE = 64;
 
     private final PeerTransport.PeerChannel channel;
     private final boolean dialer;
@@ -57,7 +57,7 @@ public final class PeerConnection {
     private final CompressionProvider compressionProvider;
     private final WireCompression compression;
     private final WireCodec.PayloadSampler sampler;
-    private final LinkedBlockingQueue<OutboundFrame> writeQueue = new LinkedBlockingQueue<>(WRITE_QUEUE_CAPACITY);
+    private final RawOutbox writeQueue = new RawOutbox(WRITE_QUEUE_CAPACITY, WRITE_CONTROL_RESERVE);
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicReference<State> state = new AtomicReference<>(State.HANDSHAKING);
     private final AtomicLong lastInboundMillis = new AtomicLong(System.currentTimeMillis());
@@ -392,7 +392,7 @@ public final class PeerConnection {
                     continue;
                 }
                 out.write(bytes);
-                if (writeQueue.isEmpty()) {
+                if (RawOutbox.isControl(frame) || writeQueue.isEmpty()) {
                     out.flush();
                 }
             }

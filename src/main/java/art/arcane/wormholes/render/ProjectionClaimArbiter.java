@@ -194,6 +194,10 @@ public final class ProjectionClaimArbiter {
         }
     }
 
+    public boolean isIdle() {
+        return observers.isEmpty();
+    }
+
     public boolean hasPendingLighting(Player observer) {
         if (observer == null) {
             return false;
@@ -206,7 +210,7 @@ public final class ProjectionClaimArbiter {
             if (state.retired) {
                 return false;
             }
-            return !state.pendingLightingKeys.isEmpty();
+            return hasLightingWork(state);
         }
     }
 
@@ -220,11 +224,11 @@ public final class ProjectionClaimArbiter {
             return ClaimUpdateResult.empty();
         }
         synchronized (state) {
-            if (state.retired || state.pendingRevertKeys.isEmpty()) {
+            if (state.retired || (state.pendingRevertKeys.isEmpty() && !hasLightingWork(state))) {
                 return ClaimUpdateResult.empty();
             }
             ClaimUpdateResult result = applyResult(observer, localWorld, state,
-                new ProjectionClaimSet.ProjectionClaimSetResult(), false);
+                new ProjectionClaimSet.ProjectionClaimSetResult(), true);
             removeObserverIfEmpty(observerId, state);
             return result;
         }
@@ -333,6 +337,7 @@ public final class ProjectionClaimArbiter {
 
     private void applyLighting(Player observer, World localWorld, ObserverClaims observerClaims, boolean canSend, boolean allowLightingUpdate) {
         if (!canSend) {
+            observerClaims.lighting.revert(observer, null);
             observerClaims.pendingLightingKeys.clear();
             return;
         }
@@ -346,7 +351,8 @@ public final class ProjectionClaimArbiter {
             observerClaims.pendingLightingKeys.clear();
             return;
         }
-        if (!allowLightingUpdate || observerClaims.pendingLightingKeys.isEmpty()) {
+        if (!allowLightingUpdate
+            || (observerClaims.pendingLightingKeys.isEmpty() && !observerClaims.lighting.hasPendingUpdates())) {
             return;
         }
         ProjectionWorldView localView = viewProvider.view(localWorld);
@@ -356,6 +362,13 @@ public final class ProjectionClaimArbiter {
         observerClaims.lighting.apply(observer, localView, observerClaims.claimSet.getWinningClaims(),
             observerClaims.pendingLightingKeys);
         observerClaims.pendingLightingKeys.clear();
+    }
+
+    private static boolean hasLightingWork(ObserverClaims state) {
+        if (!state.pendingLightingKeys.isEmpty() || state.lighting.hasPendingUpdates()) {
+            return true;
+        }
+        return state.claimSet.isEmpty() && !state.lighting.isIdle();
     }
 
     private void sendBlockChanges(Player observer, World localWorld, Long2ObjectMap<BlockData> blockChanges) {
@@ -409,7 +422,8 @@ public final class ProjectionClaimArbiter {
     }
 
     private void removeObserverIfEmpty(UUID observerId, ObserverClaims state) {
-        if (state.claimSet.isEmpty() && state.frame == null && state.pendingRevertKeys.isEmpty() && state.sentBlocks.isEmpty()) {
+        if (state.claimSet.isEmpty() && state.frame == null && state.pendingRevertKeys.isEmpty()
+            && state.sentBlocks.isEmpty() && state.lighting.isIdle()) {
             state.retired = true;
             observers.remove(observerId, state);
         }
