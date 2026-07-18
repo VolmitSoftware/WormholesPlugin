@@ -36,6 +36,8 @@ public class ProjectionConfig {
     @ConfigAdvanced
     public int maxPortalsPerObserverTick = 4;
     @ConfigAdvanced
+    public int maxNewObserverScansPerTick = 64;
+    @ConfigAdvanced
     public int interestGraceTicks = 5;
     @ConfigAdvanced
     public int initialResendPasses = 4;

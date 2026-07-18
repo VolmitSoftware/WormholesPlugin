@@ -1,5 +1,7 @@
 package art.arcane.wormholes.portal.vanilla;
 
+import java.util.List;
+
 import art.arcane.volmlib.util.bukkit.WorldIdentity;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
@@ -51,7 +53,37 @@ public final class WorldPairing
 		{
 			return overworld;
 		}
-		return resolve(pairedNetherKey(WorldIdentity.key(overworld)), World.Environment.NETHER);
+		NetherPortalTarget target = resolveNetherTarget(overworld);
+		return target == null ? null : target.world();
+	}
+
+	static NetherPortalTarget pairedNetherPortalTarget(World source)
+	{
+		if(source == null)
+		{
+			return null;
+		}
+		if(source.getEnvironment() == World.Environment.NETHER)
+		{
+			World overworld = pairedOverworld(source);
+			return overworld == null ? null : new NetherPortalTarget(overworld, false);
+		}
+		return resolveNetherTarget(source);
+	}
+
+	private static NetherPortalTarget resolveNetherTarget(World overworld)
+	{
+		NamespacedKey overworldKey = WorldIdentity.key(overworld);
+		NamespacedKey exact = pairedNetherKey(overworldKey);
+		for(NamespacedKey candidate : pairedNetherKeys(overworldKey))
+		{
+			World paired = resolve(candidate, World.Environment.NETHER);
+			if(paired != null)
+			{
+				return new NetherPortalTarget(paired, !candidate.equals(exact));
+			}
+		}
+		return null;
 	}
 
 	public static World pairedEnd(World overworld)
@@ -87,6 +119,13 @@ public final class WorldPairing
 			return NamespacedKey.minecraft("the_nether");
 		}
 		return new NamespacedKey(overworldKey.getNamespace(), overworldKey.getKey() + "_nether");
+	}
+
+	static List<NamespacedKey> pairedNetherKeys(NamespacedKey overworldKey)
+	{
+		NamespacedKey exact = pairedNetherKey(overworldKey);
+		NamespacedKey canonical = NamespacedKey.minecraft("the_nether");
+		return canonical.equals(exact) ? List.of(exact) : List.of(exact, canonical);
 	}
 
 	static NamespacedKey pairedEndKey(NamespacedKey overworldKey)
@@ -126,5 +165,9 @@ public final class WorldPairing
 		}
 		World world = WorldIdentity.resolve(key).orElse(null);
 		return world != null && world.getEnvironment() == environment ? world : null;
+	}
+
+	record NetherPortalTarget(World world, boolean sharedFallback)
+	{
 	}
 }

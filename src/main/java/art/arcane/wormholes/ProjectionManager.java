@@ -55,9 +55,12 @@ public class ProjectionManager implements Listener {
     private final ProjectionWorldViewProvider viewProvider;
     private final Map<UUID, Map<UUID, PortalProjector>> projectors;
     private final Map<UUID, Map<UUID, Long>> interestGraceUntil;
+    private final Map<UUID, Integer> observerPortalCursors;
     private final Set<UUID> observerTasksInFlight;
     private final Map<PortalProjector, CloseTaskState> closingProjectors;
     private final AtomicInteger lastInterestedObservers;
+    private final AtomicInteger lastObserverCandidates;
+    private final AtomicInteger lastNewObserverScans;
     private final AtomicInteger lastScheduledProjectors;
     private final AtomicInteger lastDeferredProjectors;
     private final AtomicBoolean shutdownFinalized;
@@ -76,9 +79,12 @@ public class ProjectionManager implements Listener {
         this.claimArbiter = new ProjectionClaimArbiter(viewProvider);
         this.projectors = new ConcurrentHashMap<UUID, Map<UUID, PortalProjector>>();
         this.interestGraceUntil = new ConcurrentHashMap<UUID, Map<UUID, Long>>();
+        this.observerPortalCursors = new ConcurrentHashMap<UUID, Integer>();
         this.observerTasksInFlight = ConcurrentHashMap.newKeySet();
         this.closingProjectors = new ConcurrentHashMap<PortalProjector, CloseTaskState>();
         this.lastInterestedObservers = new AtomicInteger();
+        this.lastObserverCandidates = new AtomicInteger();
+        this.lastNewObserverScans = new AtomicInteger();
         this.lastScheduledProjectors = new AtomicInteger();
         this.lastDeferredProjectors = new AtomicInteger();
         this.shutdownFinalized = new AtomicBoolean();
@@ -158,6 +164,8 @@ public class ProjectionManager implements Listener {
         }
 
         lastInterestedObservers.set(0);
+        lastObserverCandidates.set(0);
+        lastNewObserverScans.set(0);
         lastScheduledProjectors.set(0);
         lastDeferredProjectors.set(0);
         List<ILocalPortal> active = collectActiveProjectors();
@@ -172,18 +180,21 @@ public class ProjectionManager implements Listener {
         boolean updateBlocks = shouldUpdateBlocks();
         boolean updateEntities = shouldUpdateEntities();
         List<Player> onlinePlayers = new ArrayList<Player>(Wormholes.instance.getServer().getOnlinePlayers());
+        List<Player> observerCandidates = selectObserverCandidates(onlinePlayers, frameTick,
+            Settings.PROJECTION_MAX_NEW_OBSERVER_SCANS_PER_TICK);
+        lastObserverCandidates.set(observerCandidates.size());
         int totalBudget = updateBlocks ? Math.max(0, Settings.PROJECTION_MAX_PROJECTORS_PER_TICK) : 0;
         int perObserverBudget = Math.max(0, Settings.PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK);
-        int[] reservedBudgets = fairBudgetAllocations(onlinePlayers.size(), totalBudget, perObserverBudget, frameTick);
+        int[] reservedBudgets = fairBudgetAllocations(observerCandidates.size(), totalBudget, perObserverBudget, frameTick);
         int reservedTotal = 0;
         for (int reserved : reservedBudgets) {
             reservedTotal += reserved;
         }
         AtomicInteger remainingProjectors = new AtomicInteger(Math.max(0, totalBudget - reservedTotal));
-        int rotationStart = onlinePlayers.isEmpty() ? 0 : (int) Math.floorMod(frameTick, onlinePlayers.size());
-        for (int offset = 0; offset < onlinePlayers.size(); offset++) {
-            int index = (rotationStart + offset) % onlinePlayers.size();
-            Player observer = onlinePlayers.get(index);
+        int rotationStart = observerCandidates.isEmpty() ? 0 : (int) Math.floorMod(frameTick, observerCandidates.size());
+        for (int offset = 0; offset < observerCandidates.size(); offset++) {
+            int index = (rotationStart + offset) % observerCandidates.size();
+            Player observer = observerCandidates.get(index);
             UUID observerId = observer.getUniqueId();
             int reservedBudget = reservedBudgets[index];
             if (!observerTasksInFlight.add(observerId)) {
@@ -244,6 +255,7 @@ public class ProjectionManager implements Listener {
 
         Wormholes.v("[ProjectionManager] tick=" + tickCount + " totalPortals=" + totalPortals
                 + " activeProjectingPortals=" + active.size() + " observers=" + totalObservers + " renderedBlocks=" + totalRendered
+                + " candidates=" + lastObserverCandidates.get() + " newScans=" + lastNewObserverScans.get()
                 + " interested=" + lastInterestedObservers.get() + " scheduled=" + lastScheduledProjectors.get() + " deferred=" + lastDeferredProjectors.get());
 
         if (active.isEmpty() && totalPortals > 0) {
@@ -286,6 +298,47 @@ public class ProjectionManager implements Listener {
                 closeOnEntity(projector);
             }
         }
+    }
+
+    private List<Player> selectObserverCandidates(List<Player> onlinePlayers, long frameTick, int maxNewScans) {
+        if (onlinePlayers.isEmpty()) {
+            return List.of();
+        }
+        Set<UUID> trackedObserverIds = new HashSet<UUID>();
+        for (Map<UUID, PortalProjector> portalProjectors : projectors.values()) {
+            trackedObserverIds.addAll(portalProjectors.keySet());
+        }
+
+        int discoveryLimit = Math.min(Math.max(0, maxNewScans), onlinePlayers.size());
+        List<Player> candidates = new ArrayList<Player>(Math.min(onlinePlayers.size(), trackedObserverIds.size() + discoveryLimit));
+        Set<UUID> included = new HashSet<UUID>(trackedObserverIds.size() + discoveryLimit);
+        for (Player player : onlinePlayers) {
+            UUID playerId = player.getUniqueId();
+            if (trackedObserverIds.contains(playerId) && included.add(playerId)) {
+                candidates.add(player);
+            }
+        }
+
+        int start = observerDiscoveryStart(onlinePlayers.size(), discoveryLimit, frameTick);
+        int discovered = 0;
+        for (int offset = 0; offset < onlinePlayers.size() && discovered < discoveryLimit; offset++) {
+            Player player = onlinePlayers.get((start + offset) % onlinePlayers.size());
+            if (!included.add(player.getUniqueId())) {
+                continue;
+            }
+            candidates.add(player);
+            discovered++;
+        }
+        lastNewObserverScans.set(discovered);
+        return candidates;
+    }
+
+    static int observerDiscoveryStart(int observerCount, int maxNewScans, long frameTick) {
+        if (observerCount <= 0 || maxNewScans <= 0) {
+            return 0;
+        }
+        long batch = Math.max(0L, frameTick - 1L);
+        return (int) Math.floorMod(batch * Math.min(observerCount, maxNewScans), observerCount);
     }
 
     private void projectObserverFrame(Player observer,
@@ -354,9 +407,13 @@ public class ProjectionManager implements Listener {
             lastDeferredProjectors.addAndGet(interested.size());
             return;
         }
-        List<ILocalPortal> scheduledPortals = new ArrayList<ILocalPortal>(limit);
-        for (int i = 0; i < limit; i++) {
-            scheduledPortals.add(interested.get(i));
+        List<ILocalPortal> scheduledPortals;
+        if (observerUpdatesBlocks) {
+            int cursor = observerPortalCursors.getOrDefault(observerId, Integer.valueOf(0)).intValue();
+            scheduledPortals = selectRoundRobin(interested, limit, cursor);
+            observerPortalCursors.put(observerId, Integer.valueOf((cursor + scheduledPortals.size()) % interested.size()));
+        } else {
+            scheduledPortals = interested;
         }
         int deferred = Math.max(0, interested.size() - scheduledPortals.size());
         if (observerUpdatesBlocks) {
@@ -373,7 +430,9 @@ public class ProjectionManager implements Listener {
         int[] allocations = new int[observerCount];
         long maximum = (long) observerCount * perObserverBudget;
         int remaining = (int) Math.min(totalBudget, Math.min(Integer.MAX_VALUE, maximum));
-        int start = (int) Math.floorMod(frameTick, observerCount);
+        long stride = Math.min(observerCount, totalBudget);
+        long normalizedTick = Math.floorMod(frameTick, observerCount);
+        int start = (int) ((normalizedTick * stride) % observerCount);
         while (remaining > 0) {
             boolean allocated = false;
             for (int offset = 0; offset < observerCount && remaining > 0; offset++) {
@@ -390,6 +449,19 @@ public class ProjectionManager implements Listener {
             }
         }
         return allocations;
+    }
+
+    static <T> List<T> selectRoundRobin(List<T> values, int limit, int cursor) {
+        if (values == null || values.isEmpty() || limit <= 0) {
+            return List.of();
+        }
+        int selected = Math.min(limit, values.size());
+        int start = Math.floorMod(cursor, values.size());
+        List<T> result = new ArrayList<T>(selected);
+        for (int offset = 0; offset < selected; offset++) {
+            result.add(values.get((start + offset) % values.size()));
+        }
+        return result;
     }
 
     private void projectActiveObserver(Player observer, List<ILocalPortal> scheduledPortals, boolean updateBlocks, boolean updateEntities) {
@@ -464,6 +536,9 @@ public class ProjectionManager implements Listener {
             if (entry.getValue().isEmpty()) {
                 projectors.remove(entry.getKey(), entry.getValue());
             }
+        }
+        if (interestedPortalIds.isEmpty()) {
+            observerPortalCursors.remove(observerId);
         }
     }
 
@@ -645,6 +720,7 @@ public class ProjectionManager implements Listener {
             closeOnEntity(projector);
         }
         claimArbiter.releaseObserver(id);
+        observerPortalCursors.remove(id);
         for (Map.Entry<UUID, Map<UUID, Long>> graceEntry : interestGraceUntil.entrySet()) {
             Map<UUID, Long> byObserver = graceEntry.getValue();
             byObserver.remove(id);
@@ -701,6 +777,7 @@ public class ProjectionManager implements Listener {
         }
         projectors.clear();
         interestGraceUntil.clear();
+        observerPortalCursors.clear();
         observerTasksInFlight.clear();
         try {
             completion.await(2L, TimeUnit.SECONDS);

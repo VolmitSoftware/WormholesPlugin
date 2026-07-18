@@ -63,7 +63,7 @@ public final class VanillaPortalReplacer implements Listener
 	};
 	private static final int END_COUNTERPART_RISE = 10;
 	private static final int END_CANCEL_RADIUS = 6;
-	private static final int NETHER_EXISTING_FOOTPRINT_MARGIN = 2;
+	private static final int NETHER_EXISTING_FOOTPRINT_MARGIN = 4;
 	private static final Object NETHER_TARGET_LOCK = new Object();
 	private static final Set<NetherBuildTarget> PENDING_NETHER_TARGETS = new HashSet<NetherBuildTarget>();
 	private static final Object END_TARGET_LOCK = new Object();
@@ -122,17 +122,18 @@ public final class VanillaPortalReplacer implements Listener
 			boolean alongX = normal.z() != 0;
 			int interiorWidth = interiorWidth(cells, alongX);
 			int interiorHeight = interiorHeight(cells);
+			WorldPairing.NetherPortalTarget targetPlan = WorldPairing.pairedNetherPortalTarget(sourceWorld);
+			if(targetPlan == null)
+			{
+				Wormholes.w("[vanilla-portal] No paired " + (sourceWorld.getEnvironment() == World.Environment.NETHER ? "overworld" : "nether")
+						+ " world for " + sourceWorld.getName() + "; leaving vanilla portal unchanged.");
+				return;
+			}
+			World target = targetPlan.world();
 			ILocalPortal sourcePortal = PortalFactory.createFromCells(cells, PortalFrame.canonical(normal), PortalType.PORTAL, NETHER_TAG, DimensionalPortalKind.NETHER);
 			if(sourcePortal == null)
 			{
 				Wormholes.w("[vanilla-portal] source portal creation returned null");
-				return;
-			}
-			World target = sourceWorld.getEnvironment() == World.Environment.NETHER ? WorldPairing.pairedOverworld(sourceWorld) : WorldPairing.pairedNether(sourceWorld);
-			if(target == null)
-			{
-				destroyIfUnlinked(sourcePortal);
-				Wormholes.w("[vanilla-portal] No paired " + (sourceWorld.getEnvironment() == World.Environment.NETHER ? "overworld" : "nether") + " world for " + sourceWorld.getName() + "; nether portal left one-sided.");
 				return;
 			}
 			Location center = sourcePortal.getCenter();
@@ -142,15 +143,21 @@ public final class VanillaPortalReplacer implements Listener
 			int reuseRadius = target.getEnvironment() == World.Environment.NETHER ? 16 : 128;
 			Wormholes.w("[vanilla-portal] source built (" + interiorWidth + "x" + interiorHeight + "); target=" + target.getName() + " @ " + tcx + "," + tcy + "," + tcz);
 
-			ILocalPortal existing = findNearbyAuto(target, NETHER_TAG, DimensionalPortalKind.NETHER, tcx, tcy, tcz, reuseRadius, true);
-			if(existing != null)
+			if(!targetPlan.sharedFallback())
 			{
-				if(PortalFactory.linkBidirectional(sourcePortal, existing))
+				ILocalPortal existing = findNearbyAuto(target, NETHER_TAG, DimensionalPortalKind.NETHER, tcx, tcy, tcz, reuseRadius, true);
+				if(existing != null && PortalFactory.linkBidirectional(sourcePortal, existing))
 				{
 					clearPortalBlocks(cells, Material.NETHER_PORTAL);
 					Wormholes.w("[vanilla-portal] reused existing counterpart, linked both ways");
 					return;
 				}
+			}
+			else
+			{
+				buildSharedNetherFallbackCounterpart(target, sourcePortal, cells, normal, alongX, interiorWidth, interiorHeight,
+						tcx, tcy, tcz, reuseRadius);
+				return;
 			}
 			findPhysicalNetherPortalAsync(target, tcx, tcy, tcz, reuseRadius).whenComplete((physicalPortal, lookupError) ->
 			{
@@ -167,13 +174,33 @@ public final class VanillaPortalReplacer implements Listener
 				{
 					return;
 				}
-				buildGeneratedNetherCounterpart(target, sourcePortal, cells, normal, alongX, interiorWidth, interiorHeight, tcx, tcy, tcz);
+				buildGeneratedNetherCounterpart(target, sourcePortal, cells, normal, alongX, interiorWidth, interiorHeight,
+						tcx, tcy, tcz, Set.of());
 			});
 		}
 		catch(Throwable ex)
 		{
 			Wormholes.instance.getLogger().log(Level.WARNING, "[vanilla-portal] nether pair build failed", ex);
 		}
+	}
+
+	private static void buildSharedNetherFallbackCounterpart(World target, ILocalPortal sourcePortal, Set<Block> sourceCells, Direction normal,
+			boolean alongX, int interiorWidth, int interiorHeight, int targetX, int targetY, int targetZ, int searchRadius)
+	{
+		findPhysicalNetherPortalAsync(target, targetX, targetY, targetZ, searchRadius).whenComplete((physicalPortal, lookupError) ->
+		{
+			if(sourcePortal.isDestroyed())
+			{
+				return;
+			}
+			if(lookupError != null)
+			{
+				Wormholes.instance.getLogger().log(Level.WARNING, "[vanilla-portal] shared Nether physical portal lookup failed", lookupError);
+			}
+			Set<Block> forbidden = physicalPortal == null ? Set.of() : physicalPortal;
+			buildGeneratedNetherCounterpart(target, sourcePortal, sourceCells, normal, alongX, interiorWidth, interiorHeight,
+					targetX, targetY, targetZ, forbidden);
+		});
 	}
 
 	private static boolean reusePhysicalNetherPortal(ILocalPortal sourcePortal, Set<Block> sourceCells, Set<Block> physicalPortal)
@@ -192,9 +219,9 @@ public final class VanillaPortalReplacer implements Listener
 	}
 
 	private static void buildGeneratedNetherCounterpart(World target, ILocalPortal sourcePortal, Set<Block> sourceCells, Direction normal,
-			boolean alongX, int interiorWidth, int interiorHeight, int targetX, int targetY, int targetZ)
+			boolean alongX, int interiorWidth, int interiorHeight, int targetX, int targetY, int targetZ, Set<Block> forbiddenPhysicalPortal)
 	{
-		NetherBuildTarget buildTarget = reserveNetherBuildTarget(target, targetX, targetZ, interiorWidth);
+		NetherBuildTarget buildTarget = reserveNetherBuildTarget(target, targetX, targetZ, interiorWidth, interiorHeight, forbiddenPhysicalPortal);
 		PortalSiteBuilder.buildNetherFrameAsync(target, buildTarget.x(), targetY, buildTarget.z(), alongX, interiorWidth, interiorHeight).whenComplete((built, buildError) ->
 		{
 			if(buildError != null || built == null || built.isEmpty())
@@ -1124,11 +1151,12 @@ public final class VanillaPortalReplacer implements Listener
 		return Math.max(min, Math.min(max, desired));
 	}
 
-	private static NetherBuildTarget reserveNetherBuildTarget(World world, int desiredX, int desiredZ, int interiorWidth)
+	private static NetherBuildTarget reserveNetherBuildTarget(World world, int desiredX, int desiredZ, int interiorWidth, int interiorHeight,
+			Set<Block> forbiddenPhysicalPortal)
 	{
 		int normalizedWidth = PortalSiteBuilder.netherInteriorWidth(interiorWidth);
-		int halfExtent = normalizedWidth / 2 + 2;
-		int spacing = Math.max(6, normalizedWidth + 4);
+		int halfExtent = netherBuildHalfExtent(normalizedWidth, interiorHeight);
+		int spacing = netherBuildSpacing(normalizedWidth, interiorHeight);
 		synchronized(NETHER_TARGET_LOCK)
 		{
 			UUID worldId = world.getUID();
@@ -1137,20 +1165,55 @@ public final class VanillaPortalReplacer implements Listener
 				int x = desiredX + offset[0] * spacing;
 				int z = desiredZ + offset[1] * spacing;
 				NetherBuildTarget candidate = new NetherBuildTarget(worldId, x, z, halfExtent);
-				if(!hasManagedNetherPortalConflict(world, candidate) && reserveNetherFootprint(candidate))
+				if(!hasManagedNetherPortalConflict(world, candidate)
+						&& !hasPhysicalNetherPortalConflict(candidate, forbiddenPhysicalPortal)
+						&& reserveNetherFootprint(candidate))
 				{
 					return candidate;
 				}
 			}
 			int x = desiredX + spacing * 3;
 			NetherBuildTarget fallback = new NetherBuildTarget(worldId, x, desiredZ, halfExtent);
-			while(hasManagedNetherPortalConflict(world, fallback) || !reserveNetherFootprint(fallback))
+			while(hasManagedNetherPortalConflict(world, fallback)
+					|| hasPhysicalNetherPortalConflict(fallback, forbiddenPhysicalPortal)
+					|| !reserveNetherFootprint(fallback))
 			{
 				x += spacing;
 				fallback = new NetherBuildTarget(worldId, x, desiredZ, halfExtent);
 			}
 			return fallback;
 		}
+	}
+
+	private static boolean hasPhysicalNetherPortalConflict(NetherBuildTarget candidate, Set<Block> physicalPortal)
+	{
+		if(physicalPortal == null || physicalPortal.isEmpty())
+		{
+			return false;
+		}
+		int minX = Integer.MAX_VALUE;
+		int maxX = Integer.MIN_VALUE;
+		int minZ = Integer.MAX_VALUE;
+		int maxZ = Integer.MIN_VALUE;
+		for(Block block : physicalPortal)
+		{
+			minX = Math.min(minX, block.getX());
+			maxX = Math.max(maxX, block.getX());
+			minZ = Math.min(minZ, block.getZ());
+			maxZ = Math.max(maxZ, block.getZ());
+		}
+		return netherFootprintOverlapsStructureBounds(candidate.x(), candidate.z(), candidate.halfExtent(), minX, maxX, minZ, maxZ);
+	}
+
+	static int netherBuildHalfExtent(int interiorWidth, int interiorHeight)
+	{
+		int normalizedWidth = PortalSiteBuilder.netherInteriorWidth(interiorWidth);
+		return (normalizedWidth + 1) / 2 + 1 + PortalSiteBuilder.netherPlatformPadding(normalizedWidth, interiorHeight);
+	}
+
+	static int netherBuildSpacing(int interiorWidth, int interiorHeight)
+	{
+		return Math.max(6, netherBuildHalfExtent(interiorWidth, interiorHeight) * 2 + 1);
 	}
 
 	private static boolean reserveNetherFootprint(NetherBuildTarget candidate)

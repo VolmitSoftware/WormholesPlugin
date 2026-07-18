@@ -25,6 +25,9 @@ public final class PortalSiteBuilder
 	private static final int MIN_INTERIOR_WIDTH = 1;
 	private static final int MIN_INTERIOR_HEIGHT = 2;
 	private static final int MAX_INTERIOR = 21;
+	private static final int PLATFORM_SIZE_STEP = 7;
+	private static final int MAX_PLATFORM_PADDING = 3;
+	private static final int OPENING_CLEARANCE_HEIGHT = 3;
 
 	private PortalSiteBuilder()
 	{
@@ -46,7 +49,7 @@ public final class PortalSiteBuilder
 			{
 				try
 				{
-					int baseY = findSafeY(world, centerX, startY, centerZ, height);
+					int baseY = findSafeY(world, centerX, startY, centerZ, alongX, width, height);
 					scheduleNetherMutations(world, centerX, baseY, centerZ, alongX, width, height, result);
 				}
 				catch(Throwable error)
@@ -88,6 +91,7 @@ public final class PortalSiteBuilder
 		int nz = alongX ? 1 : 0;
 		int bx = centerX - (alongX ? width / 2 : 0);
 		int bz = centerZ - (alongX ? 0 : width / 2);
+		int padding = netherPlatformPadding(width, height);
 		List<NetherMutation> mutations = new ArrayList<NetherMutation>();
 
 		for(int u = -1; u <= width; u++)
@@ -101,17 +105,30 @@ public final class PortalSiteBuilder
 			}
 		}
 
-		for(int u = 0; u < width; u++)
+		for(int u = -1 - padding; u <= width + padding; u++)
 		{
-			for(int v = 0; v < height; v++)
+			for(int n = -padding; n <= padding; n++)
 			{
-				for(int n = -1; n <= 1; n++)
+				if(n == 0 && u >= -1 && u <= width)
 				{
-					if(n == 0)
+					continue;
+				}
+				mutations.add(new NetherMutation(bx + ax * u + nx * n, baseY - 1, bz + az * u + nz * n,
+						Material.NETHERRACK, true, false));
+			}
+		}
+
+		for(int u = -1 - padding; u <= width + padding; u++)
+		{
+			for(int v = 0; v < OPENING_CLEARANCE_HEIGHT; v++)
+			{
+				for(int n = -padding; n <= padding; n++)
+				{
+					if(n == 0 && u >= -1 && u <= width)
 					{
 						continue;
 					}
-					mutations.add(new NetherMutation(bx + ax * u + nx * n, baseY + v, bz + az * u + nz * n, Material.AIR, true, false));
+					mutations.add(new NetherMutation(bx + ax * u + nx * n, baseY + v, bz + az * u + nz * n, Material.AIR, false, false));
 				}
 			}
 		}
@@ -134,6 +151,12 @@ public final class PortalSiteBuilder
 	static int netherInteriorWidth(int requestedWidth)
 	{
 		return Math.max(MIN_INTERIOR_WIDTH, Math.min(MAX_INTERIOR, requestedWidth));
+	}
+
+	static int netherPlatformPadding(int interiorWidth, int interiorHeight)
+	{
+		int size = Math.max(netherInteriorWidth(interiorWidth), Math.max(MIN_INTERIOR_HEIGHT, Math.min(MAX_INTERIOR, interiorHeight)));
+		return Math.min(MAX_PLATFORM_PADDING, Math.max(1, (size + PLATFORM_SIZE_STEP - 1) / PLATFORM_SIZE_STEP));
 	}
 
 	static boolean netherFrameFits(int baseY, int interiorHeight, int minHeight, int maxHeight)
@@ -334,26 +357,83 @@ public final class PortalSiteBuilder
 		return cells;
 	}
 
-	private static int findSafeY(World world, int x, int startY, int z, int height)
+	private static int findSafeY(World world, int x, int startY, int z, boolean alongX, int width, int height)
 	{
 		int min = world.getMinHeight() + 5;
 		int max = Math.min(world.getMaxHeight() - (height + 3), world.getEnvironment() == World.Environment.NETHER ? 122 : world.getMaxHeight());
 		int y = Math.max(min, Math.min(max, startY));
-		for(int cy = y; cy >= min; cy--)
+		int padding = netherPlatformPadding(width, height);
+		for(int distance = 0; distance <= max - min; distance++)
 		{
-			if(isFloor(world, x, cy, z, height))
+			int below = y - distance;
+			if(below >= min && isOpenSite(world, x, below, z, alongX, width, padding))
 			{
-				return cy + 1;
+				return below + 1;
+			}
+			int above = y + distance;
+			if(distance > 0 && above <= max && isOpenSite(world, x, above, z, alongX, width, padding))
+			{
+				return above + 1;
 			}
 		}
-		for(int cy = y + 1; cy <= max; cy++)
+		for(int distance = 0; distance <= max - min; distance++)
 		{
-			if(isFloor(world, x, cy, z, height))
+			int below = y - distance;
+			if(below >= min && isFloor(world, x, below, z, height))
 			{
-				return cy + 1;
+				return below + 1;
+			}
+			int above = y + distance;
+			if(distance > 0 && above <= max && isFloor(world, x, above, z, height))
+			{
+				return above + 1;
 			}
 		}
 		return y;
+	}
+
+	private static boolean isOpenSite(World world, int centerX, int floorY, int centerZ, boolean alongX, int width, int padding)
+	{
+		int bx = centerX - (alongX ? width / 2 : 0);
+		int bz = centerZ - (alongX ? 0 : width / 2);
+		int minX = alongX ? bx - 1 - padding : centerX - padding;
+		int maxX = alongX ? bx + width + padding : centerX + padding;
+		int minZ = alongX ? centerZ - padding : bz - 1 - padding;
+		int maxZ = alongX ? centerZ + padding : bz + width + padding;
+		for(int chunkX = minX >> 4; chunkX <= maxX >> 4; chunkX++)
+		{
+			for(int chunkZ = minZ >> 4; chunkZ <= maxZ >> 4; chunkZ++)
+			{
+				if(!world.isChunkLoaded(chunkX, chunkZ))
+				{
+					return false;
+				}
+			}
+		}
+		if(!WormholesPlatform.isOwnedByCurrentRegion(world, minX >> 4, minZ >> 4, maxX >> 4, maxZ >> 4))
+		{
+			return false;
+		}
+		for(int x = minX; x <= maxX; x++)
+		{
+			for(int z = minZ; z <= maxZ; z++)
+			{
+				Material floor = world.getBlockAt(x, floorY, z).getType();
+				if(!floor.isSolid() || isLiquid(floor))
+				{
+					return false;
+				}
+				for(int dy = 1; dy <= OPENING_CLEARANCE_HEIGHT; dy++)
+				{
+					Material above = world.getBlockAt(x, floorY + dy, z).getType();
+					if(above.isSolid() || isLiquid(above))
+					{
+						return false;
+					}
+				}
+			}
+		}
+		return true;
 	}
 
 	private static boolean isFloor(World world, int x, int y, int z, int height)

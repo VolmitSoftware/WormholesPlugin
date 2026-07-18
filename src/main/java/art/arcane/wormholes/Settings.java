@@ -36,6 +36,7 @@ public final class Settings {
     public static volatile double PROJECTION_SIDE_GRACE_DOT = 0.12D;
     public static volatile int PROJECTION_MAX_PROJECTORS_PER_TICK = 24;
     public static volatile int PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK = 4;
+    public static volatile int PROJECTION_MAX_NEW_OBSERVER_SCANS_PER_TICK = 64;
     public static volatile int PROJECTION_INTEREST_GRACE_TICKS = 5;
     public static volatile int PROJECTION_INITIAL_RESEND_PASSES = 4;
     public static volatile long TELEPORT_COOLDOWN_MILLIS = 1000L;
@@ -92,6 +93,7 @@ public final class Settings {
         PROJECTION_SIDE_GRACE_DOT = clampDouble(projection.sideGraceDot, 0.0D, 1.0D);
         PROJECTION_MAX_PROJECTORS_PER_TICK = clampInt(projection.maxProjectorsPerTick, 1, 512);
         PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK = clampInt(projection.maxPortalsPerObserverTick, 1, 64);
+        PROJECTION_MAX_NEW_OBSERVER_SCANS_PER_TICK = clampInt(projection.maxNewObserverScansPerTick, 1, 4096);
         PROJECTION_INTEREST_GRACE_TICKS = clampInt(projection.interestGraceTicks, 0, 100);
         PROJECTION_INITIAL_RESEND_PASSES = clampInt(projection.initialResendPasses, 0, 20);
 
@@ -120,17 +122,20 @@ public final class Settings {
                 PROJECTION_DEPTH_BLOCKS = Math.min(PROJECTION_DEPTH_BLOCKS, 48);
                 PROJECTION_MAX_PROJECTORS_PER_TICK = Math.min(PROJECTION_MAX_PROJECTORS_PER_TICK, 12);
                 PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK = Math.min(PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK, 2);
+                PROJECTION_MAX_NEW_OBSERVER_SCANS_PER_TICK = Math.min(PROJECTION_MAX_NEW_OBSERVER_SCANS_PER_TICK, 32);
             }
             case BALANCED -> {
                 LIGHTING_REFRESH_INTERVAL_TICKS = Math.max(LIGHTING_REFRESH_INTERVAL_TICKS, 6);
                 ENTITY_UPDATE_INTERVAL_TICKS = Math.max(ENTITY_UPDATE_INTERVAL_TICKS, 2);
                 MAX_SPOOFED_ENTITIES = Math.min(MAX_SPOOFED_ENTITIES, 16);
                 PROJECTION_MAX_PROJECTORS_PER_TICK = Math.min(PROJECTION_MAX_PROJECTORS_PER_TICK, 20);
+                PROJECTION_MAX_NEW_OBSERVER_SCANS_PER_TICK = Math.min(PROJECTION_MAX_NEW_OBSERVER_SCANS_PER_TICK, 64);
             }
             case CINEMATIC -> {
                 PROJECTION_RANGE = Math.max(PROJECTION_RANGE, 64.0D);
                 PROJECTION_DEPTH_BLOCKS = Math.max(PROJECTION_DEPTH_BLOCKS, 96);
                 PROJECTION_MAX_PROJECTORS_PER_TICK = Math.max(PROJECTION_MAX_PROJECTORS_PER_TICK, 32);
+                PROJECTION_MAX_NEW_OBSERVER_SCANS_PER_TICK = Math.max(PROJECTION_MAX_NEW_OBSERVER_SCANS_PER_TICK, 128);
                 LIGHTING_REFRESH_INTERVAL_TICKS = Math.min(LIGHTING_REFRESH_INTERVAL_TICKS, 2);
                 LIGHTING_MAX_SECTIONS_PER_PASS = Math.max(LIGHTING_MAX_SECTIONS_PER_PASS, 4);
                 ENTITY_SPOOF_RANGE = Math.max(ENTITY_SPOOF_RANGE, 64.0D);

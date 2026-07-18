@@ -102,6 +102,7 @@ public final class ProjectionManagerInterestTest {
     public void projectionAndRenderBudgetsClampToSafeRanges() {
         ProjectionConfig projection = new ProjectionConfig();
         projection.maxPortalsPerObserverTick = 0;
+        projection.maxNewObserverScansPerTick = 0;
         projection.interestGraceTicks = -10;
         RenderConfig render = new RenderConfig();
         render.lightingMaxSectionsPerPass = 0;
@@ -110,6 +111,7 @@ public final class ProjectionManagerInterestTest {
         Settings.refresh(new WormholesSettings(new MainConfig(), projection, render, new NetworkConfig()));
 
         assertEquals(1, Settings.PROJECTION_MAX_PORTALS_PER_OBSERVER_TICK);
+        assertEquals(1, Settings.PROJECTION_MAX_NEW_OBSERVER_SCANS_PER_TICK);
         assertEquals(0, Settings.PROJECTION_INTEREST_GRACE_TICKS);
         assertEquals(1, Settings.LIGHTING_MAX_SECTIONS_PER_PASS);
         assertEquals(1, Settings.ENTITY_CANDIDATE_CACHE_TICKS);
