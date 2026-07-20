@@ -70,6 +70,7 @@ public final class WormholesPlatform {
     private static final Method PERSISTENT_DATA_SERIALIZE = resolveMethod(PersistentDataContainer.class, "serializeToBytes");
     private static final Method PLUGIN_NAMESPACE = resolveMethod(Plugin.class, "namespace");
     private static final Method PLAYER_GET_SEND_VIEW_DISTANCE = resolveMethod(Player.class, "getSendViewDistance");
+    private static final Method PLAYER_IS_CHUNK_SENT = resolveMethod(Player.class, "isChunkSent", long.class);
     private static final Method LIVING_CAN_USE_EQUIPMENT_SLOT = resolveMethod(
         LivingEntity.class,
         "canUseEquipmentSlot",
@@ -254,6 +255,18 @@ public final class WormholesPlatform {
             return number.intValue();
         }
         return player.getClientViewDistance();
+    }
+
+    public static boolean supportsSentChunkQuery() {
+        return PLAYER_IS_CHUNK_SENT != null;
+    }
+
+    public static boolean isChunkSent(Player player, int chunkX, int chunkZ) {
+        if (player == null || PLAYER_IS_CHUNK_SENT == null) {
+            return false;
+        }
+        long chunkKey = ((long) chunkX & 0xFFFFFFFFL) | (((long) chunkZ & 0xFFFFFFFFL) << 32);
+        return Boolean.TRUE.equals(invokeNoThrow(PLAYER_IS_CHUNK_SENT, player, Long.valueOf(chunkKey)));
     }
 
     public static boolean isLeashed(LivingEntity entity) {

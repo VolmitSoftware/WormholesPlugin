@@ -17,7 +17,7 @@ public final class Settings {
     public static volatile double PROJECTION_RANGE = 32.0D;
     public static volatile double NEAR_PLANE_PADDING = 2.0D;
     public static volatile double PROJECTION_APERTURE_PADDING_BLOCKS = 0.5D;
-    public static volatile boolean LIGHTING_FIDELITY = true;
+    public static volatile boolean LIGHTING_FIDELITY = false;
     public static volatile int LIGHTING_REFRESH_INTERVAL_TICKS = 4;
     public static volatile int LIGHTING_MAX_SECTIONS_PER_PASS = 2;
     public static volatile boolean ADAPTIVE_LIGHTING = true;

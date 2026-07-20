@@ -33,8 +33,8 @@ public final class DoorItemService
 {
 	public static final Material PAIR_KIT_MATERIAL = Material.BUNDLE;
 	public static final Material PAIR_DOOR_MATERIAL = Material.OAK_DOOR;
-	public static final Material PERSONAL_DOOR_MATERIAL = Material.WARPED_DOOR;
-	public static final Material PUBLIC_DOOR_MATERIAL = Material.CRIMSON_DOOR;
+	public static final Material PERSONAL_DOOR_MATERIAL = Material.DARK_OAK_DOOR;
+	public static final Material PUBLIC_DOOR_MATERIAL = Material.PALE_OAK_DOOR;
 
 	private final ItemStack wormholeRune;
 	private final DoorItemPdcCodec codec;
@@ -229,7 +229,7 @@ public final class DoorItemService
 		return new ShapedRecipe(pairKitRecipeKey, craftTemplate(DoorCraftProduct.PAIR_KIT))
 			.shape("EDE", "ORO", " D ")
 			.setIngredient('E', Material.ENDER_EYE)
-			.setIngredient('D', Material.OAK_DOOR)
+			.setIngredient('D', creationDoorIngredient())
 			.setIngredient('O', Material.OBSIDIAN)
 			.setIngredient('R', new RecipeChoice.ExactChoice(wormholeRune));
 	}
@@ -240,7 +240,7 @@ public final class DoorItemService
 			.shape(" R ", "CDE")
 			.setIngredient('R', new RecipeChoice.ExactChoice(wormholeRune))
 			.setIngredient('C', Material.RECOVERY_COMPASS)
-			.setIngredient('D', Material.OAK_DOOR)
+			.setIngredient('D', creationDoorIngredient())
 			.setIngredient('E', Material.ENDER_CHEST);
 	}
 
@@ -249,9 +249,14 @@ public final class DoorItemService
 		return new ShapedRecipe(publicDoorRecipeKey, craftTemplate(DoorCraftProduct.PUBLIC_DOOR))
 			.shape("RDR", " E ", " L ")
 			.setIngredient('R', new RecipeChoice.ExactChoice(wormholeRune))
-			.setIngredient('D', Material.CRIMSON_DOOR)
+			.setIngredient('D', creationDoorIngredient())
 			.setIngredient('E', Material.ENDER_CHEST)
 			.setIngredient('L', Material.LODESTONE);
+	}
+
+	private static RecipeChoice.MaterialChoice creationDoorIngredient()
+	{
+		return new RecipeChoice.MaterialChoice(DoorSkin.doorMaterials());
 	}
 
 	public ShapelessRecipe doorSkinRecipe()

@@ -10,11 +10,19 @@ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.bukkit.World;
+import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Player;
 import org.junit.jupiter.api.Test;
 
+import com.github.retrooper.packetevents.protocol.world.chunk.LightData;
+
+import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.render.view.ProjectionWorldView;
 
 public final class ProjectorLightingSectionTest {
@@ -63,6 +71,102 @@ public final class ProjectorLightingSectionTest {
 
         assertEquals(2, selected.size());
         assertEquals(1, pending.size());
+    }
+
+    @Test
+    public void validSectionsAreSerializedInAscendingMaskOrder() {
+        IntOpenHashSet sections = new IntOpenHashSet();
+        sections.add(7);
+        sections.add(-2);
+        sections.add(3);
+        sections.add(30);
+
+        int[] ordered = ProjectorLighting.sortedValidSections(sections, -4, 19);
+
+        assertEquals(3, ordered.length);
+        assertEquals(-2, ordered[0]);
+        assertEquals(3, ordered[1]);
+        assertEquals(7, ordered[2]);
+    }
+
+    @Test
+    public void unsentLightingRemainsPendingWithoutSamplingAndSendsOnceAfterLoad() {
+        AtomicBoolean chunkSent = new AtomicBoolean(false);
+        AtomicInteger localSamples = new AtomicInteger();
+        List<LightData> packets = new ArrayList<LightData>();
+        ProjectorLighting lighting = new ProjectorLighting(
+            (observer, chunkX, chunkZ) -> chunkSent.get(),
+            (observer, chunkX, chunkZ, data) -> packets.add(data)
+        );
+        Player observer = onlinePlayer();
+        ProjectionWorldView localView = lightView(localSamples, 15, 0);
+        ProjectionWorldView remoteView = lightView(new AtomicInteger(), 9, 6);
+        long localKey = packKey(1, 64, 1);
+        Long2ObjectOpenHashMap<ProjectedBlockClaim> claims = new Long2ObjectOpenHashMap<ProjectedBlockClaim>();
+        claims.put(localKey, new ProjectedBlockClaim(null, remoteView, packKey(20, 64, 20), false));
+        LongOpenHashSet dirty = new LongOpenHashSet();
+        dirty.add(localKey);
+
+        lighting.apply(observer, localView, claims, dirty);
+
+        assertEquals(0, localSamples.get());
+        assertTrue(packets.isEmpty());
+        assertTrue(lighting.hasPendingUpdates());
+
+        chunkSent.set(true);
+        lighting.apply(observer, localView, claims, new LongOpenHashSet());
+        assertEquals(4096, localSamples.get());
+        assertEquals(1, packets.size());
+        assertFalse(lighting.hasPendingUpdates());
+
+        lighting.apply(observer, localView, claims, new LongOpenHashSet());
+        assertEquals(1, packets.size());
+    }
+
+    @Test
+    public void removingOneSectionRestoresItWhileRetainingAnotherInTheSameChunk() {
+        boolean adaptiveLighting = Settings.ADAPTIVE_LIGHTING;
+        Settings.ADAPTIVE_LIGHTING = false;
+        try {
+            List<LightData> packets = new ArrayList<LightData>();
+            ProjectorLighting lighting = new ProjectorLighting(
+                (observer, chunkX, chunkZ) -> true,
+                (observer, chunkX, chunkZ, data) -> packets.add(data)
+            );
+            Player observer = onlinePlayer();
+            ProjectionWorldView localView = lightView(new AtomicInteger(), 15, 0);
+            ProjectionWorldView remoteView = lightView(new AtomicInteger(), 8, 7);
+            long sectionFour = packKey(1, 64, 1);
+            long sectionFive = packKey(1, 80, 1);
+            Long2ObjectOpenHashMap<ProjectedBlockClaim> claims = new Long2ObjectOpenHashMap<ProjectedBlockClaim>();
+            claims.put(sectionFour, new ProjectedBlockClaim(null, remoteView, packKey(20, 64, 20), false));
+            claims.put(sectionFive, new ProjectedBlockClaim(null, remoteView, packKey(20, 80, 20), false));
+            LongOpenHashSet dirty = new LongOpenHashSet();
+            dirty.add(sectionFour);
+            dirty.add(sectionFive);
+
+            lighting.apply(observer, localView, claims, dirty);
+
+            assertEquals(1, packets.size());
+            assertTrue(packets.get(0).getBlockLightMask().get(9));
+            assertTrue(packets.get(0).getBlockLightMask().get(10));
+
+            packets.clear();
+            claims.remove(sectionFour);
+            LongOpenHashSet removed = new LongOpenHashSet();
+            removed.add(sectionFour);
+            lighting.apply(observer, localView, claims, removed);
+
+            assertEquals(1, packets.size());
+            assertTrue(packets.get(0).getBlockLightMask().get(9));
+            assertFalse(packets.get(0).getBlockLightMask().get(10));
+            assertFalse(lighting.isIdle());
+
+            lighting.revert(observer, localView);
+            assertTrue(lighting.isIdle());
+        } finally {
+            Settings.ADAPTIVE_LIGHTING = adaptiveLighting;
+        }
     }
 
     @Test
@@ -131,5 +235,64 @@ public final class ProjectorLightingSectionTest {
         lighting.apply(observer, view, claims, new LongOpenHashSet());
 
         assertFalse(lighting.hasPendingUpdates());
+    }
+
+    private static Player onlinePlayer() {
+        return (Player) Proxy.newProxyInstance(Player.class.getClassLoader(), new Class<?>[] { Player.class },
+            (proxy, method, args) -> {
+                if ("isOnline".equals(method.getName())) {
+                    return Boolean.TRUE;
+                }
+                if (method.getReturnType() == Boolean.TYPE) {
+                    return Boolean.FALSE;
+                }
+                return null;
+            });
+    }
+
+    private static ProjectionWorldView lightView(AtomicInteger samples, int sky, int block) {
+        return new ProjectionWorldView() {
+            @Override
+            public World getWorld() {
+                return null;
+            }
+
+            @Override
+            public int getMinHeight() {
+                return -64;
+            }
+
+            @Override
+            public int getMaxHeight() {
+                return 320;
+            }
+
+            @Override
+            public BlockData sampleBlockData(int x, int y, int z) {
+                return null;
+            }
+
+            @Override
+            public String sampleBiome(int x, int y, int z) {
+                return "minecraft:plains";
+            }
+
+            @Override
+            public int getLight(int x, int y, int z) {
+                samples.incrementAndGet();
+                return ProjectionWorldView.packLight(sky, block);
+            }
+
+            @Override
+            public int getSkyDarken() {
+                return 0;
+            }
+        };
+    }
+
+    private static long packKey(int x, int y, int z) {
+        return (((long) x & 0x3FFFFFFL) << 38)
+            | ((((long) y) & 0xFFFL) << 26)
+            | (((long) z) & 0x3FFFFFFL);
     }
 }

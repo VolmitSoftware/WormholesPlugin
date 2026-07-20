@@ -40,6 +40,7 @@ import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.network.view.ViewServer;
 import art.arcane.wormholes.render.ProjectionClaimArbiter;
+import art.arcane.wormholes.render.ProjectionClientChunkTracker;
 import art.arcane.wormholes.render.PortalProjector;
 import art.arcane.wormholes.render.view.ProjectionWorldViewProvider;
 import art.arcane.wormholes.render.view.RegionSnapshotWorldViewProvider;
@@ -52,6 +53,7 @@ public class ProjectionManager implements Listener {
     private static final long DIAGNOSTIC_INTERVAL_MS = 5_000L;
 
     private final ProjectionClaimArbiter claimArbiter;
+    private final ProjectionClientChunkTracker clientChunkTracker;
     private final ProjectionWorldViewProvider viewProvider;
     private final Map<UUID, Map<UUID, PortalProjector>> projectors;
     private final Map<UUID, Map<UUID, Long>> interestGraceUntil;
@@ -72,11 +74,12 @@ public class ProjectionManager implements Listener {
     private int taskId;
     private int currentInterval;
 
-    public ProjectionManager() {
+    public ProjectionManager(ProjectionClientChunkTracker clientChunkTracker) {
         this.viewProvider = FoliaScheduler.isFoliaThreading(Bukkit.getServer())
             ? new RegionSnapshotWorldViewProvider(Wormholes.instance)
             : ProjectionWorldViewProvider.live();
-        this.claimArbiter = new ProjectionClaimArbiter(viewProvider);
+        this.clientChunkTracker = clientChunkTracker;
+        this.claimArbiter = new ProjectionClaimArbiter(viewProvider, clientChunkTracker);
         this.projectors = new ConcurrentHashMap<UUID, Map<UUID, PortalProjector>>();
         this.interestGraceUntil = new ConcurrentHashMap<UUID, Map<UUID, Long>>();
         this.observerPortalCursors = new ConcurrentHashMap<UUID, Integer>();
@@ -101,17 +104,17 @@ public class ProjectionManager implements Listener {
     @EventHandler
     public void on(PlayerQuitEvent e) {
         observerTasksInFlight.remove(e.getPlayer().getUniqueId());
-        removeProjector(e.getPlayer());
+        discardObserverProjectors(e.getPlayer());
     }
 
     @EventHandler
     public void on(PlayerJoinEvent e) {
-        removeProjector(e.getPlayer());
+        discardObserverProjectors(e.getPlayer());
     }
 
     @EventHandler
     public void on(PlayerChangedWorldEvent e) {
-        removeProjector(e.getPlayer());
+        discardObserverProjectors(e.getPlayer());
     }
 
     @EventHandler(ignoreCancelled = true)
@@ -719,7 +722,23 @@ public class ProjectionManager implements Listener {
             }
             closeOnEntity(projector);
         }
-        claimArbiter.releaseObserver(id);
+        clearObserverMetadata(id);
+    }
+
+    private void discardObserverProjectors(Player player) {
+        UUID id = player.getUniqueId();
+        for (Map<UUID, PortalProjector> portalProjectors : projectors.values()) {
+            PortalProjector projector = portalProjectors.remove(id);
+            if (projector != null) {
+                projector.discard();
+            }
+        }
+        claimArbiter.discardObserver(id);
+        clientChunkTracker.forget(id);
+        clearObserverMetadata(id);
+    }
+
+    private void clearObserverMetadata(UUID id) {
         observerPortalCursors.remove(id);
         for (Map.Entry<UUID, Map<UUID, Long>> graceEntry : interestGraceUntil.entrySet()) {
             Map<UUID, Long> byObserver = graceEntry.getValue();
@@ -939,6 +958,8 @@ public class ProjectionManager implements Listener {
             }, 0L, () -> retireClose(state));
         } catch (RuntimeException error) {
             scheduled = false;
+            Wormholes.instance.getLogger().log(Level.WARNING, "Unable to schedule projection cleanup for "
+                + observer.getUniqueId(), error);
         }
         if (!scheduled) {
             state.markRejected();

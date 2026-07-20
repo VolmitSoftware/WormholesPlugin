@@ -30,7 +30,7 @@ final class DoorSkin
 		ArrayList<Material> materials = new ArrayList<>();
 		for(Material material : Material.values())
 		{
-			if(isDoor(material))
+			if(!material.isLegacy() && isDoor(material))
 			{
 				materials.add(material);
 			}

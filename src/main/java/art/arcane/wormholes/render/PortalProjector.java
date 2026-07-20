@@ -45,6 +45,8 @@ public final class PortalProjector {
     private final ILocalPortal portal;
     private final Player observer;
     private final UUID observerId;
+    private final World localWorld;
+    private final UUID localWorldId;
     private final ProjectionClaimArbiter claimArbiter;
     private final ProjectionWorldViewProvider viewProvider;
     private final BooleanSupplier activeGuard;
@@ -124,6 +126,8 @@ public final class PortalProjector {
         this.portal = portal;
         this.observer = observer;
         this.observerId = observer.getUniqueId();
+        this.localWorld = portal.getWorld();
+        this.localWorldId = localWorld == null ? null : localWorld.getUID();
         this.claimArbiter = claimArbiter;
         this.viewProvider = viewProvider;
         this.activeGuard = activeGuard;
@@ -801,9 +805,6 @@ public final class PortalProjector {
         nextProjected.clear();
         hasCameraSnapshot = false;
         initialFullSendPassesRemaining = Math.max(initialFullSendPassesRemaining, Math.max(1, Settings.PROJECTION_INITIAL_RESEND_PASSES));
-        if (observer != null && portal.getId() != null) {
-            claimArbiter.releaseSilently(observerId, portal.getId());
-        }
     }
 
     private ProjectionWorldView remoteWorldView(String peerName, UUID portalId) {
@@ -1179,9 +1180,7 @@ public final class PortalProjector {
         closed = true;
 
         if (observer == null || !observer.isOnline()) {
-            if (portal.getId() != null) {
-                claimArbiter.releaseSilently(observerId, portal.getId());
-            }
+            claimArbiter.discardObserver(observerId, localWorldId);
             projected.clear();
             nextProjected.clear();
             lastRenderedCells = 0;
@@ -1189,18 +1188,18 @@ public final class PortalProjector {
             return;
         }
 
-        World world = observer.getWorld();
-        if (world == null) {
-            if (portal.getId() != null) {
-                claimArbiter.releaseSilently(observer.getUniqueId(), portal.getId());
-            }
+        World observerWorld = observer.getWorld();
+        if (localWorld == null || localWorldId == null || observerWorld == null
+            || !localWorldId.equals(observerWorld.getUID())) {
+            claimArbiter.discardObserver(observer.getUniqueId(), localWorldId);
             projected.clear();
-            entityRenderer.close(observer);
+            nextProjected.clear();
+            entityRenderer.discard(observer);
             lastRenderedCells = 0;
             return;
         }
 
-        ProjectionClaimArbiter.ClaimUpdateResult result = claimArbiter.release(observer, portal, world, true);
+        ProjectionClaimArbiter.ClaimUpdateResult result = claimArbiter.release(observer, portal, localWorld, true);
         if (result.getBlockChanges() > 0) {
             Wormholes.v("[Projector] portal=" + portal.getName() + " observer=" + observer.getName()
                 + " close: reverted=" + result.getBlockChanges());
@@ -1217,8 +1216,8 @@ public final class PortalProjector {
             return;
         }
         closed = true;
-        if (observer != null && portal.getId() != null) {
-            claimArbiter.releaseSilently(observer.getUniqueId(), portal.getId());
+        if (observer != null) {
+            claimArbiter.discardObserver(observer.getUniqueId(), localWorldId);
         }
         projected.clear();
         nextProjected.clear();

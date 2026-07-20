@@ -9,9 +9,9 @@ import it.unimi.dsi.fastutil.ints.IntSet;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongIterator;
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 
+import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Iterator;
 
@@ -19,6 +19,7 @@ import org.bukkit.entity.Player;
 
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.render.view.ProjectionWorldView;
 import art.arcane.wormholes.service.WormholesTelemetry;
 
@@ -31,6 +32,21 @@ public final class ProjectorLighting {
     private final Long2ObjectOpenHashMap<IntOpenHashSet> chunkToSections = new Long2ObjectOpenHashMap<IntOpenHashSet>(8);
     private final Long2ObjectOpenHashMap<IntOpenHashSet> pendingChunkSections = new Long2ObjectOpenHashMap<IntOpenHashSet>(8);
     private final Long2ObjectOpenHashMap<SectionBaseline[]> baselineCache = new Long2ObjectOpenHashMap<SectionBaseline[]>(8);
+    private final ProjectionChunkVisibility chunkVisibility;
+    private final LightPacketSender packetSender;
+
+    public ProjectorLighting() {
+        this(WormholesPlatform::isChunkSent, ProjectorLighting::sendPacket);
+    }
+
+    ProjectorLighting(ProjectionChunkVisibility chunkVisibility) {
+        this(chunkVisibility, ProjectorLighting::sendPacket);
+    }
+
+    ProjectorLighting(ProjectionChunkVisibility chunkVisibility, LightPacketSender packetSender) {
+        this.chunkVisibility = chunkVisibility;
+        this.packetSender = packetSender;
+    }
 
     public void apply(Player observer,
                       ProjectionWorldView localView,
@@ -39,22 +55,20 @@ public final class ProjectorLighting {
         if (observer == null || !observer.isOnline()) {
             return;
         }
-        if (projectedClaims.isEmpty()) {
-            return;
-        }
         boolean hasDirtyKeys = dirtyLocalKeys == null || !dirtyLocalKeys.isEmpty();
-        if (!hasDirtyKeys && pendingChunkSections.isEmpty()) {
-            return;
-        }
-
-        LongSet currentChunks = collectCurrentChunkKeys(localView, projectedClaims.keySet());
-        revertStaleChunks(observer, localView, currentChunks);
+        Long2ObjectOpenHashMap<IntOpenHashSet> currentSections = collectCurrentSections(localView, projectedClaims);
+        revertStaleSections(observer, localView, currentSections);
+        prunePendingSections(currentSections);
 
         if (hasDirtyKeys) {
             LongSet dirtyKeys = dirtyLocalKeys == null ? projectedClaims.keySet() : dirtyLocalKeys;
             chunkToSections.clear();
             collectDirtySections(localView, dirtyKeys, chunkToSections);
+            retainCurrentSections(chunkToSections, currentSections);
             mergePendingSections(chunkToSections);
+        }
+        if (pendingChunkSections.isEmpty()) {
+            return;
         }
 
         int remainingSections = lightingSectionBudget();
@@ -62,7 +76,8 @@ public final class ProjectorLighting {
         while (iterator.hasNext() && remainingSections > 0) {
             Long2ObjectMap.Entry<IntOpenHashSet> entry = iterator.next();
             long chunkKey = entry.getLongKey();
-            if (!currentChunks.contains(chunkKey)) {
+            IntOpenHashSet current = currentSections.get(chunkKey);
+            if (current == null || current.isEmpty()) {
                 iterator.remove();
                 continue;
             }
@@ -84,11 +99,17 @@ public final class ProjectorLighting {
         }
     }
 
-    private LongOpenHashSet collectCurrentChunkKeys(ProjectionWorldView localView, LongSet projectedKeys) {
-        LongOpenHashSet currentChunkKeys = new LongOpenHashSet(8);
-        LongIterator iterator = projectedKeys.iterator();
-        while (iterator.hasNext()) {
-            long packed = iterator.nextLong();
+    private Long2ObjectOpenHashMap<IntOpenHashSet> collectCurrentSections(
+        ProjectionWorldView localView,
+        Long2ObjectMap<ProjectedBlockClaim> projectedClaims
+    ) {
+        Long2ObjectOpenHashMap<IntOpenHashSet> current = new Long2ObjectOpenHashMap<IntOpenHashSet>(8);
+        for (Long2ObjectMap.Entry<ProjectedBlockClaim> entry : projectedClaims.long2ObjectEntrySet()) {
+            ProjectedBlockClaim claim = entry.getValue();
+            if (claim.getLightRemoteKey() == NO_REMOTE_KEY || claim.getLightView() == null) {
+                continue;
+            }
+            long packed = entry.getLongKey();
             int worldX = unpackX(packed);
             int worldY = unpackY(packed);
             int worldZ = unpackZ(packed);
@@ -96,9 +117,14 @@ public final class ProjectorLighting {
                 continue;
             }
             long chunkKey = (((long) (worldX >> 4)) << 32) | (((long) (worldZ >> 4)) & 0xFFFFFFFFL);
-            currentChunkKeys.add(chunkKey);
+            IntOpenHashSet sections = current.get(chunkKey);
+            if (sections == null) {
+                sections = new IntOpenHashSet(4);
+                current.put(chunkKey, sections);
+            }
+            sections.add(worldY >> 4);
         }
-        return currentChunkKeys;
+        return current;
     }
 
     private void collectDirtySections(ProjectionWorldView localView, LongSet dirtyKeys, Long2ObjectOpenHashMap<IntOpenHashSet> chunkToSections) {
@@ -121,38 +147,49 @@ public final class ProjectorLighting {
         }
     }
 
-    private void revertStaleChunks(Player observer, ProjectionWorldView localView, LongSet currentChunkKeys) {
+    private void revertStaleSections(
+        Player observer,
+        ProjectionWorldView localView,
+        Long2ObjectOpenHashMap<IntOpenHashSet> currentSections
+    ) {
         Iterator<Long2ObjectMap.Entry<IntOpenHashSet>> staleIt = sentChunkSections.long2ObjectEntrySet().iterator();
         while (staleIt.hasNext()) {
             Long2ObjectMap.Entry<IntOpenHashSet> entry = staleIt.next();
             long key = entry.getLongKey();
-            if (currentChunkKeys.contains(key)) {
+            IntOpenHashSet stale = new IntOpenHashSet(entry.getValue());
+            IntOpenHashSet current = currentSections.get(key);
+            if (current != null) {
+                stale.removeAll(current);
+            }
+            if (stale.isEmpty()) {
                 continue;
             }
             int chunkX = (int) (key >> 32);
             int chunkZ = (int) key;
-            if (!sendLocalChunkLight(observer, localView, chunkX, chunkZ, entry.getValue())) {
+            if (!chunkVisibility.isChunkSent(observer, chunkX, chunkZ)) {
+                entry.getValue().removeAll(stale);
+            } else if (!sendLocalChunkLight(observer, localView, chunkX, chunkZ, stale)) {
                 continue;
+            } else {
+                entry.getValue().removeAll(stale);
             }
-            baselineCache.remove(key);
-            staleIt.remove();
+            if (entry.getValue().isEmpty()) {
+                baselineCache.remove(key);
+                staleIt.remove();
+            }
         }
     }
 
     public void revert(Player observer, ProjectionWorldView localView) {
-        baselineCache.clear();
+        pendingChunkSections.clear();
         if (sentChunkSections.isEmpty()) {
-            pendingChunkSections.clear();
+            baselineCache.clear();
             return;
         }
         if (observer == null || !observer.isOnline()) {
-            sentChunkSections.clear();
-            pendingChunkSections.clear();
             return;
         }
         if (localView == null) {
-            sentChunkSections.clear();
-            pendingChunkSections.clear();
             return;
         }
 
@@ -162,12 +199,44 @@ public final class ProjectorLighting {
             long key = entry.getLongKey();
             int chunkX = (int) (key >> 32);
             int chunkZ = (int) key;
-            if (sendLocalChunkLight(observer, localView, chunkX, chunkZ, entry.getValue())) {
+            if (!chunkVisibility.isChunkSent(observer, chunkX, chunkZ)
+                || sendLocalChunkLight(observer, localView, chunkX, chunkZ, entry.getValue())) {
+                baselineCache.remove(key);
                 iterator.remove();
             }
         }
         if (sentChunkSections.isEmpty()) {
-            pendingChunkSections.clear();
+            baselineCache.clear();
+        }
+    }
+
+    void discard() {
+        sentChunkSections.clear();
+        pendingChunkSections.clear();
+        chunkToSections.clear();
+        baselineCache.clear();
+    }
+
+    void discardChunk(int chunkX, int chunkZ) {
+        long chunkKey = internalChunkKey(chunkX, chunkZ);
+        sentChunkSections.remove(chunkKey);
+        pendingChunkSections.remove(chunkKey);
+        chunkToSections.remove(chunkKey);
+        baselineCache.remove(chunkKey);
+    }
+
+    void discardUnsentChunks(Player observer) {
+        Iterator<Long2ObjectMap.Entry<IntOpenHashSet>> iterator = sentChunkSections.long2ObjectEntrySet().iterator();
+        while (iterator.hasNext()) {
+            Long2ObjectMap.Entry<IntOpenHashSet> entry = iterator.next();
+            long chunkKey = entry.getLongKey();
+            int chunkX = (int) (chunkKey >> 32);
+            int chunkZ = (int) chunkKey;
+            if (chunkVisibility.isChunkSent(observer, chunkX, chunkZ)) {
+                continue;
+            }
+            baselineCache.remove(chunkKey);
+            iterator.remove();
         }
     }
 
@@ -188,6 +257,29 @@ public final class ProjectorLighting {
             }
             pending.addAll(entry.getValue());
         }
+    }
+
+    private static void retainCurrentSections(
+        Long2ObjectOpenHashMap<IntOpenHashSet> sections,
+        Long2ObjectOpenHashMap<IntOpenHashSet> currentSections
+    ) {
+        Iterator<Long2ObjectMap.Entry<IntOpenHashSet>> iterator = sections.long2ObjectEntrySet().iterator();
+        while (iterator.hasNext()) {
+            Long2ObjectMap.Entry<IntOpenHashSet> entry = iterator.next();
+            IntOpenHashSet current = currentSections.get(entry.getLongKey());
+            if (current == null) {
+                iterator.remove();
+                continue;
+            }
+            entry.getValue().retainAll(current);
+            if (entry.getValue().isEmpty()) {
+                iterator.remove();
+            }
+        }
+    }
+
+    private void prunePendingSections(Long2ObjectOpenHashMap<IntOpenHashSet> currentSections) {
+        retainCurrentSections(pendingChunkSections, currentSections);
     }
 
     private static int lightingSectionBudget() {
@@ -230,6 +322,9 @@ public final class ProjectorLighting {
                                 ProjectionWorldView localView,
                                 Long2ObjectMap<ProjectedBlockClaim> projectedClaims,
                                 int chunkX, int chunkZ, IntSet dirtySections) {
+        if (!chunkVisibility.isChunkSent(observer, chunkX, chunkZ)) {
+            return false;
+        }
         int minSec = localView.getMinHeight() >> 4;
         int maxSec = (localView.getMaxHeight() - 1) >> 4;
         int localSkyDarken = localView.getSkyDarken();
@@ -247,13 +342,9 @@ public final class ProjectorLighting {
         byte[][] skyArrays = new byte[sectionCount][];
         byte[][] blockArrays = new byte[sectionCount][];
 
+        int[] orderedSections = sortedValidSections(dirtySections, minSec, maxSec);
         int arrIdx = 0;
-        IntIterator sectionIterator = dirtySections.iterator();
-        while (sectionIterator.hasNext()) {
-            int section = sectionIterator.nextInt();
-            if (!isSectionInsideWorld(section, minSec, maxSec)) {
-                continue;
-            }
+        for (int section : orderedSections) {
             int maskIndex = (section - minSec) + 1;
 
             SectionBaseline baseline = localBaseline(localView, chunkX, chunkZ, section, minSec, maxSec);
@@ -273,8 +364,7 @@ public final class ProjectorLighting {
 
         LightData data = new LightData(true, blockMask, skyMask, emptyBlockMask, emptySkyMask,
             sectionCount, sectionCount, skyArrays, blockArrays);
-        WrapperPlayServerUpdateLight pkt = new WrapperPlayServerUpdateLight(chunkX, chunkZ, data);
-        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, pkt);
+        packetSender.send(observer, chunkX, chunkZ, data);
         WormholesTelemetry.countPacket();
         return true;
     }
@@ -398,6 +488,9 @@ public final class ProjectorLighting {
     }
 
     private boolean sendLocalChunkLight(Player observer, ProjectionWorldView localView, int chunkX, int chunkZ, IntSet sections) {
+        if (!chunkVisibility.isChunkSent(observer, chunkX, chunkZ)) {
+            return true;
+        }
         int minSec = localView.getMinHeight() >> 4;
         int maxSec = (localView.getMaxHeight() - 1) >> 4;
         int maskBitCount = (maxSec - minSec + 1) + 2;
@@ -414,13 +507,9 @@ public final class ProjectorLighting {
         byte[][] skyArrays = new byte[sectionCount][];
         byte[][] blockArrays = new byte[sectionCount][];
 
+        int[] orderedSections = sortedValidSections(sections, minSec, maxSec);
         int arrIdx = 0;
-        IntIterator sectionIterator = sections.iterator();
-        while (sectionIterator.hasNext()) {
-            int section = sectionIterator.nextInt();
-            if (!isSectionInsideWorld(section, minSec, maxSec)) {
-                continue;
-            }
+        for (int section : orderedSections) {
             int sectionMinY = section << 4;
             int maskIndex = (section - minSec) + 1;
 
@@ -452,10 +541,32 @@ public final class ProjectorLighting {
 
         LightData data = new LightData(true, blockMask, skyMask, emptyBlockMask, emptySkyMask,
             sectionCount, sectionCount, skyArrays, blockArrays);
-        WrapperPlayServerUpdateLight pkt = new WrapperPlayServerUpdateLight(chunkX, chunkZ, data);
-        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, pkt);
+        packetSender.send(observer, chunkX, chunkZ, data);
         WormholesTelemetry.countPacket();
         return true;
+    }
+
+    static int[] sortedValidSections(IntSet sections, int minSection, int maxSection) {
+        int[] ordered = new int[countValidSections(sections, minSection, maxSection)];
+        int index = 0;
+        IntIterator iterator = sections.iterator();
+        while (iterator.hasNext()) {
+            int section = iterator.nextInt();
+            if (isSectionInsideWorld(section, minSection, maxSection)) {
+                ordered[index++] = section;
+            }
+        }
+        Arrays.sort(ordered);
+        return ordered;
+    }
+
+    private static long internalChunkKey(int chunkX, int chunkZ) {
+        return (((long) chunkX) << 32) | (((long) chunkZ) & 0xFFFFFFFFL);
+    }
+
+    private static void sendPacket(Player observer, int chunkX, int chunkZ, LightData data) {
+        WrapperPlayServerUpdateLight packet = new WrapperPlayServerUpdateLight(chunkX, chunkZ, data);
+        PacketEvents.getAPI().getPlayerManager().sendPacket(observer, packet);
     }
 
     private static boolean isWorldYInsideWorld(ProjectionWorldView view, int y) {
@@ -489,5 +600,10 @@ public final class ProjectorLighting {
             this.trackerVersion = trackerVersion;
             this.readMillis = readMillis;
         }
+    }
+
+    @FunctionalInterface
+    interface LightPacketSender {
+        void send(Player observer, int chunkX, int chunkZ, LightData data);
     }
 }

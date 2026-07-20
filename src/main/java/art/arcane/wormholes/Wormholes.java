@@ -145,7 +145,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             wandSelectionManager = new WandSelectionManager();
             portalManager = new PortalManager();
             traversableManager = new TraversableManager();
-            projectionManager = new ProjectionManager();
+            projectionManager = new ProjectionManager(packetEvents().projectionChunkTracker());
             projectionChangeTracker = new art.arcane.wormholes.render.ProjectionWorldChangeTracker();
             arrivalWarmer = new ArrivalWarmer();
             applyDimensionalDoorSetting(settings);

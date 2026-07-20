@@ -174,7 +174,7 @@ class WormholesConfigFileTest {
         Files.writeString(config, "schema = 2\nquality = \"auto\"\n", StandardCharsets.UTF_8);
         WormholesSettings automatic = WormholesSettings.loadAll(tempDir);
         Settings.refresh(automatic);
-        assertTrue(Settings.LIGHTING_FIDELITY);
+        assertFalse(Settings.LIGHTING_FIDELITY);
         assertTrue(Settings.ADAPTIVE_LIGHTING);
         assertTrue(Settings.ENTITY_SPOOFING);
         assertEquals(1, Settings.PROJECTION_REFRESH_INTERVAL_TICKS);

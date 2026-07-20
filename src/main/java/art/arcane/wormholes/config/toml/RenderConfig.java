@@ -10,7 +10,7 @@ import art.arcane.wormholes.util.project.config.ConfigDoc;
 public class RenderConfig {
     @ConfigAdvanced
     @ConfigDescription("Send destination-world lighting with projected blocks.")
-    public boolean lightingFidelity = true;
+    public boolean lightingFidelity = false;
 
     @ConfigAdvanced
     @ConfigDescription("Show destination-side entities inside portal projections.")

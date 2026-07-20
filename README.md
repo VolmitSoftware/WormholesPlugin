@@ -48,10 +48,10 @@ O R O                 C D E               _ E _
 _ D _                                     _ L _
 ```
 
-`E` is Ender Eye (pair), Ender Chest (other recipes); `D` is Oak Door for
-the pair/personal recipe and Crimson Door for the public recipe; `O` is
-Obsidian, `C` is Recovery Compass, and `L` is Lodestone. Pair endpoints default
-to Oak, Personal Doors default to Warped, and Public Doors default to Crimson.
+`E` is Ender Eye (pair), Ender Chest (other recipes); `D` is any vanilla door
+for every recipe; `O` is Obsidian, `C` is Recovery Compass, and `L` is
+Lodestone. Pair endpoints default to Oak, Personal Doors default to Dark Oak,
+and Public Doors default to Pale Oak.
 
 To change the appearance, combine one Dimensional Door with one ordinary
 wooden, bamboo, crimson, or warped door in any crafting-table arrangement. The
@@ -59,7 +59,7 @@ result keeps the exact same pair, personal traveler mapping, or public pocket
 identity while adopting the ordinary door's material. Iron and copper doors
 cannot be selected as skins because every Dimensional Door must remain
 hand-openable. Existing placed Iron Dimension Doors are converted to the new
-Crimson Public Door default without changing their saved destination.
+Pale Oak Public Door default without changing their saved destination.
 
 Identity-bearing kits and placed doors are consumed normally in Creative mode.
 Breaking a Pair, Personal, or Public door always drops that exact door item,

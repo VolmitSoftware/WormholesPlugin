@@ -3,6 +3,7 @@ package art.arcane.wormholes.service;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.network.NetworkManager;
 import art.arcane.wormholes.network.TransferGate;
+import art.arcane.wormholes.render.ProjectionClientChunkTracker;
 import com.github.retrooper.packetevents.PacketEvents;
 import com.github.retrooper.packetevents.event.PacketListenerCommon;
 import com.github.retrooper.packetevents.settings.PacketEventsSettings;
@@ -14,6 +15,8 @@ import java.util.logging.Level;
 public final class PacketEventsRuntime {
     private final Wormholes plugin;
     private Object statusBridgeListener;
+    private PacketListenerCommon projectionChunkListener;
+    private ProjectionClientChunkTracker projectionChunkTracker;
     private boolean loaded;
 
     public PacketEventsRuntime(Wormholes plugin) {
@@ -31,6 +34,16 @@ public final class PacketEventsRuntime {
     public void init() {
         PacketEvents.getAPI().init();
         loaded = true;
+        projectionChunkTracker = new ProjectionClientChunkTracker();
+        projectionChunkListener = PacketEvents.getAPI().getEventManager().registerListener(projectionChunkTracker);
+    }
+
+    public ProjectionClientChunkTracker projectionChunkTracker() {
+        ProjectionClientChunkTracker tracker = projectionChunkTracker;
+        if (tracker == null) {
+            throw new IllegalStateException("Projection chunk tracker is not initialized");
+        }
+        return tracker;
     }
 
     public void registerTransferGate() {
@@ -54,6 +67,16 @@ public final class PacketEventsRuntime {
     public void terminate() {
         if (loaded && PacketEvents.getAPI() != null) {
             try {
+                PacketListenerCommon chunkListener = projectionChunkListener;
+                projectionChunkListener = null;
+                if (chunkListener != null) {
+                    PacketEvents.getAPI().getEventManager().unregisterListener(chunkListener);
+                }
+                ProjectionClientChunkTracker chunkTracker = projectionChunkTracker;
+                projectionChunkTracker = null;
+                if (chunkTracker != null) {
+                    chunkTracker.clear();
+                }
                 PacketEvents.getAPI().terminate();
             } catch (Throwable ex) {
                 plugin.getLogger().log(Level.WARNING, "Error during PacketEvents shutdown", ex);

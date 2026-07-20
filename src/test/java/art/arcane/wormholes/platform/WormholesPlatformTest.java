@@ -3,15 +3,18 @@ package art.arcane.wormholes.platform;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Player;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Proxy;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public final class WormholesPlatformTest {
     @Test
@@ -59,6 +62,25 @@ public final class WormholesPlatformTest {
     @Test
     public void entityPositionRejectsUndersizedOutput() {
         assertThrows(IllegalArgumentException.class, () -> WormholesPlatform.entityPosition(entity(), new double[4]));
+    }
+
+    @Test
+    public void sentChunkQueryUsesPaperXLowZHighPacking() {
+        AtomicLong queriedKey = new AtomicLong();
+        Player player = (Player) Proxy.newProxyInstance(
+            WormholesPlatformTest.class.getClassLoader(),
+            new Class<?>[]{Player.class},
+            (proxy, method, arguments) -> {
+                if ("isChunkSent".equals(method.getName())) {
+                    queriedKey.set(((Long) arguments[0]).longValue());
+                    return Boolean.TRUE;
+                }
+                return defaultValue(method.getReturnType());
+            }
+        );
+
+        assertTrue(WormholesPlatform.isChunkSent(player, -1, -2));
+        assertEquals(0xFFFFFFFFL | (0xFFFFFFFEL << 32), queriedKey.get());
     }
 
     private static World world(NamespacedKey key) {
