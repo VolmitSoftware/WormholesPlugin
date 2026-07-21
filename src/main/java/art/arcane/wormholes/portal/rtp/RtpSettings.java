@@ -93,6 +93,11 @@ public final class RtpSettings
 		return new Builder(world);
 	}
 
+	public Builder toBuilder()
+	{
+		return new Builder(this);
+	}
+
 	public static RtpSettings fromJson(JSONObject json, WorldResolver resolver)
 	{
 		JSONObject requiredJson = Objects.requireNonNull(json, "json");
@@ -161,7 +166,7 @@ public final class RtpSettings
 		builder.yBounds(clampedLowerY, clampedUpperY);
 		builder.preferredY(requiredJson.optInt("preferredY", defaultPreferredY));
 		builder.allocationMode(parseEnum(RtpAllocationMode.class, requiredJson.optString("allocationMode", ""), RtpAllocationMode.SHARED));
-		builder.rotationMode(parseEnum(RtpRotationMode.class, requiredJson.optString("rotationMode", ""), RtpRotationMode.STATIC));
+		builder.rotationMode(parseEnum(RtpRotationMode.class, requiredJson.optString("rotationMode", ""), RtpRotationMode.ON_TRAVERSAL));
 		builder.cycleDurationMillis(requiredJson.optLong("cycleDurationMillis", DEFAULT_CYCLE_DURATION_MILLIS));
 		builder.leaseIdleMillis(requiredJson.optLong("leaseIdleMillis", DEFAULT_LEASE_IDLE_MILLIS));
 		builder.privateReleaseMillis(requiredJson.optLong("privateReleaseMillis", DEFAULT_PRIVATE_RELEASE_MILLIS));
@@ -423,11 +428,34 @@ public final class RtpSettings
 			verticalMode = RtpVerticalMode.SURFACE;
 			applyWorldDefaults(sourceWorld);
 			allocationMode = RtpAllocationMode.SHARED;
-			rotationMode = RtpRotationMode.STATIC;
+			rotationMode = RtpRotationMode.ON_TRAVERSAL;
 			cycleDurationMillis = DEFAULT_CYCLE_DURATION_MILLIS;
 			leaseIdleMillis = DEFAULT_LEASE_IDLE_MILLIS;
 			privateReleaseMillis = DEFAULT_PRIVATE_RELEASE_MILLIS;
 			rimEnabled = true;
+		}
+
+		private Builder(RtpSettings settings)
+		{
+			RtpSettings requiredSettings = Objects.requireNonNull(settings, "settings");
+			sourceWorld = requiredSettings.sourceWorld;
+			targetWorld = requiredSettings.targetWorld;
+			targetWorldOverrideKey = requiredSettings.targetWorldOverrideKey;
+			centerMode = requiredSettings.centerMode;
+			customCenterX = requiredSettings.customCenterX;
+			customCenterZ = requiredSettings.customCenterZ;
+			minimumRadius = requiredSettings.minimumRadius;
+			maximumRadius = requiredSettings.maximumRadius;
+			verticalMode = requiredSettings.verticalMode;
+			lowerY = requiredSettings.lowerY;
+			upperY = requiredSettings.upperY;
+			preferredY = requiredSettings.preferredY;
+			allocationMode = requiredSettings.allocationMode;
+			rotationMode = requiredSettings.rotationMode;
+			cycleDurationMillis = requiredSettings.cycleDurationMillis;
+			leaseIdleMillis = requiredSettings.leaseIdleMillis;
+			privateReleaseMillis = requiredSettings.privateReleaseMillis;
+			rimEnabled = requiredSettings.rimEnabled;
 		}
 
 		public Builder targetWorld(World world)
@@ -467,6 +495,13 @@ public final class RtpSettings
 		{
 			customCenterX = Double.valueOf(x);
 			customCenterZ = Double.valueOf(z);
+			return this;
+		}
+
+		public Builder clearCustomCenter()
+		{
+			customCenterX = null;
+			customCenterZ = null;
 			return this;
 		}
 

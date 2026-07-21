@@ -295,11 +295,64 @@ public final class RtpPortalEditorTest
 		assertEquals(4096, defaults.maximumRadius());
 		assertEquals(RtpVerticalMode.SURFACE, defaults.verticalMode());
 		assertEquals(RtpAllocationMode.SHARED, defaults.allocationMode());
-		assertEquals(RtpRotationMode.STATIC, defaults.rotationMode());
+		assertEquals(RtpRotationMode.ON_TRAVERSAL, defaults.rotationMode());
 		assertEquals(300_000L, defaults.cycleDurationMillis());
 		assertEquals(30_000L, defaults.leaseIdleMillis());
 		assertEquals(15_000L, defaults.reservationTimeoutMillis());
 		assertTrue(defaults.rimEnabled());
+	}
+
+	@Test
+	public void productionMutationApplicationPersistsEveryRtpControl()
+	{
+		World source = world("overworld", -64, 320, 63);
+		World target = world("the_nether", 0, 256, 32);
+		RtpSettings.WorldResolver resolver = key -> "minecraft:the_nether".equals(key) ? target : source;
+		RtpSettings settings = RtpSettings.defaults(source);
+
+		settings = apply(settings, new TargetWorldMutation("minecraft:the_nether"), source, resolver);
+		settings = apply(settings, new CenterModeMutation(RtpCenterMode.CUSTOM, 12.5D, -7.25D), source, resolver);
+		settings = apply(settings, new RadiiMutation(96, 2048), source, resolver);
+		settings = apply(settings, new RtpPortalEditorModel.VerticalModeMutation(RtpVerticalMode.PREFERRED_AVERAGE), source, resolver);
+		settings = apply(settings, new YMutation(5, 200, 88), source, resolver);
+		settings = apply(settings, new AllocationMutation(RtpAllocationMode.PER_PLAYER), source, resolver);
+		settings = apply(settings, new RotationMutation(RtpRotationMode.TIMED), source, resolver);
+		settings = apply(settings, new RtpPortalEditorModel.CycleDurationMutation(600_000L), source, resolver);
+		settings = apply(settings, new LeaseIdleMutation(45_000L), source, resolver);
+		settings = apply(settings, new ReservationTimeoutMutation(25_000L), source, resolver);
+		settings = apply(settings, new RtpPortalEditorModel.RimMutation(false), source, resolver);
+
+		assertEquals("minecraft:the_nether", settings.getTargetWorldKey());
+		assertEquals(RtpCenterMode.CUSTOM, settings.getCenterMode());
+		assertEquals(12.5D, settings.getCustomCenterX().doubleValue());
+		assertEquals(-7.25D, settings.getCustomCenterZ().doubleValue());
+		assertEquals(96, settings.getMinimumRadius());
+		assertEquals(2048, settings.getMaximumRadius());
+		assertEquals(RtpVerticalMode.PREFERRED_AVERAGE, settings.getVerticalMode());
+		assertEquals(5, settings.getLowerY());
+		assertEquals(200, settings.getUpperY());
+		assertEquals(88, settings.getPreferredY());
+		assertEquals(RtpAllocationMode.PER_PLAYER, settings.getAllocationMode());
+		assertEquals(RtpRotationMode.TIMED, settings.getRotationMode());
+		assertEquals(600_000L, settings.getCycleDurationMillis());
+		assertEquals(45_000L, settings.getLeaseIdleMillis());
+		assertEquals(25_000L, settings.getPrivateReleaseMillis());
+		assertFalse(settings.isRimEnabled());
+
+		RtpSettings reset = apply(settings, new RtpPortalEditorModel.ResetCenterTargetMutation(), source, resolver);
+		assertEquals("minecraft:overworld", reset.getTargetWorldKey());
+		assertEquals(RtpCenterMode.PORTAL_RELATIVE, reset.getCenterMode());
+		assertNull(reset.getCustomCenterX());
+		assertNull(reset.getCustomCenterZ());
+	}
+
+	private static RtpSettings apply(
+			RtpSettings settings,
+			Mutation mutation,
+			World source,
+			RtpSettings.WorldResolver resolver)
+	{
+		return RtpPortalEditorModel.applyMutation(settings, mutation, source, resolver);
 	}
 
 	@Test

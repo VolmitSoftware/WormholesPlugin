@@ -25,6 +25,61 @@ public final class RtpPortalEditorModel
 	{
 	}
 
+	public static RtpSettings applyMutation(
+			RtpSettings settings,
+			Mutation mutation,
+			World sourceWorld,
+			RtpSettings.WorldResolver worldResolver)
+	{
+		RtpSettings requiredSettings = Objects.requireNonNull(settings, "settings");
+		Mutation requiredMutation = Objects.requireNonNull(mutation, "mutation");
+		World requiredSourceWorld = Objects.requireNonNull(sourceWorld, "sourceWorld");
+		RtpSettings.WorldResolver requiredWorldResolver = Objects.requireNonNull(worldResolver, "worldResolver");
+		if(!WorldIdentity.serialize(requiredSourceWorld).equals(requiredSettings.getSourceWorldKey()))
+		{
+			throw new IllegalArgumentException("source world does not match RTP settings");
+		}
+
+		RtpSettings.Builder builder = requiredSettings.toBuilder();
+		switch(requiredMutation)
+		{
+			case TargetWorldMutation change ->
+			{
+				World targetWorld = requiredWorldResolver.resolve(change.worldKey());
+				if(targetWorld == null)
+				{
+					throw new IllegalArgumentException("target world is not loaded: " + change.worldKey());
+				}
+				builder.targetWorld(targetWorld);
+			}
+			case CenterModeMutation change ->
+			{
+				builder.centerMode(change.mode());
+				if(change.customX() != null)
+				{
+					builder.customCenter(change.customX().doubleValue(), change.customZ().doubleValue());
+				}
+			}
+			case ResetCenterTargetMutation ignored -> builder
+					.targetWorld(requiredSourceWorld)
+					.centerMode(RtpCenterMode.PORTAL_RELATIVE)
+					.clearCustomCenter();
+			case CustomCenterMutation change -> builder.customCenter(change.x(), change.z());
+			case RadiiMutation change -> builder.radii(change.minimumRadius(), change.maximumRadius());
+			case VerticalModeMutation change -> builder.verticalMode(change.mode());
+			case YMutation change -> builder
+					.yBounds(change.lowerY(), change.upperY())
+					.preferredY(change.preferredY());
+			case AllocationMutation change -> builder.allocationMode(change.mode());
+			case RotationMutation change -> builder.rotationMode(change.mode());
+			case CycleDurationMutation change -> builder.cycleDurationMillis(change.durationMillis());
+			case LeaseIdleMutation change -> builder.leaseIdleMillis(change.durationMillis());
+			case ReservationTimeoutMutation change -> builder.privateReleaseMillis(change.durationMillis());
+			case RimMutation change -> builder.rimEnabled(change.enabled());
+		}
+		return builder.build();
+	}
+
 	public sealed interface Mutation permits AllocationMutation, CenterModeMutation, CustomCenterMutation,
 			CycleDurationMutation, LeaseIdleMutation, RadiiMutation, ReservationTimeoutMutation,
 			ResetCenterTargetMutation, RimMutation, RotationMutation, TargetWorldMutation,

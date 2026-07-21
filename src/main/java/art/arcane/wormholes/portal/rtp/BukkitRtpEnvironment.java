@@ -262,7 +262,7 @@ public final class BukkitRtpEnvironment implements BukkitRtpRuntime.Environment
 		}
 		PortalStructure structure = portal.getStructure();
 		PortalFrame sourceFrame = portal.getFrame();
-		PortalFrame targetFrame = targetFrame(sourceFrame);
+		PortalFrame targetFrame = BukkitRtpRuntime.targetFrameFor(sourceFrame);
 		Location center = structure.getCenter();
 		AxisAlignedBB area = structure.getArea();
 		RtpProjectionView.SourceFrame source = new RtpProjectionView.SourceFrame(
@@ -304,12 +304,6 @@ public final class BukkitRtpEnvironment implements BukkitRtpRuntime.Environment
 				Math.abs(direction.x()) * area.sizeX()
 						+ Math.abs(direction.y()) * area.sizeY()
 						+ Math.abs(direction.z()) * area.sizeZ());
-	}
-
-	private PortalFrame targetFrame(PortalFrame sourceFrame)
-	{
-		Direction horizontal = sourceFrame.getNormal().isVertical() ? sourceFrame.getUp() : sourceFrame.getNormal();
-		return PortalFrame.fromNormalUp(horizontal.isVertical() ? Direction.N : horizontal, Direction.U);
 	}
 
 	private UUID routeId(UUID portalId, RtpDestination destination)

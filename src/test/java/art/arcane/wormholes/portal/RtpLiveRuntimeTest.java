@@ -37,7 +37,6 @@ import art.arcane.wormholes.portal.rtp.RtpService;
 import art.arcane.wormholes.portal.rtp.RtpSettings;
 import art.arcane.wormholes.portal.rtp.RtpValidationRequest;
 import art.arcane.wormholes.util.Cuboid;
-import art.arcane.wormholes.util.Direction;
 
 public final class RtpLiveRuntimeTest
 {
@@ -150,6 +149,35 @@ public final class RtpLiveRuntimeTest
 	}
 
 	@Test
+	public void traversalPreservesFacingAndVelocityFromEitherPortalSide()
+	{
+		assertTraversalOrientation(true, new Vector(0.2D, -0.1D, -0.97D), new Vector(0.15D, 0.05D, -0.45D));
+		assertTraversalOrientation(false, new Vector(-0.3D, 0.2D, 0.93D), new Vector(-0.1D, -0.05D, 0.4D));
+	}
+
+	@Test
+	public void traversalPlacesAsymmetricEntityInsideValidatedEnvelope()
+	{
+		Harness harness = new Harness(RtpRotationMode.STATIC);
+		harness.prepareReady();
+		MutableEntity traveler = MutableEntity.entity(harness.world, harness.sourceLocation())
+				.withEnvelope(-0.2D, 0.8D, -0.5D, 1.5D, -0.7D, 0.1D);
+
+		harness.runtime.traverse(harness.portal, traveler.entity(), harness.traversive(traveler.entity()));
+
+		assertEquals(100.2D, traveler.location.getX(), 1.0E-9D);
+		assertEquals(70.5D, traveler.location.getY(), 1.0E-9D);
+		assertEquals(100.8D, traveler.location.getZ(), 1.0E-9D);
+		BoundingBox arrived = traveler.boundingBox();
+		assertEquals(100.0D, arrived.getMinX(), 1.0E-9D);
+		assertEquals(101.0D, arrived.getMaxX(), 1.0E-9D);
+		assertEquals(70.0D, arrived.getMinY(), 1.0E-9D);
+		assertEquals(72.0D, arrived.getMaxY(), 1.0E-9D);
+		assertEquals(100.1D, arrived.getMinZ(), 1.0E-9D);
+		assertEquals(100.9D, arrived.getMaxZ(), 1.0E-9D);
+	}
+
+	@Test
 	public void loadSafetyAccessAndTeleportFailuresRestoreRouteWithoutMovement()
 	{
 		assertFailureLeavesTravelerUnchanged(FailureMode.LOAD);
@@ -247,6 +275,34 @@ public final class RtpLiveRuntimeTest
 		harness.runtime.close();
 	}
 
+	private static void assertTraversalOrientation(boolean frontSide, Vector look, Vector velocity)
+	{
+		Harness harness = new Harness(RtpRotationMode.STATIC);
+		try
+		{
+			harness.prepareReady();
+			MutableEntity traveler = MutableEntity.entity(harness.world, harness.sourceLocation());
+			Vector normalizedLook = look.clone().normalize();
+			Traversive traversive = harness.traversive(traveler.entity(), frontSide, velocity, normalizedLook);
+
+			harness.runtime.traverse(harness.portal, traveler.entity(), traversive);
+
+			assertVector(normalizedLook, traveler.location.getDirection());
+			assertVector(velocity, traveler.velocity);
+		}
+		finally
+		{
+			harness.runtime.close();
+		}
+	}
+
+	private static void assertVector(Vector expected, Vector actual)
+	{
+		assertEquals(expected.getX(), actual.getX(), 1.0E-6D);
+		assertEquals(expected.getY(), actual.getY(), 1.0E-6D);
+		assertEquals(expected.getZ(), actual.getZ(), 1.0E-6D);
+	}
+
 	private static void assertLocation(Location expected, Location actual)
 	{
 		assertEquals(expected.getWorld(), actual.getWorld());
@@ -314,8 +370,14 @@ public final class RtpLiveRuntimeTest
 
 		private Traversive traversive(Entity entity)
 		{
-			return new Traversive(entity, PortalFrame.canonical(Direction.N), new Vector(0.5D, 65.0D, 1.0D),
-					new Vector(0.5D, 65.0D, 1.0D), new Vector(0.0D, 0.0D, -0.4D), new Vector(0.0D, 0.0D, -1.0D));
+			return traversive(entity, true, new Vector(0.0D, 0.0D, -0.4D), new Vector(0.0D, 0.0D, -1.0D));
+		}
+
+		private Traversive traversive(Entity entity, boolean frontSide, Vector velocity, Vector look)
+		{
+			PortalFrame inFrame = portal.getFrame().view(frontSide);
+			return new Traversive(entity, inFrame, new Vector(0.5D, 65.0D, 1.0D),
+					new Vector(0.5D, 65.0D, 1.0D), velocity, look, frontSide);
 		}
 	}
 
@@ -364,10 +426,18 @@ public final class RtpLiveRuntimeTest
 
 	private static RtpValidationRequest validationRequest(RtpDestination destination)
 	{
+		return validationRequest(destination, RtpValidationRequest.EntityEnvelope.baseline());
+	}
+
+	private static RtpValidationRequest validationRequest(
+			RtpDestination destination,
+			RtpValidationRequest.EntityEnvelope envelope)
+	{
 		return RtpValidationRequest.builder(destination)
 				.worldBounds(-64, 320)
 				.worldBorder(new RtpValidationRequest.WorldBorder(-30_000_000.0D, -30_000_000.0D, 30_000_000.0D, 30_000_000.0D))
 				.regionSnapshots(List.of())
+				.entityEnvelope(envelope)
 				.build();
 	}
 
@@ -495,7 +565,7 @@ public final class RtpLiveRuntimeTest
 				return CompletableFuture.failedFuture(new IllegalStateException("load failed"));
 			}
 			RtpService.LoadedCandidate loaded = new RtpService.LoadedCandidate(
-					validationRequest(request.destination()), () -> retentionCloses.incrementAndGet());
+					validationRequest(request.destination(), envelope), () -> retentionCloses.incrementAndGet());
 			if(deferTraversalLoad)
 			{
 				deferredLoad = new CompletableFuture<RtpService.LoadedCandidate>();
@@ -588,6 +658,12 @@ public final class RtpLiveRuntimeTest
 		private Vector velocity;
 		private List<Entity> passengers;
 		private Entity vehicle;
+		private double minimumXOffset;
+		private double maximumXOffset;
+		private double minimumYOffset;
+		private double maximumYOffset;
+		private double minimumZOffset;
+		private double maximumZOffset;
 
 		private MutableEntity(World world, Location location, boolean player, boolean permission)
 		{
@@ -598,6 +674,12 @@ public final class RtpLiveRuntimeTest
 			this.location = location.clone();
 			velocity = new Vector(0.1D, -0.2D, 0.3D);
 			passengers = List.of();
+			minimumXOffset = -0.3D;
+			maximumXOffset = 0.3D;
+			minimumYOffset = 0.0D;
+			maximumYOffset = 1.8D;
+			minimumZOffset = -0.3D;
+			maximumZOffset = 0.3D;
 			Class<?>[] interfaces = player ? new Class<?>[] {Player.class} : new Class<?>[] {Entity.class};
 			proxy = (Entity) Proxy.newProxyInstance(RtpLiveRuntimeTest.class.getClassLoader(), interfaces, this);
 			INSTANCES.put(proxy, this);
@@ -616,6 +698,34 @@ public final class RtpLiveRuntimeTest
 		private static MutableEntity of(Entity entity)
 		{
 			return INSTANCES.get(entity);
+		}
+
+		private MutableEntity withEnvelope(
+				double minimumXOffset,
+				double maximumXOffset,
+				double minimumYOffset,
+				double maximumYOffset,
+				double minimumZOffset,
+				double maximumZOffset)
+		{
+			this.minimumXOffset = minimumXOffset;
+			this.maximumXOffset = maximumXOffset;
+			this.minimumYOffset = minimumYOffset;
+			this.maximumYOffset = maximumYOffset;
+			this.minimumZOffset = minimumZOffset;
+			this.maximumZOffset = maximumZOffset;
+			return this;
+		}
+
+		private BoundingBox boundingBox()
+		{
+			return new BoundingBox(
+					location.getX() + minimumXOffset,
+					location.getY() + minimumYOffset,
+					location.getZ() + minimumZOffset,
+					location.getX() + maximumXOffset,
+					location.getY() + maximumYOffset,
+					location.getZ() + maximumZOffset);
 		}
 
 		private Entity entity()
@@ -637,8 +747,7 @@ public final class RtpLiveRuntimeTest
 				case "getName" -> id.toString();
 				case "getWorld" -> location.getWorld();
 				case "getLocation" -> getLocation(arguments);
-				case "getBoundingBox" -> new BoundingBox(location.getX() - 0.3D, location.getY(), location.getZ() - 0.3D,
-						location.getX() + 0.3D, location.getY() + 1.8D, location.getZ() + 0.3D);
+				case "getBoundingBox" -> boundingBox();
 				case "getVelocity" -> velocity.clone();
 				case "setVelocity" -> setVelocity(arguments);
 				case "getPassengers" -> passengers;

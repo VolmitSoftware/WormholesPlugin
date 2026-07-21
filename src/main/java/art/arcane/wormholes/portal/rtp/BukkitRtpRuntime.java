@@ -134,6 +134,44 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 		return snapshot.isPresent() && !snapshot.get().viewers().isEmpty() && snapshot.get().runtime().ready();
 	}
 
+	public Optional<RtpPortalEditorModel.StatusSnapshot> editorStatus(UUID portalId)
+	{
+		if(closed.get())
+		{
+			return Optional.empty();
+		}
+		Optional<RtpService.Snapshot> snapshot = service.snapshot(Objects.requireNonNull(portalId, "portalId"));
+		if(snapshot.isEmpty())
+		{
+			return Optional.empty();
+		}
+		RtpService.Snapshot current = snapshot.get();
+		RtpPortalEditorModel.StatusContext context = new RtpPortalEditorModel.StatusContext(
+				environment.resolveWorld(current.settings().getTargetWorldKey()) != null,
+				current.integrationAvailable(),
+				environment.nowMillis(),
+				current.nextSearchAllowedAtMillis());
+		return Optional.of(RtpPortalEditorModel.StatusSnapshot.from(current.runtime(), context));
+	}
+
+	public CompletableFuture<Boolean> requestManualReroll(UUID portalId)
+	{
+		if(closed.get())
+		{
+			return CompletableFuture.completedFuture(Boolean.FALSE);
+		}
+		return service.manualReroll(Objects.requireNonNull(portalId, "portalId"));
+	}
+
+	public CompletableFuture<Set<RtpDestination>> requestPoolRebuild(UUID portalId)
+	{
+		if(closed.get())
+		{
+			return CompletableFuture.completedFuture(Set.of());
+		}
+		return service.rebuildPool(Objects.requireNonNull(portalId, "portalId"));
+	}
+
 	@Override
 	public boolean supports(ILocalPortal portal)
 	{
@@ -418,7 +456,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 				failTraversal(portal, entity, preparation, validationFailure);
 				return;
 			}
-			checkTraversalAccess(portal, entity, traversive, preparation, retained);
+			checkTraversalAccess(portal, entity, traversive, preparation, validationRequest.entityEnvelope(), retained);
 		});
 	}
 
@@ -427,11 +465,12 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 			Entity entity,
 			Traversive traversive,
 			RtpService.TraversalPreparation preparation,
+			RtpValidationRequest.EntityEnvelope envelope,
 			RetainedTraversal retained)
 	{
 		if(!(entity instanceof Player player))
 		{
-			dispatchTraversal(portal, entity, traversive, preparation, retained);
+			dispatchTraversal(portal, entity, traversive, preparation, envelope, retained);
 			return;
 		}
 		CompletionStage<RtpAccessResult> accessStage;
@@ -456,7 +495,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 						? accessFailure : access == null ? null : access.failure().orElse(null));
 				return;
 			}
-			dispatchTraversal(portal, entity, traversive, preparation, retained);
+			dispatchTraversal(portal, entity, traversive, preparation, envelope, retained);
 		});
 	}
 
@@ -465,6 +504,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 			Entity entity,
 			Traversive traversive,
 			RtpService.TraversalPreparation preparation,
+			RtpValidationRequest.EntityEnvelope envelope,
 			RetainedTraversal retained)
 	{
 		boolean scheduled = environment.scheduleEntity(entity, () ->
@@ -482,8 +522,8 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 				failTraversal(portal, entity, preparation, null);
 				return;
 			}
-			PortalFrame targetFrame = targetFrameFor(traversive.getInFrame());
-			Location target = targetLocation(targetWorld, preparation.claim().destination(), traversive, targetFrame);
+			PortalFrame targetFrame = targetFrameFor(portal.getFrame());
+			Location target = targetLocation(targetWorld, preparation.claim().destination(), traversive, targetFrame, envelope);
 			service.markTraversalDispatched(preparation).whenComplete((marked, markFailure) ->
 			{
 				if(markFailure != null || !Boolean.TRUE.equals(marked))
@@ -745,13 +785,20 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 		return PortalFrame.fromNormalUp(horizontal, Direction.U);
 	}
 
-	private Location targetLocation(World world, RtpDestination destination, Traversive traversive, PortalFrame targetFrame)
+	private Location targetLocation(
+			World world,
+			RtpDestination destination,
+			Traversive traversive,
+			PortalFrame targetFrame,
+			RtpValidationRequest.EntityEnvelope envelope)
 	{
+		double centerXOffset = (envelope.minimumXOffset() + envelope.maximumXOffset()) / 2.0D;
+		double centerZOffset = (envelope.minimumZOffset() + envelope.maximumZOffset()) / 2.0D;
 		Location target = new Location(
 				world,
-				destination.blockX() + 0.5D,
-				destination.feetY(),
-				destination.blockZ() + 0.5D);
+				destination.blockX() + 0.5D - centerXOffset,
+				destination.feetY() - envelope.minimumYOffset(),
+				destination.blockZ() + 0.5D - centerZOffset);
 		Vector look = traversive.getOutLook(targetFrame);
 		if(look.lengthSquared() > 1.0E-12D)
 		{

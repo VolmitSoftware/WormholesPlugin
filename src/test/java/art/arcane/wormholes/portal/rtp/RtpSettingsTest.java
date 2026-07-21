@@ -52,7 +52,7 @@ public final class RtpSettingsTest
 		assertEquals(318, settings.getUpperY());
 		assertEquals(64, settings.getPreferredY());
 		assertEquals(RtpAllocationMode.SHARED, settings.getAllocationMode());
-		assertEquals(RtpRotationMode.STATIC, settings.getRotationMode());
+		assertEquals(RtpRotationMode.ON_TRAVERSAL, settings.getRotationMode());
 		assertEquals(300_000L, settings.getCycleDurationMillis());
 		assertEquals(30_000L, settings.getLeaseIdleMillis());
 		assertEquals(15_000L, settings.getPrivateReleaseMillis());
@@ -113,7 +113,7 @@ public final class RtpSettingsTest
 				.yBounds(5, 200)
 				.preferredY(90)
 				.allocationMode(RtpAllocationMode.PER_PLAYER)
-				.rotationMode(RtpRotationMode.ON_TRAVERSAL)
+				.rotationMode(RtpRotationMode.STATIC)
 				.cycleDurationMillis(900_000L)
 				.leaseIdleMillis(45_000L)
 				.privateReleaseMillis(25_000L)
@@ -156,7 +156,7 @@ public final class RtpSettingsTest
 		assertEquals(4096, settings.getMaximumRadius());
 		assertEquals(RtpVerticalMode.SURFACE, settings.getVerticalMode());
 		assertEquals(RtpAllocationMode.SHARED, settings.getAllocationMode());
-		assertEquals(RtpRotationMode.STATIC, settings.getRotationMode());
+		assertEquals(RtpRotationMode.ON_TRAVERSAL, settings.getRotationMode());
 		assertEquals(15_000L, settings.getCycleDurationMillis());
 		assertEquals(5_000L, settings.getLeaseIdleMillis());
 		assertEquals(300_000L, settings.getPrivateReleaseMillis());

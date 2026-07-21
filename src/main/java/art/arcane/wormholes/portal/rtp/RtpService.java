@@ -634,14 +634,17 @@ public final class RtpService
 		}
 		if(failure != null || result == null || result.status() == RtpAccessResult.Status.FAILURE)
 		{
+			entry.accessIntegrationFailed = true;
 			setView(entry, viewerId, ViewState.FAILED, attempt.identity, attempt.identity.routeRevision());
 		}
 		else if(!result.allowed())
 		{
+			entry.accessIntegrationFailed = false;
 			setView(entry, viewerId, ViewState.DENIED, attempt.identity, attempt.identity.routeRevision());
 		}
 		else
 		{
+			entry.accessIntegrationFailed = false;
 			setReadyView(entry, viewerId, attempt.identity);
 		}
 		publish(entry);
@@ -1272,6 +1275,8 @@ public final class RtpService
 				entry.registration.portalId(),
 				entry.generation,
 				entry.revision,
+				entry.nextSearchAllowedAtMillis,
+				!entry.accessIntegrationFailed,
 				entry.registration.settings(),
 				entry.runtime.snapshot(),
 				Set.copyOf(entry.viewers),
@@ -1392,6 +1397,8 @@ public final class RtpService
 			UUID portalId,
 			long generation,
 			long revision,
+			long nextSearchAllowedAtMillis,
+			boolean integrationAvailable,
 			RtpSettings settings,
 			RtpRuntimeSnapshot runtime,
 			Set<UUID> viewers,
@@ -1400,6 +1407,10 @@ public final class RtpService
 		public Snapshot
 		{
 			Objects.requireNonNull(portalId, "portalId");
+			if(nextSearchAllowedAtMillis < 0L)
+			{
+				throw new IllegalArgumentException("nextSearchAllowedAtMillis must be non-negative");
+			}
 			Objects.requireNonNull(settings, "settings");
 			Objects.requireNonNull(runtime, "runtime");
 			viewers = Set.copyOf(Objects.requireNonNull(viewers, "viewers"));
@@ -1570,6 +1581,7 @@ public final class RtpService
 		private long searchWakeScheduledAtMillis;
 		private long revision;
 		private int nextAttemptOrdinal;
+		private boolean accessIntegrationFailed;
 		private boolean closed;
 
 		private PortalEntry(Registration registration, long generation, RtpPortalRuntime runtime)

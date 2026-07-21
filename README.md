@@ -1,6 +1,22 @@
 # Wormholes
 Now, you can see the other side.
 
+## Random Teleport portals
+
+Switch a portal to **RTP** from its Type menu, then open **Random Destination**
+on the portal home page to configure it. The editor controls the target world,
+portal-relative or custom search center, minimum and maximum radius, vertical
+search bounds, shared or per-player destinations, destination rotation, timing,
+reservation behavior, and rim feedback. It also exposes live readiness and
+retry status plus manual reroll or private-pool rebuild actions.
+
+New RTP portals reroll their shared destination after every successful trip.
+Operators can instead choose a timed cycle or an intentionally static route;
+an explicitly saved Static choice remains static. Travelers keep the look and
+movement orientation associated with the side they entered, and the final
+teleport uses the same complete entity envelope that passed the destination
+safety check.
+
 ## Survival Dimensional Doors
 
 Dimensional Doors are real vanilla doors: they activate only while physically

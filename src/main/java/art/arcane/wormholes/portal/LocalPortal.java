@@ -45,6 +45,10 @@ import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.geometry.Raycast;
 import art.arcane.wormholes.network.PortalSyncService;
 import art.arcane.wormholes.platform.WormholesPlatform;
+import art.arcane.wormholes.portal.rtp.RtpAllocationMode;
+import art.arcane.wormholes.portal.rtp.RtpPortalEditor;
+import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel;
+import art.arcane.wormholes.portal.rtp.RtpRotationMode;
 import art.arcane.wormholes.portal.rtp.RtpSettings;
 import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.wormholes.service.WormholesTelemetry;
@@ -110,6 +114,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private boolean mirrorMode;
 	private MirrorRotation mirrorRotation;
 	private volatile RtpSettings rtpSettings;
+	private final AtomicLong rtpConfigurationRevision = new AtomicLong();
 	private AxisAlignedBB view;
 	private double viewRange;
 	private PortalPermissionMode permissionMode;
@@ -123,6 +128,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private String networkViewFallbackBlock;
 	private boolean settingsSyncEnabled;
 	private final Map<UUID, UIWindow> openMenus = new ConcurrentHashMap<UUID, UIWindow>();
+	private final Map<UUID, RtpEditorSession> rtpEditorSessions = new ConcurrentHashMap<UUID, RtpEditorSession>();
 	private final AtomicBoolean destructionStarted = new AtomicBoolean();
 	private final AtomicLong effectSequence = new AtomicLong();
 	private final Object persistenceLock = new Object();
@@ -340,6 +346,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 		if(rtpTransition)
 		{
+			advanceRtpConfigurationRevision();
 			invalidateProjection();
 		}
 
@@ -1294,6 +1301,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			return;
 		}
 		requiredEntity.setVelocity(requiredTraversive.getOutVelocity(requiredTargetFrame));
+		Wormholes.v("QA_EVT {\"event\":\"rtp_traversal_complete\",\"status\":\"pass\",\"details\":\"arrival_confirmed\",\"context\":{\"portal\":\""
+				+ getId() + "\",\"frontSide\":" + requiredTraversive.isFrontSide() + ",\"targetNormal\":\""
+				+ requiredTargetFrame.getNormal().name() + "\"}}");
 		markTeleportCooldown(requiredEntity.getUniqueId(), System.currentTimeMillis());
 		latchReentry(requiredEntity.getUniqueId(), getId());
 		WormholesTelemetry.countTraversal();
@@ -1917,12 +1927,18 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		rtpSettings = settings;
 		if(changed)
 		{
+			advanceRtpConfigurationRevision();
 			save();
 			if(Wormholes.rtpRuntime != null)
 			{
 				Wormholes.rtpRuntime.synchronize(this);
 			}
 		}
+	}
+
+	private void advanceRtpConfigurationRevision()
+	{
+		rtpConfigurationRevision.updateAndGet(value -> value == Long.MAX_VALUE ? 1L : value + 1L);
 	}
 
 	@Override
@@ -1956,28 +1972,41 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	{
 		window.batch(() ->
 		{
-		window.clearElements();
-		window.setElement(0, 0, portalPlacardElement());
+			window.clearElements();
+			window.setElement(0, 0, portalPlacardElement());
 
-			String linkLore = hasTunnel()
-					? ChatColor.GRAY + "Currently linked: " + ChatColor.GOLD + getTunnel().getDestination().getName()
-					: ChatColor.GRAY + "Currently linked: " + ChatColor.RED + "None";
+			RtpSettings currentRtpSettings = rtpSettings;
+			boolean rtp = type == PortalType.RTP && currentRtpSettings != null;
+			String linkLore = rtp
+					? ChatColor.GRAY + "Rotation: " + ChatColor.AQUA + rtpRotationLabel(currentRtpSettings.getRotationMode())
+					: hasTunnel()
+							? ChatColor.GRAY + "Currently linked: " + ChatColor.GOLD + getTunnel().getDestination().getName()
+							: ChatColor.GRAY + "Currently linked: " + ChatColor.RED + "None";
 			window.setElement(-2, 1, new UIElement("set-destination")
-					.setName(ChatColor.GOLD + "" + ChatColor.BOLD + (isGateway() ? "Pair & Destination" : "Destination"))
-					.addLore(ChatColor.GRAY + (isGateway() ? "Pair another server or choose a gateway." : "Choose a portal to link to."))
+					.setName(ChatColor.GOLD + "" + ChatColor.BOLD + (rtp ? "Random Destination" : isGateway() ? "Pair & Destination" : "Destination"))
+					.addLore(ChatColor.GRAY + (rtp
+							? "Configure where and when this portal rerolls."
+							: isGateway() ? "Pair another server or choose a gateway." : "Choose a portal to link to."))
 					.addLore(linkLore)
 					.addLore(" ")
-					.addLore(ChatColor.DARK_GRAY + (isGateway() ? "Click to open the pairing hub." : "Click to open the destination picker."))
-					.setMaterial(new MaterialBlock(isGateway() ? Material.END_CRYSTAL : Material.ENDER_EYE))
-					.setCount(Math.max(1, Wormholes.portalManager.getAccessableCount(getType()) - 1))
+					.addLore(ChatColor.DARK_GRAY + (rtp
+							? "Click to open random teleport settings."
+							: isGateway() ? "Click to open the pairing hub." : "Click to open the destination picker."))
+					.setMaterial(new MaterialBlock(rtp ? Material.COMPASS : isGateway() ? Material.END_CRYSTAL : Material.ENDER_EYE))
+					.setCount(rtp ? 1 : Math.max(1, Wormholes.portalManager.getAccessableCount(getType()) - 1))
 					.onLeftClick((e) ->
 					{
 						if(dimensionalPortalKind.isManagedPortal())
 						{
-								notifySetting(p, "This dimensional portal keeps its generated link.");
+							notifySetting(p, "This dimensional portal keeps its generated link.");
 							return;
 						}
-						if(isGateway())
+						if(rtp)
+						{
+							window.close();
+							uiOpenRtpEditor(p);
+						}
+						else if(isGateway())
 						{
 							window.close();
 							uiOpenGatewayPairMenu(p);
@@ -2006,8 +2035,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					.setName(ChatColor.RED + "" + ChatColor.BOLD + "Delete Portal")
 					.addLore(ChatColor.GRAY + "Permanently removes this portal.")
 					.addLore(" ")
-				.addLore(ChatColor.RED + "" + ChatColor.UNDERLINE + "Shift + Left Click to confirm")
-				.setMaterial(new MaterialBlock(Material.GUNPOWDER))
+					.addLore(ChatColor.RED + "" + ChatColor.UNDERLINE + "Shift + Left Click to confirm")
+					.setMaterial(new MaterialBlock(Material.GUNPOWDER))
 					.onShiftLeftClick((e) ->
 					{
 						if(!ensureCanManagePortal(p))
@@ -2016,8 +2045,268 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 						}
 						window.close();
 						destroy();
-				}));
+					}));
 		});
+	}
+
+	private void uiOpenRtpEditor(Player viewer)
+	{
+		if(!ensureCanManagePortal(viewer))
+		{
+			return;
+		}
+		if(type != PortalType.RTP || rtpSettings == null)
+		{
+			notifySetting(viewer, "This portal is no longer in random teleport mode.");
+			uiOpenPortalMenu(viewer);
+			return;
+		}
+		Wormholes.v("QA_EVT {\"event\":\"rtp_editor_open\",\"status\":\"info\",\"details\":\"configuration\",\"context\":{\"portal\":\""
+				+ getId() + "\",\"allocation\":\"" + rtpSettings.getAllocationMode().name()
+				+ "\",\"rotation\":\"" + rtpSettings.getRotationMode().name() + "\"}}");
+		RtpEditorSession replacement = new RtpEditorSession(viewer);
+		RtpEditorSession previous = rtpEditorSessions.put(viewer.getUniqueId(), replacement);
+		if(previous != null)
+		{
+			previous.close();
+		}
+		replacement.open();
+	}
+
+	private boolean runRtpSourceTask(Runnable task)
+	{
+		Location center = structure == null ? null : structure.getCenter();
+		World world = center == null ? null : center.getWorld();
+		if(Wormholes.instance == null || world == null)
+		{
+			task.run();
+			return true;
+		}
+		if(FoliaScheduler.isOwnedByCurrentRegion(world, center.getBlockX() >> 4, center.getBlockZ() >> 4))
+		{
+			task.run();
+			return true;
+		}
+		return FoliaScheduler.runRegion(Wormholes.instance, center, task);
+	}
+
+	private final class RtpEditorSession implements RtpPortalEditor.Host
+	{
+		private final UUID viewerId;
+		private final UIWindow window;
+		private final RtpPortalEditor editor;
+
+		private RtpEditorSession(Player viewer)
+		{
+			viewerId = viewer.getUniqueId();
+			window = new UIWindow(Wormholes.instance, viewer);
+			window.setResolution(WindowResolution.W9_H6);
+			window.onClosed(closed -> rtpEditorSessions.remove(viewerId, this));
+			editor = new RtpPortalEditor(this);
+		}
+
+		private void open()
+		{
+			editor.populate(window, viewerId);
+			window.setVisible(true);
+		}
+
+		private void close()
+		{
+			if(window.isVisible())
+			{
+				window.close();
+			}
+			rtpEditorSessions.remove(viewerId, this);
+		}
+
+		@Override
+		public RtpPortalEditorModel.EditorSnapshot snapshot(UUID requestedViewerId)
+		{
+			if(!viewerId.equals(requestedViewerId) || type != PortalType.RTP || rtpSettings == null)
+			{
+				throw new IllegalStateException("RTP editor session is stale");
+			}
+			RtpSettings settings = rtpSettings;
+			ArrayList<RtpPortalEditorModel.WorldOption> worlds = new ArrayList<RtpPortalEditorModel.WorldOption>();
+			for(World world : Bukkit.getWorlds())
+			{
+				worlds.add(RtpPortalEditorModel.WorldOption.from(world));
+			}
+			boolean targetWorldAvailable = resolveRtpWorld(settings.getTargetWorldKey()) != null;
+			RtpPortalEditorModel.StatusSnapshot status = Wormholes.rtpRuntime == null
+					? idleStatus(targetWorldAvailable)
+					: Wormholes.rtpRuntime.editorStatus(getId()).orElseGet(() -> idleStatus(targetWorldAvailable));
+			Location center = Objects.requireNonNull(structure.getCenter(), "portal center");
+			return new RtpPortalEditorModel.EditorSnapshot(
+					rtpConfigurationRevision.get(),
+					"RTP: " + getName(),
+					RtpPortalEditorModel.SettingsSnapshot.from(settings),
+					status,
+					worlds,
+					center.getX(),
+					center.getZ());
+		}
+
+		@Override
+		public void mutate(UUID requestedViewerId, long expectedRevision, RtpPortalEditorModel.Mutation mutation)
+		{
+			Player viewer = Bukkit.getPlayer(requestedViewerId);
+			if(viewer == null || !viewerId.equals(requestedViewerId))
+			{
+				return;
+			}
+			FoliaScheduler.runEntity(Wormholes.instance, viewer, () -> mutateForViewer(viewer, expectedRevision, mutation));
+		}
+
+		@Override
+		public void manual(UUID requestedViewerId, long expectedRevision, RtpPortalEditorModel.ManualAction action)
+		{
+			Player viewer = Bukkit.getPlayer(requestedViewerId);
+			if(viewer == null || !viewerId.equals(requestedViewerId))
+			{
+				return;
+			}
+			FoliaScheduler.runEntity(Wormholes.instance, viewer, () -> manualForViewer(viewer, expectedRevision, action));
+		}
+
+		@Override
+		public void back(UUID requestedViewerId)
+		{
+			Player viewer = Bukkit.getPlayer(requestedViewerId);
+			if(viewer == null || !viewerId.equals(requestedViewerId))
+			{
+				return;
+			}
+			FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
+			{
+				close();
+				uiOpenPortalMenu(viewer);
+			});
+		}
+
+		private void mutateForViewer(Player viewer, long expectedRevision, RtpPortalEditorModel.Mutation mutation)
+		{
+			if(!ensureCanManagePortal(viewer))
+			{
+				close();
+				return;
+			}
+			Runnable mutationTask = () ->
+			{
+				if(type != PortalType.RTP || rtpSettings == null)
+				{
+					refresh("This portal is no longer in random teleport mode.");
+					return;
+				}
+				if(rtpConfigurationRevision.get() != expectedRevision)
+				{
+					refresh("Settings changed; the editor was refreshed.");
+					return;
+				}
+				try
+				{
+					World sourceWorld = Objects.requireNonNull(structure.getWorld(), "portal source world");
+					RtpSettings updated = RtpPortalEditorModel.applyMutation(
+							rtpSettings,
+							mutation,
+							sourceWorld,
+							LocalPortal.this::resolveRtpWorld);
+					applyRtpSettings(updated);
+					Wormholes.v("QA_EVT {\"event\":\"rtp_editor_mutation\",\"status\":\"pass\",\"details\":\""
+							+ mutation.getClass().getSimpleName() + "\",\"context\":{\"portal\":\"" + getId()
+							+ "\",\"revision\":" + rtpConfigurationRevision.get() + "}}");
+					refresh("Random destination settings updated.");
+				}
+				catch(IllegalArgumentException | IllegalStateException exception)
+				{
+					refresh("Could not apply that setting: " + exception.getMessage());
+				}
+			};
+			if(!runRtpSourceTask(mutationTask))
+			{
+				refresh("The portal region is unavailable; try again.");
+			}
+		}
+
+		private void manualForViewer(Player viewer, long expectedRevision, RtpPortalEditorModel.ManualAction action)
+		{
+			if(!ensureCanManagePortal(viewer))
+			{
+				close();
+				return;
+			}
+			if(type != PortalType.RTP || rtpSettings == null || rtpConfigurationRevision.get() != expectedRevision)
+			{
+				refresh("Settings changed; the editor was refreshed.");
+				return;
+			}
+			if(Wormholes.rtpRuntime == null)
+			{
+				refresh("Random teleport runtime is unavailable.");
+				return;
+			}
+			if(action == RtpPortalEditorModel.ManualAction.REROLL)
+			{
+				Wormholes.rtpRuntime.requestManualReroll(getId()).whenComplete((accepted, failure) ->
+						refresh(failure != null
+								? "Manual reroll failed; see the server log."
+								: Boolean.TRUE.equals(accepted)
+										? "Preparing a new random destination."
+										: "Reroll is unavailable while the route is preparing or in use."));
+				return;
+			}
+			Wormholes.rtpRuntime.requestPoolRebuild(getId()).whenComplete((removed, failure) ->
+					refresh(failure == null
+							? "Rebuilding the private destination pool."
+							: "Pool rebuild failed; see the server log."));
+		}
+
+		private void refresh(String message)
+		{
+			Player viewer = Bukkit.getPlayer(viewerId);
+			if(viewer == null)
+			{
+				rtpEditorSessions.remove(viewerId, this);
+				return;
+			}
+			FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
+			{
+				if(message != null)
+				{
+					notifySetting(viewer, message);
+				}
+				if(type != PortalType.RTP || rtpSettings == null)
+				{
+					close();
+					uiOpenPortalMenu(viewer);
+					return;
+				}
+				if(window.isVisible())
+				{
+					editor.populate(window, viewerId);
+					window.updateInventory();
+				}
+			});
+		}
+
+		private RtpPortalEditorModel.StatusSnapshot idleStatus(boolean targetWorldAvailable)
+		{
+			return new RtpPortalEditorModel.StatusSnapshot(
+					targetWorldAvailable
+							? RtpPortalEditorModel.StatusState.IDLE
+							: RtpPortalEditorModel.StatusState.TARGET_WORLD_UNAVAILABLE,
+					targetWorldAvailable,
+					true,
+					false,
+					false,
+					0L,
+					0L,
+					0,
+					0,
+					0,
+					0);
+		}
 	}
 
 	private void uiOpenSettingsMenu(Player p)
@@ -2537,7 +2826,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		element.setMaterial(new MaterialBlock(Material.BOOK));
 		element.addLore(ChatColor.GRAY + "Type: " + ChatColor.YELLOW + currentModeLabel());
 		element.addLore(ChatColor.GRAY + "Facing: " + ChatColor.BLUE + getDirection().toString());
-		if(hasTunnel())
+		if(type == PortalType.RTP && rtpSettings != null)
+		{
+			element.addLore(ChatColor.GRAY + "Allocation: " + ChatColor.AQUA + rtpAllocationLabel(rtpSettings.getAllocationMode()));
+			element.addLore(ChatColor.GRAY + "Rotation: " + ChatColor.AQUA + rtpRotationLabel(rtpSettings.getRotationMode()));
+		}
+		else if(hasTunnel())
 		{
 			element.addLore(ChatColor.GRAY + "Linked to: " + ChatColor.GOLD + getTunnel().getDestination().getName());
 		}
@@ -2576,6 +2870,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		element.addLore(ChatColor.GRAY + "Portal: basic linked portal.");
 		element.addLore(ChatColor.GRAY + "Wormhole: portal with viewport.");
 		element.addLore(ChatColor.GRAY + "Gateway: cross-server gateway.");
+		element.addLore(ChatColor.GRAY + "RTP: configurable random destinations.");
 		element.addLore(ChatColor.GRAY + "Mirror: reflect this side, no travel.");
 		return element;
 	}
@@ -2955,6 +3250,21 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			case WORMHOLE -> "Linkable portal with viewport projection.";
 			case PORTAL -> "Basic linkable portal.";
 			case RTP -> "Local random teleport portal.";
+		};
+	}
+
+	private static String rtpAllocationLabel(RtpAllocationMode mode)
+	{
+		return mode == RtpAllocationMode.SHARED ? "Shared" : "Per-player";
+	}
+
+	private static String rtpRotationLabel(RtpRotationMode mode)
+	{
+		return switch(mode)
+		{
+			case STATIC -> "Static";
+			case TIMED -> "Timed";
+			case ON_TRAVERSAL -> "After every trip";
 		};
 	}
 
