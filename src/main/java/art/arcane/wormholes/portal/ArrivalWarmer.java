@@ -10,9 +10,9 @@ import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
 
-import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.Settings;
-import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.chunk.BukkitChunkLeaseProvider;
+import art.arcane.wormholes.chunk.ChunkLease;
 import art.arcane.wormholes.platform.WormholesPlatform;
 
 public final class ArrivalWarmer
@@ -128,34 +128,21 @@ public final class ArrivalWarmer
 			existing.extend(expiry);
 			return;
 		}
-		WarmHold hold = new WarmHold(world, chunkX, chunkZ, expiry);
+		ChunkLease lease = BukkitChunkLeaseProvider.registry().retain(world, world.getUID(), chunkX, chunkZ);
+		WarmHold hold = new WarmHold(world, chunkX, chunkZ, expiry, lease);
 		WarmHold prior = holds.putIfAbsent(key, hold);
 		if(prior != null)
 		{
+			lease.close();
 			prior.extend(expiry);
 			return;
 		}
-		applyTicket(key, hold);
-	}
-
-	private void applyTicket(ChunkKey key, WarmHold hold)
-	{
-		WormholesPlatform.loadChunk(Wormholes.instance, hold.world, hold.chunkX, hold.chunkZ).whenComplete((chunk, error) ->
+		lease.ready().thenAccept(ready ->
 		{
-			if(error != null || chunk == null)
+			if(!ready.booleanValue())
 			{
 				holds.remove(key, hold);
-				return;
 			}
-			FoliaScheduler.runRegion(Wormholes.instance, hold.world, hold.chunkX, hold.chunkZ, () ->
-			{
-				if(holds.get(key) != hold)
-				{
-					return;
-				}
-				chunk.addPluginChunkTicket(Wormholes.instance);
-				hold.applied = true;
-			});
 		});
 	}
 
@@ -203,17 +190,7 @@ public final class ArrivalWarmer
 
 	private void releaseTicket(WarmHold hold)
 	{
-		if(!hold.applied)
-		{
-			return;
-		}
-		FoliaScheduler.runRegion(Wormholes.instance, hold.world, hold.chunkX, hold.chunkZ, () ->
-		{
-			if(hold.world.isChunkLoaded(hold.chunkX, hold.chunkZ))
-			{
-				hold.world.getChunkAt(hold.chunkX, hold.chunkZ).removePluginChunkTicket(Wormholes.instance);
-			}
-		});
+		hold.lease.close();
 	}
 
 	public void shutdown()
@@ -237,16 +214,16 @@ public final class ArrivalWarmer
 		private final World world;
 		private final int chunkX;
 		private final int chunkZ;
+		private final ChunkLease lease;
 		private volatile long expiryMillis;
-		private volatile boolean applied;
 
-		private WarmHold(World world, int chunkX, int chunkZ, long expiryMillis)
+		private WarmHold(World world, int chunkX, int chunkZ, long expiryMillis, ChunkLease lease)
 		{
 			this.world = world;
 			this.chunkX = chunkX;
 			this.chunkZ = chunkZ;
+			this.lease = lease;
 			this.expiryMillis = expiryMillis;
-			this.applied = false;
 		}
 
 		private void extend(long expiry)

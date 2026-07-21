@@ -109,6 +109,7 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     private final Map<String, Object> statusPeerGates = new ConcurrentHashMap<>();
     private final Map<String, Long> statusLastSeen = new ConcurrentHashMap<>();
     private final Map<String, Long> statusRttMillis = new ConcurrentHashMap<>();
+    private final Map<String, String> statusReachableGameHosts = new ConcurrentHashMap<>();
     final Map<String, Long> nextStatusAttempt = new ConcurrentHashMap<>();
     private final Map<String, Integer> statusRequestBudgets = new ConcurrentHashMap<>();
     private final AtomicLong statusFragmentIds = new AtomicLong();
@@ -471,6 +472,7 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         readyPeers.clear();
         statusLastSeen.clear();
         statusRttMillis.clear();
+        statusReachableGameHosts.clear();
         nextStatusAttempt.clear();
         for (SidebandOutbox outbox : statusOutbox.values()) {
             outbox.discardAll();
@@ -532,6 +534,32 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
 
     public boolean isSidebandOnlyPeer(String name) {
         return !isRawPeerReady(name) && isStatusPeerReady(name);
+    }
+
+    String privatePlayerEndpoint(String name) {
+        NetworkConfig.PeerEntry peer = findKnownPeer(name);
+        if (peer == null) {
+            return null;
+        }
+        PeerConnection connection = readyPeers.get(name);
+        InetSocketAddress rawPeerAddress = null;
+        boolean loopbackTransport = false;
+        if (connection != null && connection.getState() == PeerConnection.State.READY) {
+            loopbackTransport = connection.channel().isLoopback();
+            SocketAddress remoteAddress = connection.channel().remoteAddress();
+            if (remoteAddress instanceof InetSocketAddress inetAddress) {
+                rawPeerAddress = inetAddress;
+            }
+        }
+        String statusGameHost = !isRawPeerReady(name) && isStatusPeerReady(name)
+            ? statusReachableGameHosts.get(name)
+            : null;
+        return PeerEndpointResolver.privateGameHost(
+            peer,
+            statusGameHost,
+            rawPeerAddress,
+            loopbackTransport
+        );
     }
 
     private boolean isRawPeerReady(String name) {
@@ -827,10 +855,19 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
     }
 
     boolean handleStatusBridgeResponse(String expectedPeerName, MinecraftStatusBridge.StatusPacket response, long rttMillis) {
+        return handleStatusBridgeResponse(expectedPeerName, response, rttMillis, null);
+    }
+
+    boolean handleStatusBridgeResponse(String expectedPeerName,
+                                       MinecraftStatusBridge.StatusPacket response,
+                                       long rttMillis, String reachableGameHost) {
         if (response == null || isRawPeerReady(expectedPeerName) || !acceptStatusBridgePacket(response, expectedPeerName)) {
             return false;
         }
         String sourceServer = response.sourceServer();
+        if (reachableGameHost != null && !reachableGameHost.isBlank()) {
+            statusReachableGameHosts.put(sourceServer, reachableGameHost);
+        }
         synchronized (statusPeerGate(sourceServer)) {
             if (isRawPeerReady(sourceServer)) {
                 return false;
@@ -1781,8 +1818,14 @@ public class NetworkManager implements PeerConnection.Listener, PeerConnection.C
         }
         List<MinecraftStatusBridge.EncodedMessage> messages = pendingRequest.messages();
         try {
-            MinecraftStatusBridge.StatusPacket response = statusBridge.poll(peer, pendingRequest.packet());
-            if (!handleStatusBridgeResponse(peer.name, response, System.currentTimeMillis() - started)) {
+            MinecraftStatusBridge.PollResult poll = statusBridge.pollWithEndpoint(peer, pendingRequest.packet());
+            MinecraftStatusBridge.StatusPacket response = poll.packet();
+            if (!handleStatusBridgeResponse(
+                peer.name,
+                response,
+                System.currentTimeMillis() - started,
+                poll.host()
+            )) {
                 throw new IOException("status sideband response was rejected");
             }
             if (isRawPeerReady(peer.name)) {

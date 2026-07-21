@@ -80,11 +80,14 @@ setting is re-enabled.
 ## Cross-server handoff
 
 Imported portal codes retain both public and LAN route candidates. Direct player
-handoffs use a private fallback when the player connected from loopback or the
-LAN, avoiding routers that cannot hairpin their own public address; internet
-players continue to receive the destination's public endpoint. Game-port
-sideband traffic tries the same fallbacks only when a socket connection was
-never established.
+handoffs use a private fallback only when the player connected from loopback or
+the LAN and Wormholes has verified that endpoint through an active
+private/loopback raw connection or a successful game-port sideband request. A
+localhost connection alone never makes a separately hosted peer's private
+address reachable. Internet players continue to receive the destination's
+public endpoint. Game-port sideband traffic tries the same fallbacks only when a
+socket connection was never established, and remembers the exact endpoint that
+answered for the player handoff.
 
 The source does not dispatch the client until the destination grants a
 rate-limited admission lease for that exact transfer. The destination checks

@@ -45,8 +45,10 @@ import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.geometry.Raycast;
 import art.arcane.wormholes.network.PortalSyncService;
 import art.arcane.wormholes.platform.WormholesPlatform;
+import art.arcane.wormholes.portal.rtp.RtpSettings;
 import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.wormholes.service.WormholesTelemetry;
+import art.arcane.volmlib.util.bukkit.WorldIdentity;
 import art.arcane.volmlib.util.scheduling.AR;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.volmlib.util.inventorygui.Element;
@@ -89,7 +91,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private PhantomSpinner spinner;
 	private PortalStructure structure;
-	private PortalType type;
+	private volatile PortalType type;
 	private UUID owner;
 	private volatile ITunnel tunnel;
 	private volatile UUID dimensionalCounterpartId;
@@ -107,6 +109,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private ProjectionMode projectionMode;
 	private boolean mirrorMode;
 	private MirrorRotation mirrorRotation;
+	private volatile RtpSettings rtpSettings;
 	private AxisAlignedBB view;
 	private double viewRange;
 	private PortalPermissionMode permissionMode;
@@ -145,6 +148,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		projectionMode = ProjectionMode.ON;
 		mirrorMode = false;
 		mirrorRotation = MirrorRotation.DEGREES_0;
+		rtpSettings = type == PortalType.RTP ? defaultRtpSettings() : null;
 			permissionMode = PortalPermissionMode.BLACKLIST;
 			outgoingTraversalsEnabled = true;
 			incomingTraversalsEnabled = true;
@@ -168,6 +172,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		j.put("projectionMode", projectionMode.name());
 		j.put("mirrorMode", mirrorMode);
 		j.put("mirrorRotationDegrees", mirrorRotation.getDegrees());
+		if(rtpSettings != null)
+		{
+			j.put("rtp", rtpSettings.toJson());
+		}
 			j.put("permissionMode", permissionMode.name());
 			j.put("outgoingTraversalsEnabled", outgoingTraversalsEnabled);
 			j.put("incomingTraversalsEnabled", incomingTraversalsEnabled);
@@ -207,6 +215,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			applyFrame(PortalFrame.derive(structure.getArea(), direction));
 		}
 		type = PortalType.valueOf(j.getString("type"));
+		rtpSettings = loadRtpSettings(j);
 		owner = UUID.fromString(j.getString("owner"));
 		String storedProjectionMode = j.optString("projectionMode", ProjectionMode.ON.name());
 		projectionMode = resolveProjectionMode(j);
@@ -232,8 +241,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		dimensionalCounterpartId = resolveOptionalUuid(j.optString("dimensionalCounterpartId", ""));
 		dimensionalPortalKind = DimensionalPortalKind.fromName(j.optString("dimensionalPortalKind", ""));
 		boolean dimensionalStateNormalized = normalizeDimensionalState();
+		boolean rtpStateNormalized = normalizeRtpState();
+		boolean rtpPersistenceNormalized = requiresRtpPersistenceNormalization(j);
 		boolean projectionStateNormalized = !j.has("mirrorMode") || !storedProjectionMode.equals(projectionMode.name());
-		if(storedMirrorRotation != mirrorRotation || dimensionalStateNormalized || projectionStateNormalized)
+		if(storedMirrorRotation != mirrorRotation || dimensionalStateNormalized || rtpStateNormalized || rtpPersistenceNormalized || projectionStateNormalized)
 		{
 			save();
 		}
@@ -260,38 +271,105 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		return type;
 	}
 
+	public RtpSettings getRtpSettings()
+	{
+		return rtpSettings;
+	}
+
+	public void setRtpSettings(RtpSettings settings)
+	{
+		RtpSettings requiredSettings = Objects.requireNonNull(settings, "settings");
+		World sourceWorld = structure.getWorld();
+		if(sourceWorld == null || !WorldIdentity.serialize(sourceWorld).equals(requiredSettings.getSourceWorldKey()))
+		{
+			throw new IllegalArgumentException("RTP settings source world must match the portal source world");
+		}
+		Location center = structure.getCenter();
+		World world = center == null ? null : center.getWorld();
+		if(Wormholes.instance != null && world != null
+				&& !FoliaScheduler.isOwnedByCurrentRegion(world, center.getBlockX() >> 4, center.getBlockZ() >> 4))
+		{
+			boolean scheduled = FoliaScheduler.runRegion(Wormholes.instance, center, () -> applyRtpSettings(requiredSettings));
+			if(!scheduled)
+			{
+				throw new IllegalStateException("RTP settings update could not be routed to the source portal region");
+			}
+			return;
+		}
+		applyRtpSettings(requiredSettings);
+	}
+
 	@Override
 	public void setType(PortalType type)
 	{
+		PortalType requiredType = Objects.requireNonNull(type, "type");
 		if(dimensionalPortalKind.isManagedPortal())
 		{
 			return;
 		}
-		if(this.type == type)
+		if(this.type == requiredType)
 		{
 			return;
 		}
 
 		boolean wasGateway = isGateway();
-		this.type = type;
+		boolean rtpTransition = this.type == PortalType.RTP || requiredType == PortalType.RTP;
+		if(requiredType == PortalType.RTP)
+		{
+			open = false;
+			mirrorMode = false;
+			detachDimensionalPairIdentity();
+			tunnel = null;
+			if(rtpSettings == null)
+			{
+				rtpSettings = defaultRtpSettings();
+			}
+		}
+		else if(this.type == PortalType.RTP)
+		{
+			open = false;
+			mirrorMode = false;
+			tunnel = null;
+		}
+		this.type = requiredType;
 
 		if(wasGateway != isGateway())
 		{
 			detachDimensionalPairIdentity();
 			tunnel = null;
 		}
+		if(rtpTransition)
+		{
+			invalidateProjection();
+		}
 
 		save();
 		syncGatewayTickets();
+		if(Wormholes.rtpRuntime != null)
+		{
+			Wormholes.rtpRuntime.synchronize(this);
+		}
 	}
 
 	@Override
 	public void update()
 	{
+		if(type == PortalType.RTP)
+		{
+			updateRtp();
+			return;
+		}
 		ITunnel activeTunnel = tunnel;
 		IPortal destination = activeTunnel == null ? null : activeTunnel.getDestination();
 		boolean tunnelPresent = activeTunnel != null && destination != null;
 		boolean tunnelValid = tunnelPresent && activeTunnel.isValid();
+		if(hasRtpDestination(activeTunnel))
+		{
+			tunnel = null;
+			activeTunnel = null;
+			tunnelPresent = false;
+			save();
+		}
 		boolean shouldBeOpen = tunnelValid || (mirrorMode && projectionMode == ProjectionMode.ON);
 
 		if(isOpen())
@@ -333,9 +411,58 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 	}
 
+	private void updateRtp()
+	{
+		if(Wormholes.rtpRuntime == null)
+		{
+			close();
+			return;
+		}
+		Wormholes.rtpRuntime.synchronize(this);
+		Wormholes.rtpRuntime.tick(getId());
+		boolean shouldBeOpen = Wormholes.rtpRuntime.isReady(getId());
+		if(isOpen())
+		{
+			if(isAmbientAttended())
+			{
+				playEffect(PortalEffect.AMBIENT_OPEN);
+			}
+			if(shouldBeOpen)
+			{
+				updateCaptures(null, false);
+			}
+			else
+			{
+				close();
+			}
+		}
+		else
+		{
+			if(isAmbientAttended())
+			{
+				playEffect(PortalEffect.AMBIENT_CLOSED);
+			}
+			if(shouldBeOpen)
+			{
+				open();
+			}
+		}
+		if(Settings.DEBUG_RENDERING)
+		{
+			playEffect(PortalEffect.AMBIENT_DEBUG);
+		}
+	}
+
+	private static boolean hasRtpDestination(ITunnel activeTunnel)
+	{
+		return (activeTunnel instanceof LocalTunnel localTunnel && localTunnel.hasRtpDestination())
+				|| (activeTunnel instanceof DimensionalTunnel dimensionalTunnel && dimensionalTunnel.hasRtpDestination());
+	}
+
 	private void updateCaptures(ITunnel activeTunnel, boolean tunnelPresent)
 	{
-		if(!isOpen() || !tunnelPresent)
+		boolean rtp = type == PortalType.RTP;
+		if(!isOpen() || !tunnelPresent && !rtp)
 		{
 			return;
 		}
@@ -350,7 +477,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		for(Entity i : getStructure().getCaptureZone().getEntities(getStructure().getWorld()))
 		{
 			UUID entityId = i.getUniqueId();
-			if(i instanceof Player viewer)
+			if(!rtp && i instanceof Player viewer)
 			{
 				ArrivalWarmer warmer = Wormholes.arrivalWarmer;
 				if(warmer != null)
@@ -380,6 +507,15 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			Traversive traversive = rayTeleport(i);
 			if(traversive == null)
 			{
+				continue;
+			}
+
+			if(rtp)
+			{
+				if(Wormholes.rtpRuntime != null)
+				{
+					Wormholes.rtpRuntime.traverse(this, i, traversive);
+				}
 				continue;
 			}
 
@@ -582,13 +718,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	{
 		boolean changed = this.open != open;
 		this.open = open;
-		if(changed)
+		if(changed && Wormholes.instance != null && Wormholes.effectManager != null)
 		{
 			if(open)
 			{
 				playEffect(PortalEffect.OPEN);
 			}
-
 			else
 			{
 				playEffect(PortalEffect.CLOSE);
@@ -1110,6 +1245,81 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		notifyPortalDenied(entity);
 	}
 
+	public boolean beginRtpTraversal(Entity entity, long nowMillis)
+	{
+		Objects.requireNonNull(entity, "entity");
+		if(type != PortalType.RTP || !isOpen() || !canDepart(entity) || entity.getVehicle() != null || !entity.getPassengers().isEmpty())
+		{
+			return false;
+		}
+		ReentryLatch latch = activeReentryLatch(entity.getUniqueId(), nowMillis);
+		if(latch != null && getId().equals(latch.portalId()))
+		{
+			return false;
+		}
+		if(isTeleportCoolingDown(entity.getUniqueId(), nowMillis))
+		{
+			return false;
+		}
+		return TELEPORT_IN_FLIGHT.add(entity.getUniqueId());
+	}
+
+	public boolean canContinueRtpTraversal(Entity entity)
+	{
+		Objects.requireNonNull(entity, "entity");
+		return type == PortalType.RTP
+				&& entity.isValid()
+				&& canDepart(entity)
+				&& entity.getVehicle() == null
+				&& entity.getPassengers().isEmpty()
+				&& TELEPORT_IN_FLIGHT.contains(entity.getUniqueId());
+	}
+
+	public void cancelRtpTraversal(Entity entity)
+	{
+		if(entity != null)
+		{
+			TELEPORT_IN_FLIGHT.remove(entity.getUniqueId());
+		}
+	}
+
+	public void completeRtpTraversal(Entity entity, Traversive traversive, PortalFrame targetFrame, Location target)
+	{
+		Entity requiredEntity = Objects.requireNonNull(entity, "entity");
+		Traversive requiredTraversive = Objects.requireNonNull(traversive, "traversive");
+		PortalFrame requiredTargetFrame = Objects.requireNonNull(targetFrame, "targetFrame");
+		Location requiredTarget = Objects.requireNonNull(target, "target");
+		if(!TELEPORT_IN_FLIGHT.remove(requiredEntity.getUniqueId()))
+		{
+			return;
+		}
+		requiredEntity.setVelocity(requiredTraversive.getOutVelocity(requiredTargetFrame));
+		markTeleportCooldown(requiredEntity.getUniqueId(), System.currentTimeMillis());
+		latchReentry(requiredEntity.getUniqueId(), getId());
+		WormholesTelemetry.countTraversal();
+		if(Wormholes.instance != null)
+		{
+			World sourceWorld = getStructure() == null ? null : getStructure().getWorld();
+			if(sourceWorld != null)
+			{
+				playEffect(PortalEffect.PUSH, requiredTraversive.getInPoint().toLocation(sourceWorld));
+			}
+			if(requiredTarget.getWorld() != null)
+			{
+				playEffect(PortalEffect.PUSH, requiredTarget);
+			}
+			if(requiredEntity instanceof Player player)
+			{
+				World source = getStructure() == null ? null : getStructure().getWorld();
+				ArrivalTransition.apply(player, source != null && requiredTarget.getWorld() != null && !source.equals(requiredTarget.getWorld()));
+				if(Wormholes.projectionManager != null)
+				{
+					Wormholes.projectionManager.reprimeArrival(player);
+				}
+			}
+		}
+	}
+
 	@Override
 	public boolean canDepart(Entity entity)
 	{
@@ -1275,6 +1485,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void setDestination(IPortal portal)
 	{
+		if(type == PortalType.RTP || (portal instanceof ILocalPortal localPortal && localPortal.getType() == PortalType.RTP))
+		{
+			return;
+		}
 		if(dimensionalPortalKind.isReceiverOnly()
 				|| (dimensionalPortalKind.isManagedPortal() && dimensionalCounterpartId != null))
 		{
@@ -1313,7 +1527,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void linkRemote(String serverName, UUID portalId)
 	{
-		if(dimensionalPortalKind.isManagedPortal())
+		if(type == PortalType.RTP || dimensionalPortalKind.isManagedPortal())
 		{
 			return;
 		}
@@ -1499,6 +1713,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void setDimensionalCounterpartId(UUID counterpartId)
 	{
+		if(type == PortalType.RTP && counterpartId != null)
+		{
+			return;
+		}
 		if(Objects.equals(dimensionalCounterpartId, counterpartId))
 		{
 			return;
@@ -1517,6 +1735,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	public void setDimensionalPortalKind(DimensionalPortalKind kind)
 	{
 		DimensionalPortalKind normalized = kind == null ? DimensionalPortalKind.NONE : kind;
+		if(type == PortalType.RTP && normalized.isManagedPortal())
+		{
+			return;
+		}
 		boolean kindChanged = dimensionalPortalKind != normalized;
 		dimensionalPortalKind = normalized;
 		boolean stateChanged = normalizeDimensionalState();
@@ -1602,6 +1824,105 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			changed = true;
 		}
 		return changed;
+	}
+
+	private boolean normalizeRtpState()
+	{
+		if(type != PortalType.RTP)
+		{
+			return false;
+		}
+		boolean changed = false;
+		if(tunnel != null)
+		{
+			tunnel = null;
+			changed = true;
+		}
+		if(dimensionalCounterpartId != null)
+		{
+			dimensionalCounterpartId = null;
+			changed = true;
+		}
+		if(mirrorMode)
+		{
+			type = PortalType.PORTAL;
+			changed = true;
+		}
+		if(rtpSettings == null)
+		{
+			rtpSettings = defaultRtpSettings();
+			changed = rtpSettings != null || changed;
+		}
+		return changed;
+	}
+
+	private RtpSettings loadRtpSettings(JSONObject json)
+	{
+		if(!json.has("rtp"))
+		{
+			return type == PortalType.RTP ? defaultRtpSettings() : null;
+		}
+		World world = structure.getWorld();
+		if(world == null)
+		{
+			return null;
+		}
+		JSONObject stored = json.optJSONObject("rtp");
+		if(stored == null)
+		{
+			Wormholes.w("Portal " + getId() + " has malformed RTP settings; approved defaults will be persisted");
+			return defaultRtpSettings();
+		}
+		return RtpSettings.fromJson(stored, this::resolveRtpWorld);
+	}
+
+	private boolean requiresRtpPersistenceNormalization(JSONObject json)
+	{
+		if(!json.has("rtp"))
+		{
+			return rtpSettings != null;
+		}
+		if(rtpSettings == null)
+		{
+			return true;
+		}
+		JSONObject stored = json.optJSONObject("rtp");
+		if(stored == null)
+		{
+			return true;
+		}
+		JSONObject canonicalStored = new JSONObject(stored.toString());
+		JSONObject canonicalSettings = new JSONObject(rtpSettings.toJson().toString());
+		return !canonicalStored.similar(canonicalSettings);
+	}
+
+	private RtpSettings defaultRtpSettings()
+	{
+		World world = structure == null ? null : structure.getWorld();
+		return world == null ? null : RtpSettings.defaults(world);
+	}
+
+	private World resolveRtpWorld(String worldKey)
+	{
+		if(worldKey == null || worldKey.isBlank())
+		{
+			return structure.getWorld();
+		}
+		return WorldIdentity.resolve(worldKey).orElse(null);
+	}
+
+	private void applyRtpSettings(RtpSettings settings)
+	{
+		boolean changed = !settings.equals(rtpSettings);
+		rtpSettings = settings;
+		if(changed)
+		{
+			save();
+			if(Wormholes.rtpRuntime != null)
+			{
+				Wormholes.rtpRuntime.synchronize(this);
+			}
+		}
 	}
 
 	@Override
@@ -2199,10 +2520,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		window.onClosed((w) -> FoliaScheduler.runEntity(Wormholes.instance, p, () -> uiOpenPortalMenu(p)));
 
 		window.setElement(0, 0, modePlacardElement());
-		window.setElement(-3, 1, modeOption(PortalType.PORTAL, p, window));
-		window.setElement(-1, 1, modeOption(PortalType.WORMHOLE, p, window));
-		window.setElement(1, 1, modeOption(PortalType.GATEWAY, p, window));
-		window.setElement(3, 1, mirrorModeOption(p, window));
+		window.setElement(-4, 1, modeOption(PortalType.PORTAL, p, window));
+		window.setElement(-2, 1, modeOption(PortalType.WORMHOLE, p, window));
+		window.setElement(0, 1, modeOption(PortalType.GATEWAY, p, window));
+		window.setElement(2, 1, modeOption(PortalType.RTP, p, window));
+		window.setElement(4, 1, mirrorModeOption(p, window));
 		window.setElement(0, 2, backToPortalMenuElement(window, p));
 
 		window.setVisible(true);
@@ -2621,6 +2943,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			case GATEWAY -> Material.END_CRYSTAL;
 			case WORMHOLE -> Material.ENDER_PEARL;
 			case PORTAL -> Material.ENDER_EYE;
+			case RTP -> Material.COMPASS;
 		};
 	}
 
@@ -2631,12 +2954,18 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			case GATEWAY -> "Reserved for cross-network linking.";
 			case WORMHOLE -> "Linkable portal with viewport projection.";
 			case PORTAL -> "Basic linkable portal.";
+			case RTP -> "Local random teleport portal.";
 		};
 	}
 
 	@Override
 	public void uiChooseDestination(Player p)
 	{
+		if(type == PortalType.RTP)
+		{
+			notifySetting(p, "Random teleport portals do not link to destinations.");
+			return;
+		}
 		if(dimensionalPortalKind.isManagedPortal())
 		{
 			notifySetting(p, "This dimensional portal keeps its generated link.");
@@ -2654,7 +2983,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		List<ILocalPortal> localTargets = new ArrayList<>();
 		for(ILocalPortal i : Wormholes.portalManager.getLocalPortals())
 		{
-			if(i.getId().equals(getId()))
+			if(i.getId().equals(getId()) || i.getType() == PortalType.RTP)
 			{
 				continue;
 			}
@@ -2950,6 +3279,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void setMirrorMode(boolean mirrorMode)
 	{
+		if(mirrorMode && type == PortalType.RTP)
+		{
+			setType(PortalType.PORTAL);
+		}
 		boolean normalized = mirrorMode && !dimensionalPortalKind.isManagedPortal();
 		if(this.mirrorMode == normalized)
 		{

@@ -11,16 +11,42 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PlayerTransferTest {
     @Test
-    void localClientUsesPrivateFallbackWithDestinationGamePort() throws Exception {
+    void loopbackClientUsesPublicEndpointWithoutPrivateRouteEvidence() throws Exception {
         NetworkConfig.PeerEntry peer = route();
         AtomicReference<TransferCall> call = new AtomicReference<>();
         Player player = player(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 60123), call, false);
 
         assertTrue(PlayerTransfer.send(player, peer, "direct"));
+        assertEquals(new TransferCall("204.111.10.237", 25566), call.get());
+    }
+
+    @Test
+    void localhostPlayerDoesNotReceiveSeparatelyHostedDockerAddress() throws Exception {
+        NetworkConfig.PeerEntry peer = new NetworkConfig.PeerEntry();
+        peer.name = "hosted";
+        peer.host = "217.217.30.150";
+        peer.fallbackHosts = "172.18.0.7";
+        peer.publicHost = "217.217.30.150";
+        peer.publicPort = 25565;
+        InetSocketAddress client = new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 49380);
+
+        assertNull(PeerEndpointResolver.privateGameHost(
+            peer, "217.217.30.150", null, false));
+        assertEquals("217.217.30.150", PlayerTransfer.directHost(client, peer));
+    }
+
+    @Test
+    void loopbackClientUsesVerifiedPrivateEndpointWithDestinationGamePort() throws Exception {
+        NetworkConfig.PeerEntry peer = route();
+        AtomicReference<TransferCall> call = new AtomicReference<>();
+        Player player = player(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 60123), call, false);
+
+        assertTrue(PlayerTransfer.send(player, peer, PlayerTransfer.Method.DIRECT, "192.168.1.42"));
         assertEquals(new TransferCall("192.168.1.42", 25566), call.get());
     }
 
@@ -30,6 +56,7 @@ class PlayerTransferTest {
         InetSocketAddress client = new InetSocketAddress(InetAddress.getByName("198.51.100.7"), 60123);
 
         assertEquals("204.111.10.237", PlayerTransfer.directHost(client, peer));
+        assertEquals("204.111.10.237", PlayerTransfer.directHost(client, peer, "192.168.1.42"));
     }
 
     @Test
@@ -56,7 +83,22 @@ class PlayerTransferTest {
         peer.fallbackHosts = "fd00::42";
         InetSocketAddress client = new InetSocketAddress(InetAddress.getByName("fd00::12"), 60123);
 
-        assertEquals("fd00::42", PlayerTransfer.directHost(client, peer));
+        assertEquals("fd00::42", PlayerTransfer.directHost(client, peer, "fd00::42"));
+    }
+
+    @Test
+    void privateRouteRequiresTopologyEvidence() throws Exception {
+        NetworkConfig.PeerEntry peer = route();
+
+        assertNull(PeerEndpointResolver.privateGameHost(peer, null, null, false));
+        assertEquals("192.168.1.42", PeerEndpointResolver.privateGameHost(
+            peer, "192.168.1.42", null, false));
+        assertEquals("10.20.30.40", PeerEndpointResolver.privateGameHost(
+            peer,
+            null,
+            new InetSocketAddress(InetAddress.getByName("10.20.30.40"), 8901),
+            false
+        ));
     }
 
     @Test

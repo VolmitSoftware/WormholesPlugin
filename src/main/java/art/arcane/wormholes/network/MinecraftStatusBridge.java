@@ -31,6 +31,9 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class MinecraftStatusBridge extends PacketListenerAbstract {
+    record PollResult(StatusPacket packet, String host) {
+    }
+
     private static final String HOST_PREFIX = "whs.";
     private static final String JSON_FIELD = "wormholes";
     private static final int FORMAT_VERSION = 4;
@@ -118,6 +121,10 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
     }
 
     public StatusPacket poll(NetworkConfig.PeerEntry peer, StatusPacket request) throws IOException {
+        return pollWithEndpoint(peer, request).packet();
+    }
+
+    PollResult pollWithEndpoint(NetworkConfig.PeerEntry peer, StatusPacket request) throws IOException {
         List<String> hosts = gamePortHosts(peer);
         int port = PeerEndpointResolver.gamePort(peer);
         if (hosts.isEmpty()) {
@@ -132,7 +139,7 @@ public final class MinecraftStatusBridge extends PacketListenerAbstract {
         RequestUndeliveredException lastFailure = null;
         for (String host : hosts) {
             try {
-                return poll(host, port, requestBytes);
+                return new PollResult(poll(host, port, requestBytes), host);
             } catch (RequestUndeliveredException error) {
                 lastFailure = error;
             }

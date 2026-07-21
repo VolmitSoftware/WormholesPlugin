@@ -28,10 +28,15 @@ public final class PlayerTransfer {
     }
 
     public static boolean send(Player player, NetworkConfig.PeerEntry peer, Method method) {
+        return send(player, peer, method, null);
+    }
+
+    static boolean send(Player player, NetworkConfig.PeerEntry peer, Method method,
+                        String verifiedPrivateHost) {
         if (method == Method.PROXY) {
             return sendViaProxy(player, peer);
         }
-        return sendViaTransferPacket(player, peer);
+        return sendViaTransferPacket(player, peer, verifiedPrivateHost);
     }
 
     static boolean usesProxy(NetworkConfig.PeerEntry peer, String transferMode) {
@@ -48,12 +53,18 @@ public final class PlayerTransfer {
     }
 
     static String directHost(InetSocketAddress clientAddress, NetworkConfig.PeerEntry peer) {
-        return PeerEndpointResolver.playerTransferHost(peer, clientAddress);
+        return directHost(clientAddress, peer, null);
     }
 
-    private static boolean sendViaTransferPacket(Player player, NetworkConfig.PeerEntry peer) {
+    static String directHost(InetSocketAddress clientAddress, NetworkConfig.PeerEntry peer,
+                             String verifiedPrivateHost) {
+        return PeerEndpointResolver.playerTransferHost(peer, clientAddress, verifiedPrivateHost);
+    }
+
+    private static boolean sendViaTransferPacket(Player player, NetworkConfig.PeerEntry peer,
+                                                 String verifiedPrivateHost) {
         InetSocketAddress clientAddress = player.getAddress();
-        String host = directHost(clientAddress, peer);
+        String host = directHost(clientAddress, peer, verifiedPrivateHost);
         int port = PeerEndpointResolver.gamePort(peer);
         if (host == null || host.isBlank()) {
             Wormholes.w("net: peer " + peer.name + " has no reachable host; cannot transfer " + player.getName());
@@ -62,6 +73,7 @@ public final class PlayerTransfer {
         Wormholes.v("[xfer] transfer-packet " + player.getName()
             + " client=" + formatAddress(clientAddress)
             + " localClient=" + PeerEndpointResolver.isLocalClient(clientAddress)
+            + " verifiedPrivateHost=" + (verifiedPrivateHost == null ? "-" : verifiedPrivateHost)
             + " selected=" + host + ":" + port
             + " peer=" + peer.name
             + " peerHost=" + peer.host

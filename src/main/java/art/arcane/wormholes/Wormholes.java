@@ -4,6 +4,9 @@ import art.arcane.volmlib.integration.ReloadAware;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.volmlib.util.scheduling.SchedulerBridge;
 import art.arcane.volmlib.util.scheduling.SchedulerRuntime;
+import art.arcane.wormholes.chunk.BukkitChunkLeasePlatform;
+import art.arcane.wormholes.chunk.BukkitChunkLeaseProvider;
+import art.arcane.wormholes.chunk.ChunkLeaseRegistry;
 import art.arcane.wormholes.config.WormholesSettings;
 import art.arcane.wormholes.door.DimensionalDoorManager;
 import art.arcane.wormholes.door.DimensionalDoorRepository;
@@ -22,6 +25,8 @@ import art.arcane.wormholes.network.view.ViewServer;
 import art.arcane.wormholes.network.view.ViewSubscriptionManager;
 import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.portal.ArrivalWarmer;
+import art.arcane.wormholes.portal.rtp.BukkitRtpEnvironment;
+import art.arcane.wormholes.portal.rtp.BukkitRtpRuntime;
 import art.arcane.wormholes.portal.vanilla.VanillaPortalReplacer;
 import art.arcane.wormholes.service.DebugTelemetryService;
 import art.arcane.wormholes.service.MetricsRuntime;
@@ -81,6 +86,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     public static volatile ProjectionManager projectionManager;
     public static volatile art.arcane.wormholes.render.ProjectionWorldChangeTracker projectionChangeTracker;
     public static volatile ArrivalWarmer arrivalWarmer;
+    public static volatile BukkitRtpRuntime rtpRuntime;
     public static volatile NetworkManager networkManager;
     public static volatile RemotePortalRegistry remotePortalRegistry;
     public static volatile PortalSyncService portalSyncService;
@@ -135,6 +141,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             settings = WormholesSettings.loadAll(getDataFolder().toPath());
             Settings.refresh(settings);
             this.schedulerRuntime = installSchedulerBridge();
+            installChunkLeaseRegistry();
 
             packetEvents().init();
             WormholesAudience.start(this);
@@ -148,6 +155,8 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             projectionManager = new ProjectionManager(packetEvents().projectionChunkTracker());
             projectionChangeTracker = new art.arcane.wormholes.render.ProjectionWorldChangeTracker();
             arrivalWarmer = new ArrivalWarmer();
+            rtpRuntime = new BukkitRtpEnvironment(this, portalManager).createRuntime();
+            projectionManager.setRtpProjectionProvider(rtpRuntime);
             applyDimensionalDoorSetting(settings);
 
             getServer().getPluginManager().registerEvents(blockManager, this);
@@ -161,6 +170,12 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             VanillaPortalReplacer vanillaPortalReplacer = new VanillaPortalReplacer();
             getServer().getPluginManager().registerEvents(vanillaPortalReplacer, this);
             getServer().getPluginManager().registerEvents(new ChatInputListener(), this);
+            J.ar(() -> {
+                BukkitRtpRuntime activeRuntime = rtpRuntime;
+                if (activeRuntime != null) {
+                    activeRuntime.sweepAttendance();
+                }
+            }, 20);
 
             remotePortalRegistry = new RemotePortalRegistry();
             networkManager = new NetworkManager(getLogger(), settings.getNetwork(), WormholesPlatform.minecraftVersion(), WormholesPlatform.pluginVersion(this), Bukkit.getPort(), getDataFolder().toPath());
@@ -230,7 +245,11 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         unregisterIntegrationService();
         shutdownDimensionalDoorsBeforeSchedulers();
         shutdownPocketWorldService();
+        shutdownRtpBeforeSchedulers();
         shutdownProjectionBeforeSchedulers();
+        shutdownViewServerBeforeSchedulers();
+        shutdownArrivalWarmerBeforeSchedulers();
+        shutdownChunkLeasesBeforeSchedulers();
         shutdownEffectsBeforeSchedulers();
         if (schedulerRuntime != null) {
             schedulerRuntime.cancelPluginTasks();
@@ -245,7 +264,11 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         unregisterIntegrationService();
         shutdownDimensionalDoorsBeforeSchedulers();
         shutdownPocketWorldService();
+        shutdownRtpBeforeSchedulers();
         shutdownProjectionBeforeSchedulers();
+        shutdownViewServerBeforeSchedulers();
+        shutdownArrivalWarmerBeforeSchedulers();
+        shutdownChunkLeasesBeforeSchedulers();
         shutdownEffectsBeforeSchedulers();
         if (schedulerRuntime != null) {
             schedulerRuntime.cancelPluginTasks();
@@ -254,10 +277,56 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         drain();
     }
 
+    private void shutdownRtpBeforeSchedulers() {
+        BukkitRtpRuntime activeRuntime = rtpRuntime;
+        rtpRuntime = null;
+        if (activeRuntime == null) {
+            return;
+        }
+        try {
+            activeRuntime.close();
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "Error during RTP runtime shutdown", ex);
+        }
+    }
+
     private void shutdownProjectionBeforeSchedulers() {
         ProjectionManager activeProjection = projectionManager;
         if (activeProjection != null) {
+            activeProjection.setRtpProjectionProvider(null);
             activeProjection.shutdown();
+        }
+    }
+
+    private void shutdownViewServerBeforeSchedulers() {
+        ViewServer activeViewServer = viewServer;
+        if (activeViewServer == null) {
+            return;
+        }
+        try {
+            activeViewServer.shutdown();
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "Error during ViewServer pre-scheduler shutdown", ex);
+        }
+    }
+
+    private void shutdownArrivalWarmerBeforeSchedulers() {
+        ArrivalWarmer activeWarmer = arrivalWarmer;
+        if (activeWarmer == null) {
+            return;
+        }
+        try {
+            activeWarmer.shutdown();
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "Error during ArrivalWarmer pre-scheduler shutdown", ex);
+        }
+    }
+
+    private void shutdownChunkLeasesBeforeSchedulers() {
+        try {
+            BukkitChunkLeaseProvider.shutdown();
+        } catch (Throwable ex) {
+            getLogger().log(Level.WARNING, "Error during chunk lease registry shutdown", ex);
         }
     }
 
@@ -871,6 +940,12 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         }
     }
 
+    private void installChunkLeaseRegistry() {
+        ChunkLeaseRegistry.Options options = new ChunkLeaseRegistry.Options(0L, 250L, 3);
+        ChunkLeaseRegistry<World> registry = new ChunkLeaseRegistry<World>(new BukkitChunkLeasePlatform(this), options);
+        BukkitChunkLeaseProvider.install(registry);
+    }
+
     private SchedulerRuntime installSchedulerBridge() {
         SchedulerRuntime runtime = new SchedulerRuntime(
             () -> this,
@@ -914,6 +989,8 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         } catch (Throwable ex) {
             getLogger().log(Level.WARNING, "Error during CaptureRuntime stop", ex);
         }
+
+        shutdownRtpBeforeSchedulers();
 
         try {
             if (hotloadManager != null) {
@@ -976,6 +1053,8 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         } catch (Throwable ex) {
             getLogger().log(Level.WARNING, "Error during ArrivalWarmer shutdown", ex);
         }
+
+        shutdownChunkLeasesBeforeSchedulers();
 
         try {
             if (portalManager != null) {

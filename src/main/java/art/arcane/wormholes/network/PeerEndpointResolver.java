@@ -12,20 +12,28 @@ final class PeerEndpointResolver {
     private PeerEndpointResolver() {
     }
 
-    static String playerTransferHost(NetworkConfig.PeerEntry peer, InetSocketAddress clientAddress) {
-        if (isLocalClient(clientAddress)) {
-            List<String> localCandidates = new ArrayList<>(4);
-            add(localCandidates, peer.host);
-            addFallbacks(localCandidates, peer.fallbackHosts);
-            add(localCandidates, peer.publicHost);
-            for (String candidate : localCandidates) {
-                if (isLocalLiteral(candidate)) {
-                    return candidate;
-                }
-            }
+    static String playerTransferHost(NetworkConfig.PeerEntry peer, InetSocketAddress clientAddress,
+                                     String verifiedPrivateHost) {
+        if (isLocalClient(clientAddress) && isLocalLiteral(verifiedPrivateHost)) {
+            return verifiedPrivateHost.trim();
         }
         List<String> candidates = gameHosts(peer);
         return candidates.isEmpty() ? null : candidates.getFirst();
+    }
+
+    static String privateGameHost(NetworkConfig.PeerEntry peer, String statusGameHost,
+                                  InetSocketAddress rawPeerAddress, boolean loopbackTransport) {
+        if (isLocalLiteral(statusGameHost)) {
+            return statusGameHost.trim();
+        }
+        if (loopbackTransport) {
+            String loopback = firstLocalCandidate(peer, true);
+            return loopback == null ? "127.0.0.1" : loopback;
+        }
+        if (isLocalClient(rawPeerAddress)) {
+            return rawPeerAddress.getAddress().getHostAddress();
+        }
+        return null;
     }
 
     static List<String> gameHosts(NetworkConfig.PeerEntry peer) {
@@ -45,16 +53,34 @@ final class PeerEndpointResolver {
         return isLocalAddress(address);
     }
 
+    private static String firstLocalCandidate(NetworkConfig.PeerEntry peer, boolean requireLoopback) {
+        List<String> localCandidates = new ArrayList<>(4);
+        add(localCandidates, peer.host);
+        addFallbacks(localCandidates, peer.fallbackHosts);
+        add(localCandidates, peer.publicHost);
+        for (String candidate : localCandidates) {
+            InetAddress address = localLiteral(candidate);
+            if (address != null && (!requireLoopback || address.isLoopbackAddress())) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
     private static boolean isLocalLiteral(String host) {
+        return localLiteral(host) != null;
+    }
+
+    private static InetAddress localLiteral(String host) {
         if (host == null || host.isBlank()) {
-            return false;
+            return null;
         }
         String candidate = host.trim();
         if (candidate.equalsIgnoreCase("localhost") || candidate.equalsIgnoreCase("localhost.")) {
-            return true;
+            return InetAddress.getLoopbackAddress();
         }
         InetAddress address = parseLiteral(candidate);
-        return isLocalAddress(address);
+        return isLocalAddress(address) ? address : null;
     }
 
     private static InetAddress parseLiteral(String host) {

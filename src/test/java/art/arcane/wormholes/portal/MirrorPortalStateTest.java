@@ -100,14 +100,28 @@ public final class MirrorPortalStateTest {
     }
 
     @Test
-    public void everyPortalTypeAcceptsIndependentMirrorMode() {
+    public void linkablePortalTypesAcceptIndependentMirrorMode() {
         for(PortalType type : PortalType.values()) {
+            if(type == PortalType.RTP) {
+                continue;
+            }
             LocalPortal portal = portal(type);
             portal.setMirrorMode(true);
             assertTrue(portal.isMirrorMode());
             assertEquals(type, portal.getType());
             assertEquals(ProjectionMode.ON, portal.getProjectionMode());
         }
+    }
+
+    @Test
+    public void rtpNormalizesToPortalWhenMirrorIsSelected() {
+        LocalPortal portal = portal(PortalType.RTP);
+
+        portal.setMirrorMode(true);
+
+        assertTrue(portal.isMirrorMode());
+        assertEquals(PortalType.PORTAL, portal.getType());
+        assertEquals(ProjectionMode.ON, portal.getProjectionMode());
     }
 
     @Test

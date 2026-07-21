@@ -206,6 +206,11 @@ public class BlockManager implements Listener
 
 		e.setUseInteractedBlock(Event.Result.DENY);
 		e.setCancelled(true);
+		if(b.getType() == PortalType.RTP)
+		{
+			WormholesAudience.sendActionBar(e.getPlayer(), Component.text("Random teleport portals cannot be formed from runes.", NamedTextColor.RED));
+			return;
+		}
 		WormholesAudience.sendActionBar(e.getPlayer(),Component.text("Forming portal... " + b.getType().name().toLowerCase() + " runes must connect on one flat wall, floor, or ceiling.", NamedTextColor.AQUA));
 		construct(e.getPlayer(), e.getClickedBlock());
 	}
@@ -497,6 +502,7 @@ public class BlockManager implements Listener
 			case PORTAL -> Material.PRISMARINE;
 			case WORMHOLE -> Material.DARK_PRISMARINE;
 			case GATEWAY -> Material.BLACK_STAINED_GLASS;
+			case RTP -> throw new IllegalArgumentException("RTP is not a constructible rune type");
 		};
 	}
 
@@ -602,6 +608,8 @@ public class BlockManager implements Listener
 								break;
 							case GATEWAY:
 								drop = getGatewayRune(1);
+								break;
+							case RTP:
 								break;
 						}
 					}
@@ -890,8 +898,8 @@ public class BlockManager implements Listener
 				return getPortalRune(stack);
 			case WORMHOLE:
 				return getWormholeRune(stack);
-			default:
-				break;
+			case RTP:
+				return null;
 		}
 
 		return null;

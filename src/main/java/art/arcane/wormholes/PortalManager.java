@@ -24,10 +24,12 @@ import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.world.WorldLoadEvent;
+import org.bukkit.event.world.WorldUnloadEvent;
 
 import art.arcane.wormholes.portal.DimensionalTunnel;
 import art.arcane.wormholes.portal.ILocalPortal;
@@ -36,6 +38,7 @@ import art.arcane.wormholes.portal.LocalPortal;
 import art.arcane.wormholes.portal.PortalStructure;
 import art.arcane.wormholes.portal.PortalType;
 import art.arcane.wormholes.portal.PortalUpdateGate;
+import art.arcane.wormholes.portal.rtp.BukkitRtpRuntime;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.volmlib.util.bukkit.WorldIdentity;
 import art.arcane.wormholes.network.view.ViewServer;
@@ -86,6 +89,27 @@ public class PortalManager implements Listener
 	public void on(WorldLoadEvent e)
 	{
 		loadPendingPortals();
+		BukkitRtpRuntime runtime = Wormholes.rtpRuntime;
+		if(runtime != null)
+		{
+			for(ILocalPortal portal : getLocalPortals())
+			{
+				if(portal instanceof LocalPortal localPortal)
+				{
+					runtime.synchronize(localPortal);
+				}
+			}
+		}
+	}
+
+	@EventHandler
+	public void on(WorldUnloadEvent e)
+	{
+		BukkitRtpRuntime runtime = Wormholes.rtpRuntime;
+		if(runtime != null)
+		{
+			runtime.worldUnloaded(e.getWorld().getUID());
+		}
 	}
 
 	@EventHandler
@@ -98,12 +122,33 @@ public class PortalManager implements Listener
 	public void on(PlayerMoveEvent e)
 	{
 		recordPlayerPosition(e.getPlayer(), e.getTo());
+		BukkitRtpRuntime runtime = Wormholes.rtpRuntime;
+		if(runtime != null && e.getTo() != null)
+		{
+			runtime.viewerMoved(e.getPlayer(), e.getTo());
+		}
+	}
+
+	@EventHandler
+	public void on(PlayerChangedWorldEvent e)
+	{
+		recordPlayerPosition(e.getPlayer(), e.getPlayer().getLocation());
+		BukkitRtpRuntime runtime = Wormholes.rtpRuntime;
+		if(runtime != null)
+		{
+			runtime.leaveViewer(e.getPlayer().getUniqueId());
+		}
 	}
 
 	@EventHandler
 	public void on(PlayerQuitEvent e)
 	{
 		playerPositions.remove(e.getPlayer().getUniqueId());
+		BukkitRtpRuntime runtime = Wormholes.rtpRuntime;
+		if(runtime != null)
+		{
+			runtime.leaveViewer(e.getPlayer().getUniqueId());
+		}
 	}
 
 	private void recordPlayerPosition(Player player, Location location)
@@ -487,6 +532,11 @@ public class PortalManager implements Listener
 		{
 			refreshPortalSnapshot();
 			Wormholes.instance.registerListener(portal);
+			BukkitRtpRuntime runtime = Wormholes.rtpRuntime;
+			if(runtime != null && portal instanceof LocalPortal localPortal)
+			{
+				runtime.synchronize(localPortal);
+			}
 
 			if(Wormholes.portalSyncService != null)
 			{
@@ -498,6 +548,12 @@ public class PortalManager implements Listener
 
 	public synchronized void removeLocalPortal(UUID portal)
 	{
+		ILocalPortal existing = portals.get(portal);
+		BukkitRtpRuntime runtime = Wormholes.rtpRuntime;
+		if(existing != null && runtime != null)
+		{
+			runtime.unregister(portal);
+		}
 		ILocalPortal removed = portals.remove(portal);
 		if(removed != null)
 		{
@@ -524,6 +580,11 @@ public class PortalManager implements Listener
 
 		for(ILocalPortal portal : snapshot)
 		{
+			BukkitRtpRuntime runtime = Wormholes.rtpRuntime;
+			if(runtime != null)
+			{
+				runtime.unregister(portal.getId());
+			}
 			if(Wormholes.projectionManager != null)
 			{
 				Wormholes.projectionManager.removeProjector(portal);
@@ -752,6 +813,14 @@ public class PortalManager implements Listener
 	{
 		Wormholes.v("Shutting down portal manager");
 		saveAllNow();
+		BukkitRtpRuntime runtime = Wormholes.rtpRuntime;
+		if(runtime != null)
+		{
+			for(ILocalPortal portal : getLocalPortals())
+			{
+				runtime.unregister(portal.getId());
+			}
+		}
 		pendingPortalFiles.clear();
 		portals.clear();
 		refreshPortalSnapshot();

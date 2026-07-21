@@ -167,14 +167,21 @@ class MinecraftStatusBridgeWireTest {
             peerEntry.fallbackHosts = "127.0.0.1";
             peerEntry.publicHost = "127.0.0.2";
             peerEntry.publicPort = serverSocket.getLocalPort();
+            alpha.savePeer(peerEntry);
 
-            MinecraftStatusBridge.StatusPacket response = alpha.statusBridge().poll(peerEntry, alpha.createStatusBridgePacket(BETA_NAME, List.of()));
+            MinecraftStatusBridge.PollResult poll = alpha.statusBridge().pollWithEndpoint(
+                peerEntry, alpha.createStatusBridgePacket(BETA_NAME, List.of()));
+            MinecraftStatusBridge.StatusPacket response = poll.packet();
             server.join(10_000L);
             assertFalse(server.isAlive());
             assertNull(serverFailure.get(), () -> "status server thread failed: " + serverFailure.get());
             assertTrue(response != null);
             assertTrue(response.verify());
             assertEquals(BETA_NAME, response.sourceServer());
+            assertEquals("127.0.0.1", poll.host());
+            alpha.start();
+            assertTrue(alpha.handleStatusBridgeResponse(BETA_NAME, response, 1L, poll.host()));
+            assertEquals("127.0.0.1", alpha.privatePlayerEndpoint(BETA_NAME));
             assertTrue(beta.isPeerReady(ALPHA_NAME));
         }
     }

@@ -2,9 +2,12 @@ package art.arcane.wormholes;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -38,6 +41,9 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEn
 
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.portal.ILocalPortal;
+import art.arcane.wormholes.portal.rtp.RtpProjectionView;
+import art.arcane.wormholes.portal.rtp.RtpRimRenderer;
+import art.arcane.wormholes.portal.rtp.RtpRotationMode;
 import art.arcane.wormholes.network.view.ViewServer;
 import art.arcane.wormholes.render.ProjectionClaimArbiter;
 import art.arcane.wormholes.render.ProjectionClientChunkTracker;
@@ -55,6 +61,7 @@ public class ProjectionManager implements Listener {
     private final ProjectionClaimArbiter claimArbiter;
     private final ProjectionClientChunkTracker clientChunkTracker;
     private final ProjectionWorldViewProvider viewProvider;
+    private final RtpRimRenderer rtpRimRenderer;
     private final Map<UUID, Map<UUID, PortalProjector>> projectors;
     private final Map<UUID, Map<UUID, Long>> interestGraceUntil;
     private final Map<UUID, Integer> observerPortalCursors;
@@ -71,6 +78,7 @@ public class ProjectionManager implements Listener {
     private long tickCount;
     private boolean firstTickLogged;
     private volatile boolean closed;
+    private volatile RtpProjectionProvider rtpProjectionProvider;
     private int taskId;
     private int currentInterval;
 
@@ -80,6 +88,7 @@ public class ProjectionManager implements Listener {
             : ProjectionWorldViewProvider.live();
         this.clientChunkTracker = clientChunkTracker;
         this.claimArbiter = new ProjectionClaimArbiter(viewProvider, clientChunkTracker);
+        this.rtpRimRenderer = new RtpRimRenderer();
         this.projectors = new ConcurrentHashMap<UUID, Map<UUID, PortalProjector>>();
         this.interestGraceUntil = new ConcurrentHashMap<UUID, Map<UUID, Long>>();
         this.observerPortalCursors = new ConcurrentHashMap<UUID, Integer>();
@@ -99,6 +108,10 @@ public class ProjectionManager implements Listener {
         this.taskId = -1;
         this.currentInterval = -1;
         scheduleTick();
+    }
+
+    public void setRtpProjectionProvider(RtpProjectionProvider provider) {
+        rtpProjectionProvider = provider;
     }
 
     @EventHandler
@@ -270,8 +283,13 @@ public class ProjectionManager implements Listener {
 
     private List<ILocalPortal> collectActiveProjectors() {
         List<ILocalPortal> active = new ArrayList<ILocalPortal>();
+        RtpProjectionProvider provider = rtpProjectionProvider;
 
         for (ILocalPortal portal : Wormholes.portalManager.getLocalPortals()) {
+            if (provider != null && provider.supports(portal)) {
+                active.add(portal);
+                continue;
+            }
             if (!portal.supportsProjections() || !portal.isProjecting()) {
                 continue;
             }
@@ -361,6 +379,8 @@ public class ProjectionManager implements Listener {
         Location eye = observer.getEyeLocation();
         claimArbiter.retryPending(observer, observerWorld);
         List<ILocalPortal> interested = new ArrayList<ILocalPortal>();
+        Map<UUID, PortalProjector.RtpProjectionTarget> rtpTargets = null;
+        RtpProjectionProvider provider = rtpProjectionProvider;
         for (ILocalPortal portal : active) {
             Location center = portal.getCenter();
             if (center == null || center.getWorld() == null) {
@@ -372,6 +392,16 @@ public class ProjectionManager implements Listener {
             AxisAlignedBB view = portal.getView();
             if (view == null || !view.contains(observerLocation)) {
                 continue;
+            }
+            ProjectionResolution resolution = resolveProjection(provider, portal, observer, rtpRimRenderer);
+            if (!resolution.projectable()) {
+                continue;
+            }
+            if (resolution.target() != null) {
+                if (rtpTargets == null) {
+                    rtpTargets = new HashMap<UUID, PortalProjector.RtpProjectionTarget>(4);
+                }
+                rtpTargets.put(portal.getId(), resolution.target());
             }
             boolean liveInterest = isObserverProjectionInterested(eye, center, portal);
             if (!liveInterest && !isInsideInterestGrace(portal, observerId, frameTick)) {
@@ -386,12 +416,14 @@ public class ProjectionManager implements Listener {
             interested.add(portal);
             lastInterestedObservers.incrementAndGet();
         }
+        Map<UUID, PortalProjector.RtpProjectionTarget> resolvedRtpTargets = rtpTargets == null ? Map.of() : rtpTargets;
         interested.sort(Comparator.comparingDouble(portal -> distanceSquared(eye, portal)));
         Set<UUID> interestedIds = new HashSet<UUID>(interested.size());
         for (ILocalPortal portal : interested) {
             interestedIds.add(portal.getId());
         }
         closeUnplannedForObserver(observerId, interestedIds);
+        updateExistingRtpTargets(observerId, resolvedRtpTargets);
         if ((!updateBlocks && !updateEntities) || interested.isEmpty()) {
             remainingProjectors.addAndGet(reservedBudget);
             return;
@@ -423,7 +455,7 @@ public class ProjectionManager implements Listener {
             lastScheduledProjectors.addAndGet(scheduledPortals.size());
             lastDeferredProjectors.addAndGet(deferred);
         }
-        projectActiveObserver(observer, scheduledPortals, observerUpdatesBlocks, updateEntities);
+        projectActiveObserver(observer, scheduledPortals, resolvedRtpTargets, observerUpdatesBlocks, updateEntities);
     }
 
     static int[] fairBudgetAllocations(int observerCount, int totalBudget, int perObserverBudget, long frameTick) {
@@ -467,14 +499,17 @@ public class ProjectionManager implements Listener {
         return result;
     }
 
-    private void projectActiveObserver(Player observer, List<ILocalPortal> scheduledPortals, boolean updateBlocks, boolean updateEntities) {
+    private void projectActiveObserver(Player observer, List<ILocalPortal> scheduledPortals,
+                                       Map<UUID, PortalProjector.RtpProjectionTarget> rtpTargets,
+                                       boolean updateBlocks, boolean updateEntities) {
         if (closed || observer == null || !observer.isOnline()) {
             return;
         }
         claimArbiter.beginFrame(observer, observer.getWorld(), false);
         try {
             for (ILocalPortal portal : scheduledPortals) {
-                if (!isPortalStillProjectable(portal)) {
+                PortalProjector.RtpProjectionTarget rtpTarget = rtpTargets.get(portal.getId());
+                if (!isPortalStillProjectable(portal, rtpTarget != null)) {
                     continue;
                 }
                 Map<UUID, PortalProjector> portalProjectors = projectors.get(portal.getId());
@@ -500,6 +535,7 @@ public class ProjectionManager implements Listener {
                             + " observerLoc=" + formatLoc(observer.getLocation()));
                 }
 
+                projector.setRtpProjectionTarget(rtpTarget);
                 try {
                     projector.project(updateBlocks, updateEntities);
                 } catch (Throwable ex) {
@@ -526,6 +562,20 @@ public class ProjectionManager implements Listener {
         return 0;
     }
 
+    private void updateExistingRtpTargets(UUID observerId,
+                                          Map<UUID, PortalProjector.RtpProjectionTarget> rtpTargets) {
+        for (Map.Entry<UUID, PortalProjector.RtpProjectionTarget> entry : rtpTargets.entrySet()) {
+            Map<UUID, PortalProjector> portalProjectors = projectors.get(entry.getKey());
+            if (portalProjectors == null) {
+                continue;
+            }
+            PortalProjector projector = portalProjectors.get(observerId);
+            if (projector != null) {
+                projector.setRtpProjectionTarget(entry.getValue());
+            }
+        }
+    }
+
     private void closeUnplannedForObserver(UUID observerId, Set<UUID> interestedPortalIds) {
         for (Map.Entry<UUID, Map<UUID, PortalProjector>> entry : projectors.entrySet()) {
             if (interestedPortalIds.contains(entry.getKey())) {
@@ -545,11 +595,58 @@ public class ProjectionManager implements Listener {
         }
     }
 
-    private boolean isPortalStillProjectable(ILocalPortal portal) {
+    static ProjectionResolution resolveProjection(RtpProjectionProvider provider, ILocalPortal portal,
+                                                  Player observer, RtpRimRenderer rimRenderer) {
+        Objects.requireNonNull(portal, "portal");
+        Objects.requireNonNull(observer, "observer");
+        boolean rtp = provider != null && provider.supports(portal);
+        RtpProjectionResult result = null;
+        if (rtp) {
+            RtpRimRenderer requiredRimRenderer = Objects.requireNonNull(rimRenderer, "rimRenderer");
+            result = Objects.requireNonNull(provider.touch(portal, observer), "RTP projection result");
+            RtpRimRenderer.Input input = new RtpRimRenderer.Input(
+                    observer.getUniqueId(),
+                    result.view(),
+                    result.rimEnabled(),
+                    result.attended(),
+                    result.rotationMode(),
+                    result.phase(),
+                    result.elapsedMillis(),
+                    result.durationMillis());
+            Optional<RtpRimRenderer.Sample> sample = requiredRimRenderer.calculate(input);
+            if (sample.isPresent()) {
+                provider.dispatchRim(portal, observer, sample.get());
+            }
+        }
+        if (!portal.supportsProjections() || !portal.isProjecting() || !portal.isOpen()) {
+            return ProjectionResolution.suppressed(rtp);
+        }
+        if (!rtp) {
+            if (!portal.isMirrorMode() && !portal.hasTunnel()) {
+                return ProjectionResolution.suppressed(false);
+            }
+            return ProjectionResolution.standard();
+        }
+        if (!result.projectionEnabled()) {
+            return ProjectionResolution.suppressed(true);
+        }
+        Optional<RtpProjectionView.ReadyData> readyData = result.view().readyFor(observer.getUniqueId());
+        if (readyData.isEmpty()) {
+            return ProjectionResolution.suppressed(true);
+        }
+        RtpProjectionView.ReadyData ready = readyData.get();
+        World targetWorld = provider.resolveTargetWorld(ready.target().worldKey());
+        if (targetWorld == null) {
+            return ProjectionResolution.suppressed(true);
+        }
+        return ProjectionResolution.rtp(PortalProjector.RtpProjectionTarget.from(ready, targetWorld));
+    }
+
+    private boolean isPortalStillProjectable(ILocalPortal portal, boolean rtp) {
         if (portal == null || !portal.supportsProjections() || !portal.isProjecting() || !portal.isOpen()) {
             return false;
         }
-        if (!portal.isMirrorMode() && !portal.hasTunnel()) {
+        if (!rtp && !portal.isMirrorMode() && !portal.hasTunnel()) {
             return false;
         }
         return true;
@@ -1004,6 +1101,52 @@ public class ProjectionManager implements Listener {
         }
         claimArbiter.clear();
         viewProvider.close();
+    }
+
+    public interface RtpProjectionProvider {
+        boolean supports(ILocalPortal portal);
+
+        RtpProjectionResult touch(ILocalPortal portal, Player observer);
+
+        World resolveTargetWorld(String worldKey);
+
+        void dispatchRim(ILocalPortal portal, Player observer, RtpRimRenderer.Sample sample);
+    }
+
+    public record RtpProjectionResult(
+            RtpProjectionView view,
+            boolean projectionEnabled,
+            boolean rimEnabled,
+            boolean attended,
+            RtpRotationMode rotationMode,
+            RtpRimRenderer.Phase phase,
+            long elapsedMillis,
+            long durationMillis) {
+        public RtpProjectionResult {
+            Objects.requireNonNull(view, "view");
+            Objects.requireNonNull(rotationMode, "rotationMode");
+            Objects.requireNonNull(phase, "phase");
+            if (elapsedMillis < 0L) {
+                throw new IllegalArgumentException("elapsedMillis must be non-negative");
+            }
+            if (durationMillis < 0L) {
+                throw new IllegalArgumentException("durationMillis must be non-negative");
+            }
+        }
+    }
+
+    record ProjectionResolution(boolean projectable, boolean rtp, PortalProjector.RtpProjectionTarget target) {
+        private static ProjectionResolution standard() {
+            return new ProjectionResolution(true, false, null);
+        }
+
+        private static ProjectionResolution rtp(PortalProjector.RtpProjectionTarget target) {
+            return new ProjectionResolution(true, true, Objects.requireNonNull(target, "target"));
+        }
+
+        private static ProjectionResolution suppressed(boolean rtp) {
+            return new ProjectionResolution(false, rtp, null);
+        }
     }
 
     private static final class CloseTaskState {

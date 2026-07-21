@@ -17,6 +17,7 @@ import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.IPortal;
 import art.arcane.wormholes.portal.ITunnel;
 import art.arcane.wormholes.portal.ProjectionMode;
+import art.arcane.wormholes.portal.PortalType;
 
 public final class PortalFactoryOneWayTest
 {
@@ -93,6 +94,36 @@ public final class PortalFactoryOneWayTest
 		assertFalse(PortalFactory.linkBidirectional(portal, portal));
 	}
 
+	@Test
+	public void factoriesRejectRtpSourceBeforeAnyMutation()
+	{
+		PortalState sourceState = new PortalState();
+		PortalState destinationState = new PortalState();
+		sourceState.type = PortalType.RTP;
+		ILocalPortal source = sourceState.proxy();
+		ILocalPortal destination = destinationState.proxy();
+
+		assertFalse(PortalFactory.linkOneWay(source, destination));
+		assertFalse(PortalFactory.linkBidirectional(source, destination));
+		assertEquals(0, sourceState.mutations);
+		assertEquals(0, destinationState.mutations);
+	}
+
+	@Test
+	public void factoriesRejectRtpDestinationBeforeAnyMutation()
+	{
+		PortalState sourceState = new PortalState();
+		PortalState destinationState = new PortalState();
+		destinationState.type = PortalType.RTP;
+		ILocalPortal source = sourceState.proxy();
+		ILocalPortal destination = destinationState.proxy();
+
+		assertFalse(PortalFactory.linkOneWay(source, destination));
+		assertFalse(PortalFactory.linkBidirectional(source, destination));
+		assertEquals(0, sourceState.mutations);
+		assertEquals(0, destinationState.mutations);
+	}
+
 	private static ITunnel unresolvedTunnel()
 	{
 		return (ITunnel) Proxy.newProxyInstance(ITunnel.class.getClassLoader(), new Class<?>[] { ITunnel.class }, (proxy, method, arguments) -> switch(method.getName())
@@ -114,6 +145,7 @@ public final class PortalFactoryOneWayTest
 		private boolean incoming;
 		private boolean unlinked;
 		private ProjectionMode projectionMode = ProjectionMode.ON;
+		private PortalType type = PortalType.PORTAL;
 		private ITunnel tunnel;
 		private int mutations;
 
@@ -129,6 +161,7 @@ public final class PortalFactoryOneWayTest
 			{
 				case "setDestination" -> assignDestination(arguments);
 				case "getId" -> id;
+				case "getType" -> type;
 				case "isDestroyed" -> Boolean.FALSE;
 				case "hasTunnel" -> Boolean.valueOf(tunnel != null && tunnel.getDestination() != null);
 				case "getTunnel" -> tunnel;

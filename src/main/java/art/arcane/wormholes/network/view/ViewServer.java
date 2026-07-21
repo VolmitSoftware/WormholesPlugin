@@ -8,6 +8,9 @@ import com.github.retrooper.packetevents.protocol.player.UserProfile;
 import art.arcane.wormholes.EffectManager;
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.chunk.BukkitChunkLeaseProvider;
+import art.arcane.wormholes.chunk.ChunkLease;
+import art.arcane.wormholes.chunk.ChunkLeaseRegistry;
 import art.arcane.wormholes.config.toml.NetworkConfig;
 import art.arcane.wormholes.network.NetworkManager;
 import art.arcane.wormholes.network.WireMessage;
@@ -72,7 +75,6 @@ public final class ViewServer implements Listener {
     private final NetworkManager network;
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
     private final Map<UUID, TicketLease> gatewayTickets = new ConcurrentHashMap<>();
-    private final Map<ChunkTicketKey, TicketHold> chunkTickets = new HashMap<>();
     private final Map<BlockData, String> blockDataStrings = new ConcurrentHashMap<>();
     private final ChunkBulkBuilder chunkBulkBuilder;
     private final AtomicBoolean active = new AtomicBoolean(true);
@@ -223,49 +225,62 @@ public final class ViewServer implements Listener {
         }
     }
 
-    private record ChunkTicketKey(UUID worldId, int chunkX, int chunkZ) {
-    }
-
     record BulkRetryKey(UUID subscriptionId, String peerName, long chunkKey, long bulkGeneration) {
     }
 
     private record BulkCompleteKey(UUID subscriptionId, String peerName) {
     }
 
-    private static final class TicketHold {
-        private final World world;
-        private final int chunkX;
-        private final int chunkZ;
-        private int references;
-        private boolean applied;
-        private boolean applying;
-
-        private TicketHold(World world, int chunkX, int chunkZ) {
-            this.world = world;
-            this.chunkX = chunkX;
-            this.chunkZ = chunkZ;
-            this.references = 1;
-            this.applied = false;
-            this.applying = false;
-        }
-    }
-
-    private static final class TicketLease {
+    static final class TicketLease implements AutoCloseable {
         private final UUID portalId;
         private final World world;
         private final ViewBox box;
         private final List<long[]> columns;
+        private final List<ChunkLease> leases;
         private final AtomicBoolean released = new AtomicBoolean(false);
 
-        private TicketLease(UUID portalId, World world, ViewBox box) {
+        TicketLease(UUID portalId, World world, ViewBox box) {
             this.portalId = portalId;
             this.world = world;
             this.box = box;
             this.columns = columnsFor(box);
+            this.leases = new ArrayList<>(columns.size());
+            ChunkLeaseRegistry<World> registry = BukkitChunkLeaseProvider.registry();
+            for (long[] column : columns) {
+                leases.add(registry.retain(world, world.getUID(), (int) column[0], (int) column[1]));
+            }
         }
 
         private boolean matches(World candidateWorld, ViewBox candidateBox) {
             return world.equals(candidateWorld) && box.equals(candidateBox);
+        }
+
+        private synchronized void ensure() {
+            if (released.get()) {
+                return;
+            }
+            ChunkLeaseRegistry<World> registry = BukkitChunkLeaseProvider.registry();
+            for (int index = 0; index < leases.size(); index++) {
+                ChunkLease lease = leases.get(index);
+                if (!lease.ready().isDone() || lease.ready().getNow(Boolean.FALSE).booleanValue()) {
+                    continue;
+                }
+                long[] column = columns.get(index);
+                lease.close();
+                leases.set(index, registry.retain(world, world.getUID(), (int) column[0], (int) column[1]));
+            }
+        }
+
+        @Override
+        public void close() {
+            if (!released.compareAndSet(false, true)) {
+                return;
+            }
+            synchronized (this) {
+                for (ChunkLease lease : leases) {
+                    lease.close();
+                }
+            }
         }
     }
 
@@ -438,7 +453,6 @@ public final class ViewServer implements Listener {
         bulkRetryCoordinator.clear();
         bulkCompleteRetries.clear();
         releaseAllGatewayTickets();
-        releaseAllChunkTickets();
     }
 
     public void syncGatewayTickets() {
@@ -1491,113 +1505,15 @@ public final class ViewServer implements Listener {
     }
 
     private TicketLease retainTicketLease(UUID portalId, World world, ViewBox box) {
-        TicketLease lease = new TicketLease(portalId, world, box);
-        for (long[] column : lease.columns) {
-            retainChunkTicket(world, (int) column[0], (int) column[1]);
-        }
-        return lease;
+        return new TicketLease(portalId, world, box);
     }
 
     private void releaseTicketLease(TicketLease lease) {
-        if (!lease.released.compareAndSet(false, true)) {
-            return;
-        }
-        for (long[] column : lease.columns) {
-            int chunkX = (int) column[0];
-            int chunkZ = (int) column[1];
-            releaseChunkTicket(lease.world, chunkX, chunkZ);
-        }
-    }
-
-    private void retainChunkTicket(World world, int chunkX, int chunkZ) {
-        ChunkTicketKey key = new ChunkTicketKey(world.getUID(), chunkX, chunkZ);
-        synchronized (chunkTickets) {
-            TicketHold existing = chunkTickets.get(key);
-            if (existing != null) {
-                existing.references++;
-                return;
-            }
-            TicketHold hold = new TicketHold(world, chunkX, chunkZ);
-            chunkTickets.put(key, hold);
-            hold.applying = true;
-            applyChunkTicket(key, hold);
-        }
+        lease.close();
     }
 
     private void ensureTicketLease(TicketLease lease) {
-        for (long[] column : lease.columns) {
-            ensureChunkTicket(lease.world, (int) column[0], (int) column[1]);
-        }
-    }
-
-    private void ensureChunkTicket(World world, int chunkX, int chunkZ) {
-        ChunkTicketKey key = new ChunkTicketKey(world.getUID(), chunkX, chunkZ);
-        TicketHold hold;
-        synchronized (chunkTickets) {
-            hold = chunkTickets.get(key);
-            if (hold == null || hold.applied || hold.applying || hold.references <= 0) {
-                return;
-            }
-            hold.applying = true;
-        }
-        applyChunkTicket(key, hold);
-    }
-
-    private void applyChunkTicket(ChunkTicketKey key, TicketHold hold) {
-        WormholesPlatform.loadChunk(Wormholes.instance, hold.world, hold.chunkX, hold.chunkZ).whenComplete((chunk, error) -> {
-            if (error != null || chunk == null) {
-                synchronized (chunkTickets) {
-                    hold.applying = false;
-                    if (chunkTickets.get(key) == hold && hold.references <= 0) {
-                        chunkTickets.remove(key);
-                    }
-                }
-                return;
-            }
-            FoliaScheduler.runRegion(Wormholes.instance, hold.world, hold.chunkX, hold.chunkZ, () -> {
-                synchronized (chunkTickets) {
-                    if (chunkTickets.get(key) != hold || hold.references <= 0) {
-                        return;
-                    }
-                }
-                chunk.addPluginChunkTicket(Wormholes.instance);
-                boolean keepTicket;
-                synchronized (chunkTickets) {
-                    keepTicket = chunkTickets.get(key) == hold && hold.references > 0;
-                    if (keepTicket) {
-                        hold.applied = true;
-                    }
-                    hold.applying = false;
-                }
-                if (!keepTicket) {
-                    chunk.removePluginChunkTicket(Wormholes.instance);
-                }
-            });
-        });
-    }
-
-    private void releaseChunkTicket(World world, int chunkX, int chunkZ) {
-        ChunkTicketKey key = new ChunkTicketKey(world.getUID(), chunkX, chunkZ);
-        boolean removeTicket = false;
-        synchronized (chunkTickets) {
-            TicketHold hold = chunkTickets.get(key);
-            if (hold == null) {
-                return;
-            }
-            hold.references--;
-            if (hold.references > 0) {
-                return;
-            }
-            chunkTickets.remove(key);
-            removeTicket = hold.applied;
-        }
-        if (removeTicket) {
-            FoliaScheduler.runRegion(Wormholes.instance, world, chunkX, chunkZ, () -> {
-                if (world.isChunkLoaded(chunkX, chunkZ)) {
-                    world.getChunkAt(chunkX, chunkZ).removePluginChunkTicket(Wormholes.instance);
-                }
-            });
-        }
+        lease.ensure();
     }
 
     private void releaseAllGatewayTickets() {
@@ -1608,24 +1524,6 @@ public final class ViewServer implements Listener {
         }
         for (TicketLease lease : leases) {
             releaseTicketLease(lease);
-        }
-    }
-
-    private void releaseAllChunkTickets() {
-        List<TicketHold> holds;
-        synchronized (chunkTickets) {
-            holds = new ArrayList<>(chunkTickets.values());
-            chunkTickets.clear();
-        }
-        for (TicketHold hold : holds) {
-            if (!hold.applied) {
-                continue;
-            }
-            FoliaScheduler.runRegion(Wormholes.instance, hold.world, hold.chunkX, hold.chunkZ, () -> {
-                if (hold.world.isChunkLoaded(hold.chunkX, hold.chunkZ)) {
-                    hold.world.getChunkAt(hold.chunkX, hold.chunkZ).removePluginChunkTicket(Wormholes.instance);
-                }
-            });
         }
     }
 

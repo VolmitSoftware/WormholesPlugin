@@ -507,7 +507,8 @@ public final class TraversalService implements Listener {
             if (source != null) {
                 source.confirmDeparture(player, handoff.traversive());
             }
-            if (!PlayerTransfer.send(player, peer, handoff.transferMethod())) {
+            String privateEndpoint = network.privatePlayerEndpoint(peerName);
+            if (!PlayerTransfer.send(player, peer, handoff.transferMethod(), privateEndpoint)) {
                 network.send(peerName, new WireMessage.HandoffCancel(ack.transferId(), handoff.playerId()));
                 unlockTransfer(handoff.playerId());
                 outboundRateLimiter.penalize(handoff.playerId(), System.currentTimeMillis(), handoffRateLimitMillis());

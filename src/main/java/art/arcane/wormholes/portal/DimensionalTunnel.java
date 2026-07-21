@@ -31,24 +31,33 @@ public class DimensionalTunnel extends Tunnel
 		return resolveDestination() != null;
 	}
 
+	boolean hasRtpDestination()
+	{
+		ILocalPortal destination = findDestination();
+		return destination != null && destination.getType() == PortalType.RTP;
+	}
+
 	private ILocalPortal resolveDestination()
 	{
-		if(portal instanceof ILocalPortal)
+		ILocalPortal resolved = findDestination();
+		if(resolved == null || resolved.getType() == PortalType.RTP)
 		{
-			return (ILocalPortal) portal;
+			return null;
 		}
+		portal = resolved;
+		return resolved;
+	}
 
+	private ILocalPortal findDestination()
+	{
+		if(portal instanceof ILocalPortal localPortal)
+		{
+			return localPortal;
+		}
 		if(pendingDestinationId == null || Wormholes.portalManager == null)
 		{
 			return null;
 		}
-
-		ILocalPortal resolved = Wormholes.portalManager.getLocalPortal(pendingDestinationId);
-		if(resolved != null)
-		{
-			portal = resolved;
-		}
-
-		return resolved;
+		return Wormholes.portalManager.getLocalPortal(pendingDestinationId);
 	}
 }

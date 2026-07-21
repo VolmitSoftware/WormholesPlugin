@@ -6,6 +6,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
 
@@ -29,6 +30,7 @@ import art.arcane.wormholes.portal.PortalFrame;
 import art.arcane.wormholes.portal.PortalStructure;
 import art.arcane.wormholes.portal.RemotePortal;
 import art.arcane.wormholes.portal.UniversalTunnel;
+import art.arcane.wormholes.portal.rtp.RtpProjectionView;
 import art.arcane.wormholes.render.view.ProjectionEntityView;
 import art.arcane.wormholes.render.view.ProjectionWorldView;
 import art.arcane.wormholes.render.view.ProjectionWorldViewProvider;
@@ -120,6 +122,7 @@ public final class PortalProjector {
     private double cachedFrustumNearPlanePadding;
     private double cachedFrustumCullingRatio;
     private double cachedFrustumAperturePadding;
+    private RtpProjectionTarget rtpProjectionTarget;
 
     public PortalProjector(ILocalPortal portal, Player observer, ProjectionClaimArbiter claimArbiter,
                            ProjectionWorldViewProvider viewProvider, BooleanSupplier activeGuard) {
@@ -178,6 +181,20 @@ public final class PortalProjector {
 
     public Player getObserver() {
         return observer;
+    }
+
+    public void setRtpProjectionTarget(RtpProjectionTarget target) {
+        RtpProjectionTarget previous = rtpProjectionTarget;
+        rtpProjectionTarget = target;
+        if (target == null) {
+            if (previous != null) {
+                invalidateRtpDestinationState();
+            }
+            return;
+        }
+        if (target.requiresDestinationInvalidation(previous)) {
+            invalidateRtpDestinationState();
+        }
     }
 
     public boolean isClosed() {
@@ -253,9 +270,11 @@ public final class PortalProjector {
             return;
         }
 
-        boolean mirrorMode = portal.isMirrorMode();
+        RtpProjectionTarget rtpTarget = rtpProjectionTarget;
+        boolean rtpMode = rtpTarget != null;
+        boolean mirrorMode = !rtpMode && portal.isMirrorMode();
         int mirrorRotationQuarterTurns = mirrorMode ? portal.getMirrorRotation().getQuarterTurns() : 0;
-        if (!mirrorMode && !portal.hasTunnel()) {
+        if (!rtpMode && !mirrorMode && !portal.hasTunnel()) {
             Wormholes.v("[Projector] portal " + portal.getName() + " no longer linked, closing projector");
             close();
             return;
@@ -266,7 +285,11 @@ public final class PortalProjector {
         ProjectionWorldView remoteView = null;
         World localWorld = portal.getWorld();
         World destWorld;
-        if (mirrorMode) {
+        if (rtpMode) {
+            dest = null;
+            destAnchor = null;
+            destWorld = rtpTarget.world();
+        } else if (mirrorMode) {
             dest = portal;
             destAnchor = portal;
             destWorld = localWorld;
@@ -315,15 +338,18 @@ public final class PortalProjector {
             return;
         }
 
+        double destinationOriginX = rtpMode ? rtpTarget.originX() : destAnchor.getOrigin().getX();
+        double destinationOriginY = rtpMode ? rtpTarget.originY() : destAnchor.getOrigin().getY();
+        double destinationOriginZ = rtpMode ? rtpTarget.originZ() : destAnchor.getOrigin().getZ();
         int localOriginBlockX = (int) Math.floor(portal.getOrigin().getX());
         int localOriginBlockZ = (int) Math.floor(portal.getOrigin().getZ());
         if (!localView.isChunkReady(localOriginBlockX, localOriginBlockZ)) {
             localView.requestChunk(localOriginBlockX, localOriginBlockZ);
             return;
         }
-        if (destAnchor != null && destView.getWorld() != null) {
-            int remoteOriginBlockX = (int) Math.floor(destAnchor.getOrigin().getX());
-            int remoteOriginBlockZ = (int) Math.floor(destAnchor.getOrigin().getZ());
+        if (destView.getWorld() != null) {
+            int remoteOriginBlockX = (int) Math.floor(destinationOriginX);
+            int remoteOriginBlockZ = (int) Math.floor(destinationOriginZ);
             if (!destView.isChunkReady(remoteOriginBlockX, remoteOriginBlockZ)) {
                 destView.requestChunk(remoteOriginBlockX, remoteOriginBlockZ);
                 return;
@@ -340,7 +366,7 @@ public final class PortalProjector {
         if (remoteView instanceof RemoteWorldView remoteResendView) {
             maybeForceRemoteResend(remoteResendView);
         }
-        boolean stableResample = computeStableResample(destWorld, destAnchor, destView);
+        boolean stableResample = computeStableResample(destWorld, destinationOriginX, destinationOriginZ, destView);
         if (canReuseProjection(eye, stableResample, remoteView == null)) {
             lastReuseSkips++;
             lastBlockChanges = 0;
@@ -393,13 +419,13 @@ public final class PortalProjector {
         int zb = (int) Math.floor(area.getZb());
 
         PortalFrame localFrame = portal.getFrame();
-        PortalFrame remoteFrame = mirrorMode ? localFrame.flipNormal() : destAnchor.getFrame();
+        PortalFrame remoteFrame = rtpMode ? rtpTarget.frame() : mirrorMode ? localFrame.flipNormal() : destAnchor.getFrame();
         double localOriginX = portal.getOrigin().getX();
         double localOriginY = portal.getOrigin().getY();
         double localOriginZ = portal.getOrigin().getZ();
-        double remoteOriginX = mirrorMode ? localOriginX : destAnchor.getOrigin().getX();
-        double remoteOriginY = mirrorMode ? localOriginY : destAnchor.getOrigin().getY();
-        double remoteOriginZ = mirrorMode ? localOriginZ : destAnchor.getOrigin().getZ();
+        double remoteOriginX = mirrorMode ? localOriginX : destinationOriginX;
+        double remoteOriginY = mirrorMode ? localOriginY : destinationOriginY;
+        double remoteOriginZ = mirrorMode ? localOriginZ : destinationOriginZ;
 
         double facingX = localFrame.getNormal().x();
         double facingY = localFrame.getNormal().y();
@@ -983,7 +1009,7 @@ public final class PortalProjector {
                                          boolean hasVisibleProjection,
                                          PortalFrame projectionLocalFrame,
                                          PortalFrame projectionRemoteFrame) {
-        if (!hasVisibleProjection) {
+        if (!hasVisibleProjection || destAnchor == null) {
             entityRenderer.close(observer);
             return;
         }
@@ -1087,7 +1113,8 @@ public final class PortalProjector {
         return built;
     }
 
-    private boolean computeStableResample(World destWorld, IPortal destAnchor, ProjectionWorldView sourceView) {
+    private boolean computeStableResample(World destWorld, double destinationOriginX, double destinationOriginZ,
+                                          ProjectionWorldView sourceView) {
         if (!firstProjectionDone) {
             return true;
         }
@@ -1105,16 +1132,14 @@ public final class PortalProjector {
         if ((projectCallCount % cadence) != 0L) {
             return false;
         }
-        return destinationDirty(destWorld, destAnchor);
+        return destinationDirty(destWorld, destinationOriginX, destinationOriginZ);
     }
 
-    private boolean destinationDirty(World destWorld, IPortal destAnchor) {
-        if (destWorld == null || destAnchor == null || Wormholes.projectionChangeTracker == null) {
+    private boolean destinationDirty(World destWorld, double originX, double originZ) {
+        if (destWorld == null || Wormholes.projectionChangeTracker == null) {
             return true;
         }
         double depth = portal.getNetworkViewDepth() + 2.0D;
-        double originX = destAnchor.getOrigin().getX();
-        double originZ = destAnchor.getOrigin().getZ();
         int minChunkX = ((int) Math.floor(originX - depth)) >> 4;
         int maxChunkX = ((int) Math.floor(originX + depth)) >> 4;
         int minChunkZ = ((int) Math.floor(originZ - depth)) >> 4;
@@ -1171,6 +1196,16 @@ public final class PortalProjector {
         }
         transformedBlockCache.put(source, transformed);
         return transformed;
+    }
+
+    private void invalidateRtpDestinationState() {
+        pendingRemoteResample = true;
+        lastSourceViewRevision = -1L;
+        lastResampleVersion = -1L;
+        remoteSampleCache.clear();
+        recursivePortalCandidates.clear();
+        recursivePortalIndexes.clear();
+        entityRenderer.close(observer);
     }
 
     public synchronized void close() {
@@ -1300,6 +1335,47 @@ public final class PortalProjector {
         }
         return "[" + box.getXa() + "," + box.getYa() + "," + box.getZa()
             + " -> " + box.getXb() + "," + box.getYb() + "," + box.getZb() + "]";
+    }
+
+    public record RtpProjectionTarget(World world, double originX, double originY, double originZ,
+                                      PortalFrame frame, long routeRevision) {
+        public RtpProjectionTarget {
+            Objects.requireNonNull(world, "world");
+            Objects.requireNonNull(frame, "frame");
+            if (!Double.isFinite(originX) || !Double.isFinite(originY) || !Double.isFinite(originZ)) {
+                throw new IllegalArgumentException("RTP projection target coordinates must be finite");
+            }
+            if (routeRevision < 0L) {
+                throw new IllegalArgumentException("routeRevision must be non-negative");
+            }
+        }
+
+        public static RtpProjectionTarget from(RtpProjectionView.ReadyData readyData, World world) {
+            RtpProjectionView.ReadyData requiredReadyData = Objects.requireNonNull(readyData, "readyData");
+            RtpProjectionView.Target target = requiredReadyData.target();
+            Direction normal = direction(target.forward(), "forward").reverse();
+            Direction right = direction(target.right(), "right");
+            Direction up = direction(target.up(), "up");
+            PortalFrame frame = new PortalFrame(normal, right, up);
+            RtpProjectionView.Point3 safeFeet = target.safeFeet();
+            return new RtpProjectionTarget(world, safeFeet.x(), safeFeet.y(), safeFeet.z(), frame,
+                    requiredReadyData.routeRevision());
+        }
+
+        public boolean requiresDestinationInvalidation(RtpProjectionTarget previous) {
+            return previous == null || routeRevision != previous.routeRevision;
+        }
+
+        private static Direction direction(RtpProjectionView.Vector3 vector, String name) {
+            RtpProjectionView.Vector3 requiredVector = Objects.requireNonNull(vector, name);
+            double lengthSquared = requiredVector.x() * requiredVector.x()
+                    + requiredVector.y() * requiredVector.y()
+                    + requiredVector.z() * requiredVector.z();
+            if (lengthSquared <= 1.0E-12D) {
+                throw new IllegalArgumentException(name + " must not be zero");
+            }
+            return Direction.closest(requiredVector.x(), requiredVector.y(), requiredVector.z());
+        }
     }
 
     enum ProjectedSampleKind {

@@ -4,5 +4,6 @@ public enum PortalType
 {
 	PORTAL,
 	WORMHOLE,
-	GATEWAY;
+	GATEWAY,
+	RTP;
 }

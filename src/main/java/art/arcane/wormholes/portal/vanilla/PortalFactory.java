@@ -132,7 +132,7 @@ public final class PortalFactory
 
 	private static boolean canLinkEndpoint(ILocalPortal portal)
 	{
-		if(portal.isDestroyed())
+		if(portal.getType() == PortalType.RTP || portal.isDestroyed())
 		{
 			return false;
 		}
