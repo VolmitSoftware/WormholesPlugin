@@ -134,8 +134,10 @@ tasks.register('compileSpigotCompatibility', JavaCompile) {
 }
 
 gradle.includedBuilds.find { includedBuild -> includedBuild.name == 'VolmLib' }?.with { includedBuild ->
+    File spigotClasses = new File(includedBuild.projectDir, 'shared/build/classes/java/spigotCompatibility')
     tasks.named('compileSpigotCompatibility').configure {
         dependsOn(includedBuild.task(':shared:compileSpigotCompatibility'))
+        classpath = files(spigotClasses) + classpath
     }
 }
 

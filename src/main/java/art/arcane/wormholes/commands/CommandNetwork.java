@@ -2,67 +2,84 @@ package art.arcane.wormholes.commands;
 
 import art.arcane.volmlib.util.director.annotations.Director;
 import art.arcane.volmlib.util.director.annotations.Param;
+import art.arcane.volmlib.util.localization.MessageArgs;
+import art.arcane.volmlib.util.localization.MessageArgument;
+import art.arcane.volmlib.util.localization.TextKey;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.config.toml.NetworkConfig;
+import art.arcane.wormholes.localization.WormholesLocalization;
+import art.arcane.wormholes.localization.WormholesMessages;
 import art.arcane.wormholes.network.NetworkManager;
-import org.bukkit.ChatColor;
+import art.arcane.wormholes.service.WormholesAudience;
 import org.bukkit.command.CommandSender;
 
 import java.util.List;
+import java.util.Locale;
 
-@Director(name = "network", description = "Cross-server wormhole network")
+@Director(name = "network", descriptionKey = "command.help.network", description = "Cross-server wormhole network")
 public class CommandNetwork {
-    @Director(name = "import", sync = true, description = "Import a portal code from another server (saves an internal route; link via a gateway's Link menu)")
+    @Director(name = "import", sync = true, descriptionKey = "command.help.network.import", description = "Import a portal code from another server (saves an internal route; link via a gateway's Link menu)")
     public void importCode(@Param(name = "sender", contextual = true) CommandSender sender,
-                           @Param(name = "code", description = "Portal code from the other server's Export button") String code) {
+                           @Param(name = "code", descriptionKey = "command.help.network.import.code", description = "Portal code from the other server's Export button") String code) {
         if (!sender.hasPermission("wormholes.admin.network")) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
+            send(sender, WormholesMessages.COMMAND_NO_PERMISSION);
             return;
         }
         if (Wormholes.importExportService == null) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Networking is not initialized.");
+            send(sender, WormholesMessages.NETWORK_NOT_INITIALIZED);
             return;
         }
         Wormholes.importExportService.importCode(sender, null, code);
     }
 
-    @Director(name = "status", sync = true, description = "Show peer connection status")
+    @Director(name = "status", sync = true, descriptionKey = "command.help.network.status", description = "Show peer connection status")
     public void status(@Param(name = "sender", contextual = true) CommandSender sender) {
         if (!sender.hasPermission("wormholes.admin.network")) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
+            send(sender, WormholesMessages.COMMAND_NO_PERMISSION);
             return;
         }
         NetworkManager network = Wormholes.networkManager;
         NetworkConfig config = Wormholes.settings.getNetwork();
         if (network == null || !config.enabled) {
-            sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "Networking is " + ChatColor.RED + "disabled" + ChatColor.GRAY + " (config/wormholes.toml).");
+            send(sender, WormholesMessages.NETWORK_DISABLED);
             return;
         }
         if (!network.isRunning()) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Networking is enabled but not running. Check the identity store and network port.");
+            send(sender, WormholesMessages.NETWORK_NOT_RUNNING);
             return;
         }
         if (config.listenEnabled) {
-            sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "This server: " + ChatColor.WHITE + network.getLocalName() + ChatColor.GRAY + " listening on " + ChatColor.WHITE + network.getListenAddress());
+            send(sender, WormholesMessages.NETWORK_LISTENING, args(
+                    MessageArgument.untrusted("server", network.getLocalName()),
+                    MessageArgument.untrusted("address", network.getListenAddress())
+            ));
         } else {
-            sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "This server: " + ChatColor.WHITE + network.getLocalName() + ChatColor.GRAY + " outbound-only Boat mode");
+            send(sender, WormholesMessages.NETWORK_OUTBOUND_ONLY,
+                    args(MessageArgument.untrusted("server", network.getLocalName())));
         }
-        sender.sendMessage(Wormholes.tag + ChatColor.DARK_GRAY + "Public key: " + network.getPublicKeyFingerprint());
+        send(sender, WormholesMessages.NETWORK_PUBLIC_KEY,
+                args(MessageArgument.untrusted("fingerprint", network.getPublicKeyFingerprint())));
         List<NetworkManager.PeerStatus> statuses = network.status();
         if (statuses.isEmpty()) {
-            sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "No peer routes linked yet.");
+            send(sender, WormholesMessages.NETWORK_NO_ROUTES);
             return;
         }
         for (NetworkManager.PeerStatus status : statuses) {
-            ChatColor stateColor = switch (status.state()) {
-                case "CONNECTED" -> ChatColor.GREEN;
-                case "CONNECTING", "WAITING" -> ChatColor.YELLOW;
-                default -> ChatColor.RED;
+            String stateColor = switch (status.state()) {
+                case "CONNECTED" -> "<green>";
+                case "CONNECTING", "WAITING" -> "<yellow>";
+                default -> "<red>";
             };
-            String rtt = status.rttMillis() >= 0 ? ChatColor.DARK_GRAY + " " + status.rttMillis() + "ms" : "";
-            sender.sendMessage(Wormholes.tag + ChatColor.WHITE + status.name() + ChatColor.GRAY + " " + stateColor + status.state().toLowerCase() + ChatColor.GRAY + " " + status.address() + rtt);
+            String rtt = status.rttMillis() >= 0 ? " " + status.rttMillis() + "ms" : "";
+            send(sender, WormholesMessages.NETWORK_PEER, args(
+                    MessageArgument.untrusted("server", status.name()),
+                    MessageArgument.trusted("state", stateColor + escapeState(status.state())),
+                    MessageArgument.untrusted("address", status.address()),
+                    MessageArgument.untrusted("rtt", rtt)
+            ));
             if (status.lastError() != null && !status.state().equals("CONNECTED")) {
-                sender.sendMessage(Wormholes.tag + ChatColor.DARK_GRAY + "  last attempt: " + status.lastError());
+                send(sender, WormholesMessages.NETWORK_LAST_ATTEMPT,
+                        args(MessageArgument.untrusted("error", status.lastError())));
             }
         }
         if (hasUnconnectedPeer(statuses)) {
@@ -70,15 +87,15 @@ public class CommandNetwork {
         }
     }
 
-    @Director(name = "doctor", sync = true, description = "Explain why network peers are not connecting")
+    @Director(name = "doctor", sync = true, descriptionKey = "command.help.network.doctor", description = "Explain why network peers are not connecting")
     public void doctor(@Param(name = "sender", contextual = true) CommandSender sender) {
         if (!sender.hasPermission("wormholes.admin.network")) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
+            send(sender, WormholesMessages.COMMAND_NO_PERMISSION);
             return;
         }
         NetworkManager network = Wormholes.networkManager;
         if (network == null) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Networking is not initialized.");
+            send(sender, WormholesMessages.NETWORK_NOT_INITIALIZED);
             return;
         }
         printDiagnostics(sender, network);
@@ -96,12 +113,29 @@ public class CommandNetwork {
     private static void printDiagnostics(CommandSender sender, NetworkManager network) {
         List<String> diagnostics = network.diagnostics();
         if (diagnostics.isEmpty()) {
-            sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "No network setup issues detected.");
+            send(sender, WormholesMessages.NETWORK_DOCTOR_CLEAR);
             return;
         }
-        sender.sendMessage(Wormholes.tag + ChatColor.YELLOW + "Network doctor:");
+        send(sender, WormholesMessages.NETWORK_DOCTOR_HEADER);
         for (String diagnostic : diagnostics) {
-            sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "- " + diagnostic);
+            send(sender, WormholesMessages.NETWORK_DOCTOR_LINE,
+                    args(MessageArgument.untrusted("diagnostic", diagnostic)));
         }
+    }
+
+    private static MessageArgs args(MessageArgument... arguments) {
+        return WormholesLocalization.args(arguments);
+    }
+
+    private static String escapeState(String state) {
+        return state.toLowerCase(Locale.ROOT).replace("<", "").replace(">", "");
+    }
+
+    private static void send(CommandSender sender, TextKey key) {
+        send(sender, key, MessageArgs.empty());
+    }
+
+    private static void send(CommandSender sender, TextKey key, MessageArgs arguments) {
+        WormholesAudience.sendMessage(sender, Wormholes.text().component(key, arguments));
     }
 }

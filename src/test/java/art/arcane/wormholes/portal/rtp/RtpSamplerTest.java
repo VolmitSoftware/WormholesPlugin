@@ -78,7 +78,7 @@ public final class RtpSamplerTest
 	}
 
 	@Test
-	public void surfaceSamplingStartsAtUpperBoundAndUsesBoundedDescendingProbes()
+	public void surfaceSamplingUsesOnlyTheExactBoundedTerrainSurface()
 	{
 		RtpSettings settings = settings(32, 64, RtpVerticalMode.SURFACE, 10, 15, 12);
 		RtpSampler sampler = new RtpSampler(0.0D, 0.0D, 1L);
@@ -89,9 +89,9 @@ public final class RtpSamplerTest
 		List<Integer> clampedLowProbes = sampler.feetYProbeOrder(settings, -100);
 
 		assertEquals(15, destination.feetY());
-		assertEquals(List.of(13, 12, 11, 10), probes);
-		assertEquals(List.of(15, 14, 13, 12, 11, 10), clampedHighProbes);
-		assertEquals(List.of(10), clampedLowProbes);
+		assertEquals(List.of(13), probes);
+		assertEquals(List.of(), clampedHighProbes);
+		assertEquals(List.of(), clampedLowProbes);
 	}
 
 	@Test

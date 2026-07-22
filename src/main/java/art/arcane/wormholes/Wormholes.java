@@ -1,6 +1,7 @@
 package art.arcane.wormholes;
 
 import art.arcane.volmlib.integration.ReloadAware;
+import art.arcane.volmlib.util.localization.LocalizationReloadResult;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.volmlib.util.scheduling.SchedulerBridge;
 import art.arcane.volmlib.util.scheduling.SchedulerRuntime;
@@ -11,6 +12,8 @@ import art.arcane.wormholes.config.WormholesSettings;
 import art.arcane.wormholes.door.DimensionalDoorManager;
 import art.arcane.wormholes.door.DimensionalDoorRepository;
 import art.arcane.wormholes.door.DoorStoreSnapshot;
+import art.arcane.wormholes.localization.WormholesLocalization;
+import art.arcane.wormholes.localization.WormholesMessages;
 import art.arcane.wormholes.network.ImportExportService;
 import art.arcane.wormholes.network.NetworkManager;
 import art.arcane.wormholes.network.NetworkRouter;
@@ -97,6 +100,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
     public static volatile ImportExportService importExportService;
     public static volatile PocketWorldService pocketWorldService;
     public static volatile DimensionalDoorManager dimensionalDoorManager;
+    public static volatile WormholesLocalization localization;
 
     private static final ConcurrentHashMap<UUID, Consumer<String>> CHAT_INPUTS = new ConcurrentHashMap<>();
 
@@ -140,6 +144,8 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         try {
             settings = WormholesSettings.loadAll(getDataFolder().toPath());
             Settings.refresh(settings);
+            localization = new WormholesLocalization();
+            reloadLocalization(settings);
             this.schedulerRuntime = installSchedulerBridge();
             installChunkLeaseRegistry();
 
@@ -524,8 +530,9 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             return;
         }
         for (Player player : pocketWorld.getPlayers()) {
-            FoliaScheduler.runEntity(this, player, () -> player.sendMessage(
-                tag + "Dimensional Doors are being disabled. Leave through the pocket return door now."));
+            FoliaScheduler.runEntity(this, player, () -> WormholesAudience.sendMessage(
+                player,
+                text().component(WormholesMessages.DOOR_DISABLE_WARNING)));
         }
     }
 
@@ -585,9 +592,9 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         }
     }
 
-    public void reloadAll() {
+    public LocalizationReloadResult reloadAll() {
         WormholesSettings reloaded = WormholesSettings.loadAll(getDataFolder().toPath());
-        applyReloadedSettings(reloaded);
+        return applyReloadedSettings(reloaded);
     }
 
     public int deleteAllPortalsNow() {
@@ -636,6 +643,7 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         WormholesSettings defaults = WormholesSettings.loadAll(dataFolder);
         settings = defaults;
         Settings.refresh(defaults);
+        reloadLocalization(defaults);
         synchronizeDebugTelemetrySetting();
         if (defaults.getMain().dimensionalDoorsEnabled) {
             startDimensionalDoorsOrThrow();
@@ -669,21 +677,39 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
         applyReloadedSettings(reloaded);
     }
 
-    private void applyReloadedSettings(WormholesSettings reloaded) {
+    private LocalizationReloadResult applyReloadedSettings(WormholesSettings reloaded) {
         if (reloaded == null) {
-            return;
+            throw new IllegalArgumentException("Reloaded settings cannot be null");
         }
+        LocalizationReloadResult localizationResult = reloadLocalization(reloaded);
         settings = reloaded;
         Settings.refresh(reloaded);
         synchronizeDebugTelemetrySetting();
         FoliaScheduler.runGlobal(this, () -> applyReloadedManagers(reloaded));
+        return localizationResult;
     }
 
     private void applyReloadedManagers(WormholesSettings reloaded) {
         if (settings != reloaded) {
             return;
         }
+        BlockManager activeBlockManager = blockManager;
+        if (activeBlockManager != null) {
+            try {
+                activeBlockManager.onLanguageReload();
+            } catch (Throwable ex) {
+                getLogger().log(Level.WARNING, "BlockManager rejected language reload notification", ex);
+            }
+        }
         applyDimensionalDoorSetting(reloaded);
+        DimensionalDoorManager activeDoorManager = dimensionalDoorManager;
+        if (activeDoorManager != null) {
+            try {
+                activeDoorManager.onLanguageReload();
+            } catch (Throwable ex) {
+                getLogger().log(Level.WARNING, "DimensionalDoorManager rejected language reload notification", ex);
+            }
+        }
         ProjectionManager activeProjection = projectionManager;
         if (activeProjection != null) {
             try {
@@ -727,6 +753,32 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
             getLogger().log(Level.WARNING, "CaptureRuntime rejected hot-reload notification", ex);
         }
         getLogger().info("Configuration hot-reloaded.");
+    }
+
+    private LocalizationReloadResult reloadLocalization(WormholesSettings reloaded) {
+        WormholesLocalization activeLocalization = localization;
+        if (activeLocalization == null) {
+            activeLocalization = new WormholesLocalization();
+            localization = activeLocalization;
+        }
+        LocalizationReloadResult result = activeLocalization.reload(
+            getDataFolder().toPath(),
+            reloaded.getMain().language,
+            reloaded.getMain().languageFallbacks
+        );
+        if (!result.applied()) {
+            getLogger().log(
+                Level.WARNING,
+                "Language reload was rejected; retaining the last valid localization snapshot.",
+                result.failure()
+            );
+            return result;
+        }
+        if (!result.validation().warnings().isEmpty()) {
+            getLogger().info("Language reload applied with " + result.validation().warnings().size()
+                + " missing translation key(s) falling through to a lower-priority locale or built-in English.");
+        }
+        return result;
     }
 
     private void resetNetworkRuntime() {
@@ -827,6 +879,11 @@ public final class Wormholes extends JavaPlugin implements ReloadAware {
 
     public WormholesSettings getSettings() {
         return settings;
+    }
+
+    public static WormholesLocalization text() {
+        WormholesLocalization active = localization;
+        return active == null ? WormholesLocalization.english() : active;
     }
 
     public SchedulerRuntime getSchedulerRuntime() {

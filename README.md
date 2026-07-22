@@ -1,21 +1,37 @@
 # Wormholes
 Now, you can see the other side.
 
+## Language and localization
+
+Canonical English is defined in the typed Java catalogs under `src/main/java/art/arcane/wormholes/localization`; Wormholes does not ship a separate English translation bundle. Complete bundles are included for German, Spanish, Finnish, French, Hebrew, Italian, Japanese, Korean, Lithuanian, Dutch, Polish, Portuguese, Russian, Turkish, Vietnamese, Simplified Chinese, and Traditional Chinese. The main configuration selects the active locale and optional fallback locales. A file at `plugins/Wormholes/languages/<locale>.toml` can override only the messages a server wants to change; omitted entries resolve through bundled fallbacks and finally code-owned English.
+
 ## Random Teleport portals
 
 Switch a portal to **RTP** from its Type menu, then open **Random Destination**
 on the portal home page to configure it. The editor controls the target world,
 portal-relative or custom search center, minimum and maximum radius, vertical
 search bounds, shared or per-player destinations, destination rotation, timing,
-reservation behavior, and rim feedback. It also exposes live readiness and
-retry status plus manual reroll or private-pool rebuild actions.
+reservation behavior, rim feedback, and portal-specific sound. Settings are
+grouped into direct-choice submenus with dedicated decrease/increase buttons;
+normal left clicks stage a draft and **Apply Changes** commits the batch once.
+Manual rerolls and private-pool rebuilds use an explicit confirmation page.
 
 New RTP portals reroll their shared destination after every successful trip.
 Operators can instead choose a timed cycle or an intentionally static route;
-an explicitly saved Static choice remains static. Travelers keep the look and
-movement orientation associated with the side they entered, and the final
-teleport uses the same complete entity envelope that passed the destination
-safety check.
+an explicitly saved Static choice remains static. Per-player portals expose a
+separate private rotation time and swap each reservation from an already warm
+pool. During refills, rerolls, and authorization checks, the last READY
+projection remains online until its replacement can be published; idle lease
+grace avoids cold churn when observers briefly step away.
+
+Surface mode checks only the actual motion-blocking terrain surface. Water,
+waterlogged or aquatic blocks, tree structure, hazards, collisions, and cave
+fallbacks are rejected. Clear ground beneath a sufficiently high canopy remains
+valid. Each RTP portal can mute its own open, close, ambient, rejection, and
+travel sounds without disabling particles, and the layered opening impact uses
+a quieter mix. Travelers keep the look and movement orientation associated with
+the side they entered, and the final teleport uses the same complete entity
+envelope that passed the destination safety check.
 
 ## Survival Dimensional Doors
 

@@ -121,6 +121,10 @@ public final class RtpSafetyValidator
 				{
 					return rejected(request, supportFailure);
 				}
+				if(request.surfaceMode() && support.treePart())
+				{
+					return rejected(request, RtpSafetyResult.Code.HAZARD);
+				}
 				collectSupportRectangles(support, destination.feetY(), envelope, supportRectangles);
 
 				for(int y = minimumBodyY; y <= maximumBodyY; y++)
@@ -134,6 +138,10 @@ public final class RtpSafetyValidator
 					if(bodyFailure != null)
 					{
 						return rejected(request, bodyFailure);
+					}
+					if(request.surfaceMode() && body.treePart())
+					{
+						return rejected(request, RtpSafetyResult.Code.HAZARD);
 					}
 					if(intersectsBody(body, envelope))
 					{

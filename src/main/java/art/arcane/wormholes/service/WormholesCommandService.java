@@ -1,5 +1,6 @@
 package art.arcane.wormholes.service;
 
+import art.arcane.volmlib.util.director.DirectorEngineOptions;
 import art.arcane.volmlib.util.director.compat.BukkitDirectorContext;
 import art.arcane.volmlib.util.director.compat.DirectorEngineFactory;
 import art.arcane.volmlib.util.director.context.DirectorContextRegistry;
@@ -16,10 +17,9 @@ import art.arcane.volmlib.util.director.theme.DirectorTheme;
 import art.arcane.volmlib.util.director.theme.DirectorThemes;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.commands.CommandWormholes;
+import art.arcane.wormholes.localization.WormholesMessages;
 import art.arcane.wormholes.util.common.cache.AtomicCache;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.minimessage.MiniMessage;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.SoundCategory;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -43,8 +43,6 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
     private static final String ROOT_COMMAND = "wormholes";
     private static final String ROOT_PERMISSION = "wormholes.admin";
     private static final int HELP_PAGE_SIZE = 8;
-    private static final MiniMessage MINI_MESSAGE = MiniMessage.miniMessage();
-    private static final LegacyComponentSerializer LEGACY_SERIALIZER = LegacyComponentSerializer.legacySection();
 
     private final Wormholes plugin;
     private final DirectorTheme theme;
@@ -115,7 +113,7 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
             if (sendPublicCommandIfRequested(sender, args)) {
                 playInfoChime(sender);
             } else {
-                sender.sendMessage(Wormholes.tag + "§cYou do not have permission to use that command.");
+                WormholesAudience.sendMessage(sender, Wormholes.text().component(WormholesMessages.COMMAND_NO_PERMISSION_USE));
                 playFailureChime(sender);
             }
             return true;
@@ -132,7 +130,7 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
             return true;
         }
 
-        sender.sendMessage("§7Usage: §f/wormholes help");
+        WormholesAudience.sendMessage(sender, Wormholes.text().component(WormholesMessages.COMMAND_USAGE_HELP));
         playFailureChime(sender);
         return true;
     }
@@ -161,8 +159,9 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
 			new CommandWormholes(plugin).info(sender);
 			return true;
 		}
-		sender.sendMessage(Wormholes.tag + "§7Portal help: §f/wormholes info");
-		sender.sendMessage(Wormholes.tag + "§7Use the Portal Wand on a portal to open its destination, view, travel, and access controls.");
+		for (Component line : Wormholes.text().components(WormholesMessages.COMMAND_PUBLIC_HELP)) {
+			WormholesAudience.sendMessage(sender, line);
+		}
 		return true;
 	}
 
@@ -193,11 +192,12 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
     private DirectorRuntimeEngine buildDirector() {
         return DirectorEngineFactory.create(
             new CommandWormholes(plugin),
-            null,
-            buildDirectorContexts(),
-            this::dispatchDirector,
-            this,
-            null
+            DirectorEngineOptions.builder()
+                .contexts(buildDirectorContexts())
+                .dispatcher(this::dispatchDirector)
+                .invocationHook(this)
+                .textResolver((key, arguments) -> Wormholes.text().directorText(key, arguments))
+                .build()
         );
     }
 
@@ -259,9 +259,7 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
         }
 
         DirectorMiniMenu.Theme helpTheme = DirectorMiniMenu.Theme.fromDirectorTheme(theme);
-        for (String line : DirectorMiniMenu.render(page.get(), helpTheme)) {
-            sendRich(sender, line);
-        }
+        DirectorMiniMenu.deliver(sender, DirectorMiniMenu.render(page.get(), helpTheme, Wormholes.text().directorResolver()));
 
         return true;
     }
@@ -305,21 +303,6 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
         } catch (NumberFormatException ignored) {
             return false;
         }
-    }
-
-    private void sendRich(CommandSender sender, String miniMessage) {
-        if (miniMessage == null || miniMessage.trim().isEmpty()) {
-            return;
-        }
-
-        try {
-            sender.getClass().getMethod("sendRichMessage", String.class).invoke(sender, miniMessage);
-            return;
-        } catch (Throwable ignored) {
-        }
-
-        Component component = MINI_MESSAGE.deserialize(miniMessage);
-        sender.sendMessage(LEGACY_SERIALIZER.serialize(component));
     }
 
     private void playSuccessChime(CommandSender sender) {

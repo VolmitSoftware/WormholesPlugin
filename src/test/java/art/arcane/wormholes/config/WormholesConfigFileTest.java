@@ -34,6 +34,7 @@ class WormholesConfigFileTest {
             "schema = 2",
             "quality = \"auto\"",
             "[main]",
+            "language = \"en_US\"",
             "replace-nether-and-end-portals = true",
             "dimensional-doors-enabled = true",
             "[network]",

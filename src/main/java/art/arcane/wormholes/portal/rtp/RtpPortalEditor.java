@@ -22,6 +22,13 @@ import art.arcane.volmlib.util.inventorygui.Element;
 import art.arcane.volmlib.util.inventorygui.UIElement;
 import art.arcane.volmlib.util.inventorygui.UIPaneDecorator;
 import art.arcane.volmlib.util.inventorygui.Window;
+import art.arcane.volmlib.util.localization.LinesKey;
+import art.arcane.volmlib.util.localization.MessageArgs;
+import art.arcane.volmlib.util.localization.MessageArgument;
+import art.arcane.volmlib.util.localization.TextKey;
+import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.localization.WormholesLocalization;
+import art.arcane.wormholes.localization.WormholesMessages;
 import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel.AllocationMutation;
 import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel.CenterModeMutation;
 import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel.CustomCenterMutation;
@@ -36,21 +43,30 @@ import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel.ResetCenterTargetMut
 import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel.RimMutation;
 import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel.RotationMutation;
 import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel.SettingsSnapshot;
+import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel.SoundMutation;
 import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel.StatusSnapshot;
 import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel.StatusState;
 import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel.TargetWorldMutation;
 import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel.VerticalModeMutation;
 import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel.WorldOption;
 import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel.YMutation;
-import net.md_5.bungee.api.ChatColor;
 
 public final class RtpPortalEditor
 {
+	private static final int WORLDS_PER_PAGE = 8;
+	private static final int[] WORLD_POSITIONS = new int[] { -3, -1, 1, 3 };
+
 	private final Host host;
+	private Page page;
+	private NumericField numericField;
+	private ManualAction confirmationAction;
+	private int worldPage;
+	private boolean configured;
 
 	public RtpPortalEditor(Host host)
 	{
 		this.host = Objects.requireNonNull(host, "host");
+		page = Page.OVERVIEW;
 	}
 
 	public void populate(Window window, UUID viewerId)
@@ -58,46 +74,299 @@ public final class RtpPortalEditor
 		Window requiredWindow = Objects.requireNonNull(window, "window");
 		UUID requiredViewerId = Objects.requireNonNull(viewerId, "viewerId");
 		EditorSnapshot snapshot = Objects.requireNonNull(host.snapshot(requiredViewerId), "snapshot");
-		SettingsSnapshot settings = snapshot.settings();
 		requiredWindow.batch(() ->
 		{
+			if(!configured)
+			{
+				requiredWindow.setTitle(snapshot.title());
+				requiredWindow.setViewportHeight(6);
+				requiredWindow.setDecorator(new UIPaneDecorator(Material.BLACK_STAINED_GLASS_PANE));
+				configured = true;
+			}
 			requiredWindow.clearElements();
-			requiredWindow.setTitle(snapshot.title());
-			requiredWindow.setViewportHeight(6);
-			requiredWindow.setDecorator(new UIPaneDecorator(Material.BLACK_STAINED_GLASS_PANE));
-			requiredWindow.setElement(0, 0, statusElement(snapshot));
-			requiredWindow.setElement(-4, 1, centerModeElement(snapshot, requiredViewerId));
-			requiredWindow.setElement(-2, 1, targetWorldElement(snapshot, requiredViewerId));
-			if(settings.centerMode() == RtpCenterMode.CUSTOM)
+			switch(page)
 			{
-				requiredWindow.setElement(0, 1, centerCoordinateElement(snapshot, requiredViewerId, true));
-				requiredWindow.setElement(2, 1, centerCoordinateElement(snapshot, requiredViewerId, false));
+				case OVERVIEW -> populateOverview(requiredWindow, requiredViewerId, snapshot);
+				case DESTINATION -> populateDestination(requiredWindow, requiredViewerId, snapshot);
+				case LANDING -> populateLanding(requiredWindow, requiredViewerId, snapshot);
+				case ROUTING -> populateRouting(requiredWindow, requiredViewerId, snapshot);
+				case EFFECTS -> populateEffects(requiredWindow, requiredViewerId, snapshot);
+				case NUMERIC -> populateNumeric(requiredWindow, requiredViewerId, snapshot);
+				case MANUAL_CONFIRM -> populateManualConfirmation(requiredWindow, requiredViewerId, snapshot);
+				case EXIT_CONFIRM -> populateExitConfirmation(requiredWindow, requiredViewerId, snapshot);
 			}
-			requiredWindow.setElement(4, 1, resetElement(snapshot, requiredViewerId));
-			requiredWindow.setElement(-3, 2, minimumRadiusElement(snapshot, requiredViewerId));
-			requiredWindow.setElement(-1, 2, maximumRadiusElement(snapshot, requiredViewerId));
-			requiredWindow.setElement(1, 2, verticalModeElement(snapshot, requiredViewerId));
-			requiredWindow.setElement(3, 2, yElement(snapshot, requiredViewerId, YField.LOWER));
-			requiredWindow.setElement(-3, 3, yElement(snapshot, requiredViewerId, YField.UPPER));
-			if(settings.verticalMode() == RtpVerticalMode.PREFERRED_AVERAGE)
-			{
-				requiredWindow.setElement(-1, 3, yElement(snapshot, requiredViewerId, YField.PREFERRED));
-			}
-			requiredWindow.setElement(1, 3, allocationElement(snapshot, requiredViewerId));
-			if(settings.allocationMode() == RtpAllocationMode.SHARED)
-			{
-				requiredWindow.setElement(3, 3, rotationElement(snapshot, requiredViewerId));
-			}
-			if(settings.allocationMode() == RtpAllocationMode.SHARED && settings.rotationMode() == RtpRotationMode.TIMED)
-			{
-				requiredWindow.setElement(-3, 4, cycleElement(snapshot, requiredViewerId));
-			}
-			requiredWindow.setElement(-1, 4, leaseElement(snapshot, requiredViewerId));
-			requiredWindow.setElement(1, 4, reservationElement(snapshot, requiredViewerId));
-			requiredWindow.setElement(3, 4, rimElement(snapshot, requiredViewerId));
-			requiredWindow.setElement(-1, 5, manualElement(snapshot, requiredViewerId));
-			requiredWindow.setElement(1, 5, backElement(requiredWindow, requiredViewerId));
 		});
+	}
+
+	private void populateOverview(Window window, UUID viewerId, EditorSnapshot snapshot)
+	{
+		window.setElement(0, 0, statusElement(snapshot));
+		window.setElement(0, 1, draftStateElement(snapshot));
+		window.setElement(-3, 2, pageElement(window, viewerId, "rtp-open-destination",
+				WormholesMessages.RTP_OVERVIEW_DESTINATION, Material.RECOVERY_COMPASS, Page.DESTINATION));
+		window.setElement(-1, 2, pageElement(window, viewerId, "rtp-open-landing",
+				WormholesMessages.RTP_OVERVIEW_LANDING, Material.GRASS_BLOCK, Page.LANDING));
+		window.setElement(1, 2, pageElement(window, viewerId, "rtp-open-routing",
+				WormholesMessages.RTP_OVERVIEW_ROUTING, Material.CLOCK, Page.ROUTING));
+		window.setElement(3, 2, pageElement(window, viewerId, "rtp-open-effects",
+				WormholesMessages.RTP_OVERVIEW_EFFECTS, Material.GLOWSTONE_DUST, Page.EFFECTS));
+		if(snapshot.dirty())
+		{
+			window.setElement(-1, 4, actionElement("rtp-apply", WormholesMessages.RTP_APPLY,
+					MessageArgs.empty(), Material.LIME_DYE,
+					() -> host.apply(viewerId, snapshot.configurationRevision())));
+			window.setElement(1, 4, actionElement("rtp-discard", WormholesMessages.RTP_DISCARD,
+					MessageArgs.empty(), Material.RED_DYE,
+					() -> host.discard(viewerId)));
+		}
+		else
+		{
+			window.setElement(0, 4, infoElement("rtp-saved", WormholesMessages.RTP_ALL_APPLIED,
+					MessageArgs.empty(), Material.LIME_STAINED_GLASS_PANE, true));
+		}
+		window.setElement(0, 5, portalBackElement(window, viewerId, snapshot));
+	}
+
+	private void populateDestination(Window window, UUID viewerId, EditorSnapshot snapshot)
+	{
+		SettingsSnapshot settings = snapshot.settings();
+		window.setElement(0, 0, headerElement(WormholesMessages.RTP_DESTINATION_HEADER, Material.RECOVERY_COMPASS));
+		List<WorldOption> worlds = snapshot.loadedWorlds();
+		int pageCount = Math.max(1, (worlds.size() + WORLDS_PER_PAGE - 1) / WORLDS_PER_PAGE);
+		worldPage = clamp(worldPage, 0, pageCount - 1);
+		int start = worldPage * WORLDS_PER_PAGE;
+		int end = Math.min(worlds.size(), start + WORLDS_PER_PAGE);
+		for(int index = start; index < end; index++)
+		{
+			WorldOption world = worlds.get(index);
+			int pageIndex = index - start;
+			int row = 1 + pageIndex / WORLD_POSITIONS.length;
+			int position = WORLD_POSITIONS[pageIndex % WORLD_POSITIONS.length];
+			boolean selected = world.key().equalsIgnoreCase(settings.targetWorldKey());
+			window.setElement(position, row, choiceElement(
+					"rtp-world-" + pageIndex,
+					selected ? WormholesMessages.RTP_WORLD_CURRENT : WormholesMessages.RTP_WORLD_AVAILABLE,
+					WormholesLocalization.args(MessageArgument.untrusted("world", world.displayName())),
+					Material.ENDER_EYE,
+					selected,
+					() -> mutate(snapshot, viewerId, new TargetWorldMutation(world.key()))));
+		}
+		if(worldPage > 0)
+		{
+			window.setElement(-4, 3, actionElement("rtp-world-previous", WormholesMessages.RTP_PREVIOUS_WORLDS,
+					MessageArgs.empty(), Material.ARROW, () -> changeWorldPage(window, viewerId, -1)));
+		}
+		if(worldPage + 1 < pageCount)
+		{
+			window.setElement(4, 3, actionElement("rtp-world-next", WormholesMessages.RTP_NEXT_WORLDS,
+					MessageArgs.empty(), Material.ARROW, () -> changeWorldPage(window, viewerId, 1)));
+		}
+		boolean portalRelative = settings.centerMode() == RtpCenterMode.PORTAL_RELATIVE;
+		window.setElement(-2, 3, choiceElement("rtp-center-portal",
+				portalRelative ? WormholesMessages.RTP_CENTER_PORTAL_SELECTED : WormholesMessages.RTP_CENTER_PORTAL_AVAILABLE,
+				MessageArgs.empty(), Material.COMPASS,
+				portalRelative,
+				() -> mutate(snapshot, viewerId, centerModeMutation(snapshot, RtpCenterMode.PORTAL_RELATIVE))));
+		boolean custom = settings.centerMode() == RtpCenterMode.CUSTOM;
+		window.setElement(2, 3, choiceElement("rtp-center-custom",
+				custom ? WormholesMessages.RTP_CENTER_CUSTOM_SELECTED : WormholesMessages.RTP_CENTER_CUSTOM_AVAILABLE,
+				MessageArgs.empty(), Material.LODESTONE,
+				custom,
+				() -> mutate(snapshot, viewerId, centerModeMutation(snapshot, RtpCenterMode.CUSTOM))));
+		if(settings.centerMode() == RtpCenterMode.CUSTOM)
+		{
+			window.setElement(-3, 4, numericLink(window, viewerId, "rtp-center-x", WormholesMessages.RTP_LABEL_CENTER_X,
+					formatCoordinate(Objects.requireNonNull(settings.customCenterX()).doubleValue()), Material.COMPASS, NumericField.CENTER_X));
+			window.setElement(-1, 4, numericLink(window, viewerId, "rtp-center-z", WormholesMessages.RTP_LABEL_CENTER_Z,
+					formatCoordinate(Objects.requireNonNull(settings.customCenterZ()).doubleValue()), Material.COMPASS, NumericField.CENTER_Z));
+		}
+		window.setElement(1, 4, numericLink(window, viewerId, "rtp-minimum-radius", WormholesMessages.RTP_LABEL_MIN_RADIUS,
+				Integer.toString(settings.minimumRadius()), Material.SPYGLASS, NumericField.MINIMUM_RADIUS));
+		window.setElement(3, 4, numericLink(window, viewerId, "rtp-maximum-radius", WormholesMessages.RTP_LABEL_MAX_RADIUS,
+				Integer.toString(settings.maximumRadius()), Material.TARGET, NumericField.MAXIMUM_RADIUS));
+		window.setElement(-3, 5, actionElement("rtp-center-reset", WormholesMessages.RTP_RESET_CENTER,
+				MessageArgs.empty(), Material.BARRIER,
+				() -> mutate(snapshot, viewerId, new ResetCenterTargetMutation())));
+		window.setElement(0, 5, submenuBackElement(window, viewerId));
+	}
+
+	private void populateLanding(Window window, UUID viewerId, EditorSnapshot snapshot)
+	{
+		SettingsSnapshot settings = snapshot.settings();
+		window.setElement(0, 0, headerElement(WormholesMessages.RTP_LANDING_HEADER, Material.GRASS_BLOCK));
+		boolean surface = settings.verticalMode() == RtpVerticalMode.SURFACE;
+		window.setElement(-2, 1, choiceElement("rtp-vertical-surface",
+				surface ? WormholesMessages.RTP_SURFACE_SELECTED : WormholesMessages.RTP_SURFACE_AVAILABLE,
+				MessageArgs.empty(), Material.GRASS_BLOCK,
+				surface,
+				() -> mutate(snapshot, viewerId, new VerticalModeMutation(RtpVerticalMode.SURFACE))));
+		boolean preferred = settings.verticalMode() == RtpVerticalMode.PREFERRED_AVERAGE;
+		window.setElement(2, 1, choiceElement("rtp-vertical-preferred",
+				preferred ? WormholesMessages.RTP_PREFERRED_SELECTED : WormholesMessages.RTP_PREFERRED_AVAILABLE,
+				MessageArgs.empty(), Material.AMETHYST_SHARD,
+				preferred,
+				() -> mutate(snapshot, viewerId, new VerticalModeMutation(RtpVerticalMode.PREFERRED_AVERAGE))));
+		window.setElement(0, 2, infoElement("rtp-surface-policy", WormholesMessages.RTP_SAFE_LANDING,
+				MessageArgs.empty(), Material.SHIELD, false));
+		window.setElement(-2, 3, numericLink(window, viewerId, "rtp-lower-y", WormholesMessages.RTP_LABEL_LOWER_Y,
+				Integer.toString(settings.lowerY()), Material.LADDER, NumericField.LOWER_Y));
+		window.setElement(0, 3, numericLink(window, viewerId, "rtp-upper-y", WormholesMessages.RTP_LABEL_UPPER_Y,
+				Integer.toString(settings.upperY()), Material.LADDER, NumericField.UPPER_Y));
+		if(settings.verticalMode() == RtpVerticalMode.PREFERRED_AVERAGE)
+		{
+			window.setElement(2, 3, numericLink(window, viewerId, "rtp-preferred-y", WormholesMessages.RTP_LABEL_PREFERRED_Y,
+					Integer.toString(settings.preferredY()), Material.AMETHYST_SHARD, NumericField.PREFERRED_Y));
+		}
+		window.setElement(0, 5, submenuBackElement(window, viewerId));
+	}
+
+	private void populateRouting(Window window, UUID viewerId, EditorSnapshot snapshot)
+	{
+		SettingsSnapshot settings = snapshot.settings();
+		window.setElement(0, 0, headerElement(WormholesMessages.RTP_ROUTING_HEADER, Material.CLOCK));
+		boolean shared = settings.allocationMode() == RtpAllocationMode.SHARED;
+		window.setElement(-2, 1, choiceElement("rtp-allocation-shared",
+				shared ? WormholesMessages.RTP_SHARED_SELECTED : WormholesMessages.RTP_SHARED_AVAILABLE,
+				MessageArgs.empty(), Material.ENDER_CHEST,
+				shared,
+				() -> mutate(snapshot, viewerId, new AllocationMutation(RtpAllocationMode.SHARED))));
+		window.setElement(2, 1, choiceElement("rtp-allocation-private",
+				shared ? WormholesMessages.RTP_PRIVATE_AVAILABLE : WormholesMessages.RTP_PRIVATE_SELECTED,
+				MessageArgs.empty(), Material.PLAYER_HEAD,
+				!shared,
+				() -> mutate(snapshot, viewerId, new AllocationMutation(RtpAllocationMode.PER_PLAYER))));
+		if(shared)
+		{
+			boolean staticRotation = settings.rotationMode() == RtpRotationMode.STATIC;
+			window.setElement(-2, 2, choiceElement("rtp-rotation-static",
+					staticRotation ? WormholesMessages.RTP_STATIC_SELECTED : WormholesMessages.RTP_STATIC_AVAILABLE,
+					MessageArgs.empty(), Material.ENDER_PEARL,
+					staticRotation,
+					() -> mutate(snapshot, viewerId, new RotationMutation(RtpRotationMode.STATIC))));
+			boolean timedRotation = settings.rotationMode() == RtpRotationMode.TIMED;
+			window.setElement(0, 2, choiceElement("rtp-rotation-timed",
+					timedRotation ? WormholesMessages.RTP_TIMED_SELECTED : WormholesMessages.RTP_TIMED_AVAILABLE,
+					MessageArgs.empty(), Material.CLOCK,
+					timedRotation,
+					() -> mutate(snapshot, viewerId, new RotationMutation(RtpRotationMode.TIMED))));
+			boolean traversalRotation = settings.rotationMode() == RtpRotationMode.ON_TRAVERSAL;
+			window.setElement(2, 2, choiceElement("rtp-rotation-traversal",
+					traversalRotation ? WormholesMessages.RTP_TRIP_SELECTED : WormholesMessages.RTP_TRIP_AVAILABLE,
+					MessageArgs.empty(), Material.FIREWORK_ROCKET,
+					traversalRotation,
+					() -> mutate(snapshot, viewerId, new RotationMutation(RtpRotationMode.ON_TRAVERSAL))));
+			if(settings.rotationMode() == RtpRotationMode.TIMED)
+			{
+				window.setElement(-3, 3, numericLink(window, viewerId, "rtp-cycle-duration", WormholesMessages.RTP_LABEL_CYCLE,
+						formatDuration(settings.cycleDurationMillis()), Material.CLOCK, NumericField.CYCLE_DURATION));
+			}
+		}
+		else
+		{
+			window.setElement(-3, 3, numericLink(window, viewerId, "rtp-cycle-duration", WormholesMessages.RTP_LABEL_PRIVATE_ROTATION,
+					formatDuration(settings.cycleDurationMillis()), Material.CLOCK, NumericField.CYCLE_DURATION));
+		}
+		window.setElement(0, 3, numericLink(window, viewerId, "rtp-lease-idle", WormholesMessages.RTP_LABEL_LEASE,
+				formatDuration(settings.leaseIdleMillis()), Material.LEAD, NumericField.LEASE_IDLE));
+		window.setElement(3, 3, numericLink(window, viewerId, "rtp-reservation-timeout", WormholesMessages.RTP_LABEL_RELEASE,
+				formatDuration(settings.reservationTimeoutMillis()), Material.TRIPWIRE_HOOK, NumericField.RESERVATION_TIMEOUT));
+		ManualAction action = settings.allocationMode() == RtpAllocationMode.SHARED ? ManualAction.REROLL : ManualAction.REBUILD_POOL;
+		LinesKey actionKey = action == ManualAction.REROLL ? WormholesMessages.RTP_MANUAL_REROLL : WormholesMessages.RTP_REBUILD_POOL;
+		String actionId = action == ManualAction.REROLL ? "rtp-manual-reroll" : "rtp-rebuild-pool";
+		if(snapshot.dirty())
+		{
+			window.setElement(0, 4, infoElement(actionId, actionKey,
+					WormholesLocalization.args(MessageArgument.untrusted("description", Wormholes.text().plain(WormholesMessages.RTP_ACTION_APPLY_FIRST))),
+					Material.GRAY_DYE, false));
+		}
+		else
+		{
+			window.setElement(0, 4, actionElement(actionId, actionKey,
+					WormholesLocalization.args(MessageArgument.untrusted("description", Wormholes.text().plain(WormholesMessages.RTP_ACTION_CONFIRM))),
+					Material.FIRE_CHARGE,
+					() -> openManualConfirmation(window, viewerId, action)));
+		}
+		window.setElement(0, 5, submenuBackElement(window, viewerId));
+	}
+
+	private void populateEffects(Window window, UUID viewerId, EditorSnapshot snapshot)
+	{
+		SettingsSnapshot settings = snapshot.settings();
+		window.setElement(0, 0, headerElement(WormholesMessages.RTP_EFFECTS_HEADER, Material.GLOWSTONE_DUST));
+		window.setElement(-2, 1, choiceElement("rtp-rim-on",
+				settings.rimEnabled() ? WormholesMessages.RTP_RIM_ON_SELECTED : WormholesMessages.RTP_RIM_ON_AVAILABLE,
+				MessageArgs.empty(), Material.GLOWSTONE_DUST,
+				settings.rimEnabled(), () -> mutate(snapshot, viewerId, new RimMutation(true))));
+		window.setElement(2, 1, choiceElement("rtp-rim-off",
+				settings.rimEnabled() ? WormholesMessages.RTP_RIM_OFF_AVAILABLE : WormholesMessages.RTP_RIM_OFF_SELECTED,
+				MessageArgs.empty(), Material.GUNPOWDER,
+				!settings.rimEnabled(), () -> mutate(snapshot, viewerId, new RimMutation(false))));
+		window.setElement(-2, 3, choiceElement("rtp-sound-on",
+				settings.soundEnabled() ? WormholesMessages.RTP_SOUND_ON_SELECTED : WormholesMessages.RTP_SOUND_ON_AVAILABLE,
+				MessageArgs.empty(), Material.JUKEBOX,
+				settings.soundEnabled(), () -> mutate(snapshot, viewerId, new SoundMutation(true))));
+		window.setElement(2, 3, choiceElement("rtp-sound-off",
+				settings.soundEnabled() ? WormholesMessages.RTP_SOUND_OFF_AVAILABLE : WormholesMessages.RTP_SOUND_OFF_SELECTED,
+				MessageArgs.empty(), Material.NOTE_BLOCK,
+				!settings.soundEnabled(), () -> mutate(snapshot, viewerId, new SoundMutation(false))));
+		window.setElement(0, 5, submenuBackElement(window, viewerId));
+	}
+
+	private void populateNumeric(Window window, UUID viewerId, EditorSnapshot snapshot)
+	{
+		NumericControl control = numericControl(snapshot, numericField);
+		window.setElement(0, 0, infoElement(
+				"rtp-page-title",
+				WormholesMessages.RTP_NUMERIC_HEADER,
+				WormholesLocalization.args(
+						MessageArgument.untrusted("label", Wormholes.text().plain(control.label())),
+						MessageArgument.untrusted("description", Wormholes.text().plain(control.description()))),
+				control.material(),
+				false));
+		if(!control.enabled())
+		{
+			window.setElement(0, 2, infoElement("rtp-numeric-unavailable", WormholesMessages.RTP_TARGET_UNAVAILABLE,
+					MessageArgs.empty(), Material.BARRIER, false));
+		}
+		else
+		{
+			window.setElement(-4, 2, adjustmentElement(snapshot, viewerId, control, false, true));
+			window.setElement(-2, 2, adjustmentElement(snapshot, viewerId, control, false, false));
+			window.setElement(0, 2, infoElement("rtp-numeric-value", WormholesMessages.RTP_NUMERIC_VALUE,
+					WormholesLocalization.args(MessageArgument.untrusted("value", control.value())), control.material(), true));
+			window.setElement(2, 2, adjustmentElement(snapshot, viewerId, control, true, false));
+			window.setElement(4, 2, adjustmentElement(snapshot, viewerId, control, true, true));
+		}
+		window.setElement(0, 5, numericBackElement(window, viewerId));
+	}
+
+	private void populateManualConfirmation(Window window, UUID viewerId, EditorSnapshot snapshot)
+	{
+		ManualAction action = Objects.requireNonNull(confirmationAction, "confirmationAction");
+		window.setElement(0, 0, headerElement(
+				action == ManualAction.REROLL ? WormholesMessages.RTP_CONFIRM_REROLL : WormholesMessages.RTP_CONFIRM_REBUILD,
+				Material.FIRE_CHARGE));
+		window.setElement(-2, 2, actionElement("rtp-manual-confirm", WormholesMessages.RTP_CONFIRM,
+				MessageArgs.empty(), Material.LIME_DYE, () ->
+				{
+					page = Page.ROUTING;
+					host.manual(viewerId, snapshot.configurationRevision(), action);
+				}));
+		window.setElement(2, 2, actionElement("rtp-manual-cancel", WormholesMessages.RTP_CANCEL,
+				MessageArgs.empty(), Material.RED_DYE, () -> navigate(window, viewerId, Page.ROUTING)));
+	}
+
+	private void populateExitConfirmation(Window window, UUID viewerId, EditorSnapshot snapshot)
+	{
+		window.setElement(0, 0, headerElement(WormholesMessages.RTP_UNAPPLIED, Material.WRITABLE_BOOK));
+		window.setElement(-2, 2, actionElement("rtp-exit-continue", WormholesMessages.RTP_KEEP_EDITING,
+				MessageArgs.empty(), Material.LIME_DYE, () -> navigate(window, viewerId, Page.OVERVIEW)));
+		window.setElement(2, 2, actionElement("rtp-exit-discard", WormholesMessages.RTP_DISCARD_EXIT,
+				MessageArgs.empty(), Material.RED_DYE, () ->
+				{
+					window.close();
+					host.back(viewerId);
+				}));
 	}
 
 	private Element statusElement(EditorSnapshot snapshot)
@@ -105,55 +374,185 @@ public final class RtpPortalEditor
 		SettingsSnapshot settings = snapshot.settings();
 		StatusSnapshot status = snapshot.status();
 		UIElement element = new UIElement("rtp-status");
-		element.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Random Destination Status");
+		Wormholes.text().apply(
+				element,
+				WormholesMessages.RTP_STATUS_HEADER,
+				WormholesLocalization.args(MessageArgument.untrusted("state", statusLabel(status.state()))));
 		element.setMaterial(new MaterialBlock(statusMaterial(status.state())));
 		element.setEnchanted(status.state() == StatusState.READY);
-		element.addLore(ChatColor.GRAY + "State: " + statusColor(status.state()) + statusLabel(status.state()));
 		if(status.state() == StatusState.BACKOFF)
 		{
-			element.addLore(ChatColor.GRAY + "Retry in: " + ChatColor.RED + formatDuration(status.remainingBackoffMillis()));
+			element.addLore(Wormholes.text().legacy(
+					WormholesMessages.RTP_STATUS_RETRY,
+					WormholesLocalization.args(MessageArgument.untrusted("duration", formatDuration(status.remainingBackoffMillis())))));
 		}
 		if(settings.allocationMode() == RtpAllocationMode.SHARED)
 		{
-			element.addLore(ChatColor.GRAY + "Active: " + readiness(status.activeReady()));
-			element.addLore(ChatColor.GRAY + "Standby: " + readiness(status.standbyReady()));
-			element.addLore(ChatColor.GRAY + "Rotation: " + ChatColor.AQUA + rotationLabel(settings.rotationMode()));
-			if(settings.rotationMode() == RtpRotationMode.TIMED)
-			{
-				element.addLore(ChatColor.GRAY + "Next cycle: " + ChatColor.AQUA + formatDuration(status.remainingCycleMillis()));
-			}
+			element.addLore(Wormholes.text().legacy(
+					WormholesMessages.RTP_STATUS_ACTIVE,
+					WormholesLocalization.args(MessageArgument.untrusted("readiness", readiness(status.activeReady())))));
+			element.addLore(Wormholes.text().legacy(
+					WormholesMessages.RTP_STATUS_STANDBY,
+					WormholesLocalization.args(MessageArgument.untrusted("readiness", readiness(status.standbyReady())))));
+			element.addLore(Wormholes.text().legacy(
+					WormholesMessages.RTP_STATUS_ROTATION,
+					WormholesLocalization.args(MessageArgument.untrusted("rotation", rotationLabel(settings.rotationMode())))));
 		}
 		else
 		{
-			element.addLore(ChatColor.GRAY + "Free: " + ChatColor.AQUA + status.freeCount()
-					+ ChatColor.GRAY + "  Reserved: " + ChatColor.AQUA + status.reservedCount());
-			element.addLore(ChatColor.GRAY + "Validating: " + ChatColor.AQUA + status.validatingCount()
-					+ ChatColor.GRAY + "  In-flight: " + ChatColor.AQUA + status.inFlightCount());
+			element.addLore(Wormholes.text().legacy(
+					WormholesMessages.RTP_STATUS_POOL,
+					WormholesLocalization.args(
+							MessageArgument.untrusted("free", status.freeCount()),
+							MessageArgument.untrusted("reserved", status.reservedCount()))));
 		}
 		if(!status.targetWorldAvailable())
 		{
-			element.addLore(ChatColor.RED + "Target world is not loaded.");
+			element.addLore(Wormholes.text().legacy(WormholesMessages.RTP_STATUS_TARGET_MISSING));
 		}
 		if(!status.integrationAvailable())
 		{
-			element.addLore(ChatColor.RED + "Destination access checks failed closed.");
+			element.addLore(Wormholes.text().legacy(WormholesMessages.RTP_STATUS_ACCESS_FAILED));
 		}
 		return element;
 	}
 
-	private Element centerModeElement(EditorSnapshot snapshot, UUID viewerId)
+	private Element draftStateElement(EditorSnapshot snapshot)
 	{
-		SettingsSnapshot settings = snapshot.settings();
-		UIElement element = new UIElement("rtp-center-mode");
-		element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Center: " + centerLabel(settings.centerMode()));
-		element.setMaterial(new MaterialBlock(settings.centerMode() == RtpCenterMode.CUSTOM ? Material.LODESTONE : Material.RECOVERY_COMPASS));
-		element.addLore(ChatColor.GRAY + "Choose the annulus center.");
-		element.addLore(ChatColor.DARK_GRAY + "Left/Shift-left: next.");
-		element.addLore(ChatColor.DARK_GRAY + "Right/Shift-right: previous.");
-		CenterModeMutation next = centerModeMutation(snapshot, cycle(settings.centerMode(), 1));
-		CenterModeMutation previous = centerModeMutation(snapshot, cycle(settings.centerMode(), -1));
-		bindBidirectional(element, snapshot, viewerId, next, previous);
+		return infoElement("rtp-draft-state",
+				snapshot.dirty() ? WormholesMessages.RTP_DRAFT_DIRTY : WormholesMessages.RTP_DRAFT_CLEAN,
+				MessageArgs.empty(),
+				snapshot.dirty() ? Material.WRITABLE_BOOK : Material.BOOK,
+				!snapshot.dirty());
+	}
+
+	private Element headerElement(LinesKey key, Material material)
+	{
+		return infoElement("rtp-page-title", key, MessageArgs.empty(), material, false);
+	}
+
+	private Element pageElement(Window window, UUID viewerId, String id, LinesKey key, Material material, Page target)
+	{
+		return actionElement(id, key, MessageArgs.empty(), material, () -> navigate(window, viewerId, target));
+	}
+
+	private Element numericLink(Window window, UUID viewerId, String id, TextKey label, String value, Material material, NumericField field)
+	{
+		return actionElement(
+				id,
+				WormholesMessages.RTP_NUMERIC_LINK,
+				WormholesLocalization.args(
+						MessageArgument.untrusted("label", Wormholes.text().plain(label)),
+						MessageArgument.untrusted("value", value)),
+				material,
+				() -> openNumeric(window, viewerId, field));
+	}
+
+	private Element choiceElement(
+			String id,
+			LinesKey key,
+			MessageArgs arguments,
+			Material material,
+			boolean selected,
+			Runnable action)
+	{
+		UIElement element = localizedElement(id, key, arguments, material);
+		element.setEnchanted(selected);
+		element.onLeftClick(clicked -> action.run());
 		return element;
+	}
+
+	private Element actionElement(String id, LinesKey key, MessageArgs arguments, Material material, Runnable action)
+	{
+		UIElement element = localizedElement(id, key, arguments, material);
+		element.onLeftClick(clicked -> action.run());
+		return element;
+	}
+
+	private Element infoElement(String id, LinesKey key, MessageArgs arguments, Material material, boolean enchanted)
+	{
+		UIElement element = localizedElement(id, key, arguments, material);
+		element.setEnchanted(enchanted);
+		return element;
+	}
+
+	private UIElement localizedElement(String id, LinesKey key, MessageArgs arguments, Material material)
+	{
+		UIElement element = new UIElement(id);
+		element.setMaterial(new MaterialBlock(material));
+		Wormholes.text().apply(element, key, arguments);
+		return element;
+	}
+
+	private Element adjustmentElement(EditorSnapshot snapshot, UUID viewerId, NumericControl control, boolean increase, boolean large)
+	{
+		Mutation mutation = increase
+				? large ? control.increaseLarge() : control.increaseSmall()
+				: large ? control.decreaseLarge() : control.decreaseSmall();
+		String direction = increase ? "+" : "-";
+		String step = large ? control.largeStep() : control.smallStep();
+		String id = "rtp-numeric-" + (increase ? "increase" : "decrease") + (large ? "-large" : "-small");
+		return actionElement(id, WormholesMessages.RTP_NUMERIC_ADJUST,
+				WormholesLocalization.args(
+						MessageArgument.untrusted("direction", direction),
+						MessageArgument.untrusted("step", step)),
+				increase ? Material.LIME_DYE : Material.RED_DYE, () -> mutate(snapshot, viewerId, mutation));
+	}
+
+	private Element submenuBackElement(Window window, UUID viewerId)
+	{
+		return actionElement("rtp-submenu-back", WormholesMessages.RTP_BACK_OVERVIEW, MessageArgs.empty(), Material.ARROW,
+				() -> navigate(window, viewerId, Page.OVERVIEW));
+	}
+
+	private Element numericBackElement(Window window, UUID viewerId)
+	{
+		return actionElement("rtp-numeric-back", WormholesMessages.RTP_BACK_CATEGORY, MessageArgs.empty(), Material.ARROW,
+				() -> navigate(window, viewerId, numericParent(numericField)));
+	}
+
+	private Element portalBackElement(Window window, UUID viewerId, EditorSnapshot snapshot)
+	{
+		return actionElement("rtp-back", WormholesMessages.RTP_BACK_PORTAL, MessageArgs.empty(), Material.ARROW, () ->
+		{
+			if(snapshot.dirty())
+			{
+				navigate(window, viewerId, Page.EXIT_CONFIRM);
+				return;
+			}
+			window.close();
+			host.back(viewerId);
+		});
+	}
+
+	private void navigate(Window window, UUID viewerId, Page target)
+	{
+		page = target;
+		populate(window, viewerId);
+		window.updateInventory();
+	}
+
+	private void openNumeric(Window window, UUID viewerId, NumericField field)
+	{
+		numericField = Objects.requireNonNull(field, "field");
+		navigate(window, viewerId, Page.NUMERIC);
+	}
+
+	private void openManualConfirmation(Window window, UUID viewerId, ManualAction action)
+	{
+		confirmationAction = Objects.requireNonNull(action, "action");
+		navigate(window, viewerId, Page.MANUAL_CONFIRM);
+	}
+
+	private void changeWorldPage(Window window, UUID viewerId, int delta)
+	{
+		worldPage += delta;
+		navigate(window, viewerId, Page.DESTINATION);
+	}
+
+	private void mutate(EditorSnapshot snapshot, UUID viewerId, Mutation mutation)
+	{
+		host.mutate(viewerId, snapshot.configurationRevision(), mutation);
 	}
 
 	private CenterModeMutation centerModeMutation(EditorSnapshot snapshot, RtpCenterMode mode)
@@ -169,149 +568,66 @@ public final class RtpPortalEditor
 		return new CenterModeMutation(mode, customX, customZ);
 	}
 
-	private Element targetWorldElement(EditorSnapshot snapshot, UUID viewerId)
+	private NumericControl numericControl(EditorSnapshot snapshot, NumericField field)
 	{
 		SettingsSnapshot settings = snapshot.settings();
-		WorldOption current = snapshot.world(settings.targetWorldKey());
-		UIElement element = new UIElement("rtp-target-world");
-		element.setName(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "Target World");
-		element.setMaterial(new MaterialBlock(current == null ? Material.BARRIER : Material.ENDER_EYE));
-		element.addLore(ChatColor.GRAY + "Current: " + (current == null ? ChatColor.RED + settings.targetWorldKey() : ChatColor.WHITE + current.displayName()));
-		element.addLore(ChatColor.DARK_GRAY + "Left: next loaded world.");
-		element.addLore(ChatColor.DARK_GRAY + "Right/Shift-right: previous.");
-		element.addLore(ChatColor.DARK_GRAY + "Shift-left: source world.");
-		element.onLeftClick(clicked -> dispatch(snapshot, viewerId, new TargetWorldMutation(cycleWorld(snapshot, 1))));
-		element.onRightClick(clicked -> dispatch(snapshot, viewerId, new TargetWorldMutation(cycleWorld(snapshot, -1))));
-		element.onShiftLeftClick(clicked -> dispatch(snapshot, viewerId, new TargetWorldMutation(settings.sourceWorldKey())));
-		element.onShiftRightClick(clicked -> dispatch(snapshot, viewerId, new TargetWorldMutation(cycleWorld(snapshot, -1))));
-		return element;
+		return switch(field)
+		{
+			case CENTER_X -> coordinateControl(settings, true);
+			case CENTER_Z -> coordinateControl(settings, false);
+			case MINIMUM_RADIUS -> new NumericControl(WormholesMessages.RTP_LABEL_MIN_RADIUS, Integer.toString(settings.minimumRadius()),
+					WormholesMessages.RTP_DESCRIPTION_MIN_RADIUS, Material.SPYGLASS, "128", "1024",
+					adjustMinimumRadius(settings, -128), adjustMinimumRadius(settings, 128),
+					adjustMinimumRadius(settings, -1024), adjustMinimumRadius(settings, 1024), true);
+			case MAXIMUM_RADIUS -> new NumericControl(WormholesMessages.RTP_LABEL_MAX_RADIUS, Integer.toString(settings.maximumRadius()),
+					WormholesMessages.RTP_DESCRIPTION_MAX_RADIUS, Material.TARGET, "128", "1024",
+					adjustMaximumRadius(settings, -128), adjustMaximumRadius(settings, 128),
+					adjustMaximumRadius(settings, -1024), adjustMaximumRadius(settings, 1024), true);
+			case LOWER_Y -> yControl(snapshot, YField.LOWER);
+			case UPPER_Y -> yControl(snapshot, YField.UPPER);
+			case PREFERRED_Y -> yControl(snapshot, YField.PREFERRED);
+			case CYCLE_DURATION -> new NumericControl(
+					settings.allocationMode() == RtpAllocationMode.PER_PLAYER
+							? WormholesMessages.RTP_LABEL_PRIVATE_ROTATION
+							: WormholesMessages.RTP_LABEL_CYCLE,
+					formatDuration(settings.cycleDurationMillis()),
+					settings.allocationMode() == RtpAllocationMode.PER_PLAYER
+							? WormholesMessages.RTP_DESCRIPTION_PRIVATE_ROTATION
+							: WormholesMessages.RTP_DESCRIPTION_CYCLE,
+					Material.CLOCK, formatDuration(30_000L), formatDuration(300_000L),
+					new CycleDurationMutation(clamp(settings.cycleDurationMillis() - 30_000L, MINIMUM_CYCLE_MILLIS, MAXIMUM_CYCLE_MILLIS)),
+					new CycleDurationMutation(clamp(settings.cycleDurationMillis() + 30_000L, MINIMUM_CYCLE_MILLIS, MAXIMUM_CYCLE_MILLIS)),
+					new CycleDurationMutation(clamp(settings.cycleDurationMillis() - 300_000L, MINIMUM_CYCLE_MILLIS, MAXIMUM_CYCLE_MILLIS)),
+					new CycleDurationMutation(clamp(settings.cycleDurationMillis() + 300_000L, MINIMUM_CYCLE_MILLIS, MAXIMUM_CYCLE_MILLIS)), true);
+			case LEASE_IDLE -> new NumericControl(WormholesMessages.RTP_LABEL_LEASE, formatDuration(settings.leaseIdleMillis()),
+					WormholesMessages.RTP_DESCRIPTION_LEASE, Material.LEAD, formatDuration(5_000L), formatDuration(30_000L),
+					new LeaseIdleMutation(clamp(settings.leaseIdleMillis() - 5_000L, MINIMUM_LEASE_MILLIS, MAXIMUM_LEASE_MILLIS)),
+					new LeaseIdleMutation(clamp(settings.leaseIdleMillis() + 5_000L, MINIMUM_LEASE_MILLIS, MAXIMUM_LEASE_MILLIS)),
+					new LeaseIdleMutation(clamp(settings.leaseIdleMillis() - 30_000L, MINIMUM_LEASE_MILLIS, MAXIMUM_LEASE_MILLIS)),
+					new LeaseIdleMutation(clamp(settings.leaseIdleMillis() + 30_000L, MINIMUM_LEASE_MILLIS, MAXIMUM_LEASE_MILLIS)), true);
+			case RESERVATION_TIMEOUT -> new NumericControl(WormholesMessages.RTP_LABEL_RELEASE, formatDuration(settings.reservationTimeoutMillis()),
+					WormholesMessages.RTP_DESCRIPTION_RELEASE, Material.TRIPWIRE_HOOK, formatDuration(5_000L), formatDuration(30_000L),
+					new ReservationTimeoutMutation(clamp(settings.reservationTimeoutMillis() - 5_000L, MINIMUM_RESERVATION_MILLIS, MAXIMUM_RESERVATION_MILLIS)),
+					new ReservationTimeoutMutation(clamp(settings.reservationTimeoutMillis() + 5_000L, MINIMUM_RESERVATION_MILLIS, MAXIMUM_RESERVATION_MILLIS)),
+					new ReservationTimeoutMutation(clamp(settings.reservationTimeoutMillis() - 30_000L, MINIMUM_RESERVATION_MILLIS, MAXIMUM_RESERVATION_MILLIS)),
+					new ReservationTimeoutMutation(clamp(settings.reservationTimeoutMillis() + 30_000L, MINIMUM_RESERVATION_MILLIS, MAXIMUM_RESERVATION_MILLIS)), true);
+		};
 	}
 
-	private String cycleWorld(EditorSnapshot snapshot, int direction)
+	private NumericControl coordinateControl(SettingsSnapshot settings, boolean xAxis)
 	{
-		List<WorldOption> worlds = snapshot.loadedWorlds();
-		if(worlds.isEmpty())
-		{
-			return snapshot.settings().targetWorldKey();
-		}
-		String currentKey = snapshot.settings().targetWorldKey();
-		int currentIndex = -1;
-		for(int i = 0; i < worlds.size(); i++)
-		{
-			if(worlds.get(i).key().equalsIgnoreCase(currentKey))
-			{
-				currentIndex = i;
-				break;
-			}
-		}
-		if(currentIndex < 0)
-		{
-			return direction > 0 ? worlds.getFirst().key() : worlds.getLast().key();
-		}
-		return worlds.get(Math.floorMod(currentIndex + direction, worlds.size())).key();
-	}
-
-	private Element centerCoordinateElement(EditorSnapshot snapshot, UUID viewerId, boolean xAxis)
-	{
-		SettingsSnapshot settings = snapshot.settings();
-		double currentX = Objects.requireNonNull(settings.customCenterX(), "customCenterX").doubleValue();
-		double currentZ = Objects.requireNonNull(settings.customCenterZ(), "customCenterZ").doubleValue();
-		double current = xAxis ? currentX : currentZ;
-		CustomCenterMutation left = centerMutation(currentX, currentZ, xAxis, 16.0D);
-		CustomCenterMutation right = centerMutation(currentX, currentZ, xAxis, -16.0D);
-		CustomCenterMutation shiftLeft = centerMutation(currentX, currentZ, xAxis, 256.0D);
-		CustomCenterMutation shiftRight = centerMutation(currentX, currentZ, xAxis, -256.0D);
-		return numericElement(snapshot, viewerId, new NumericControl(
-				xAxis ? "rtp-center-x" : "rtp-center-z",
-				"Center " + (xAxis ? "X" : "Z"),
+		double x = Objects.requireNonNull(settings.customCenterX(), "customCenterX").doubleValue();
+		double z = Objects.requireNonNull(settings.customCenterZ(), "customCenterZ").doubleValue();
+		double current = xAxis ? x : z;
+		return new NumericControl(
+				xAxis ? WormholesMessages.RTP_LABEL_CENTER_X : WormholesMessages.RTP_LABEL_CENTER_Z,
 				formatCoordinate(current),
-				"Moves the custom center on this axis.",
-				Material.COMPASS,
-				"16", "256", left, right, shiftLeft, shiftRight, true));
+				WormholesMessages.RTP_DESCRIPTION_CENTER, Material.COMPASS, "16", "256",
+				centerMutation(x, z, xAxis, -16.0D), centerMutation(x, z, xAxis, 16.0D),
+				centerMutation(x, z, xAxis, -256.0D), centerMutation(x, z, xAxis, 256.0D), true);
 	}
 
-	private CustomCenterMutation centerMutation(double x, double z, boolean xAxis, double delta)
-	{
-		double adjusted = clamp((xAxis ? x : z) + delta, MINIMUM_COORDINATE, MAXIMUM_COORDINATE);
-		return xAxis ? new CustomCenterMutation(adjusted, z) : new CustomCenterMutation(x, adjusted);
-	}
-
-	private Element resetElement(EditorSnapshot snapshot, UUID viewerId)
-	{
-		UIElement element = new UIElement("rtp-center-reset");
-		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Reset Center / Target");
-		element.setMaterial(new MaterialBlock(Material.COMPASS));
-		element.addLore(ChatColor.GRAY + "Use the source world and portal center.");
-		element.addLore(ChatColor.GRAY + "Clears retained custom coordinates.");
-		element.addLore(ChatColor.DARK_GRAY + "Left click to reset.");
-		element.onLeftClick(clicked -> dispatch(snapshot, viewerId, new ResetCenterTargetMutation()));
-		return element;
-	}
-
-	private Element minimumRadiusElement(EditorSnapshot snapshot, UUID viewerId)
-	{
-		SettingsSnapshot settings = snapshot.settings();
-		return numericElement(snapshot, viewerId, new NumericControl(
-				"rtp-minimum-radius", "Minimum Radius", Integer.toString(settings.minimumRadius()),
-				"Inner edge of the destination annulus.", Material.SPYGLASS, "128", "1024",
-				adjustMinimumRadius(settings, 128), adjustMinimumRadius(settings, -128),
-				adjustMinimumRadius(settings, 1024), adjustMinimumRadius(settings, -1024), true));
-	}
-
-	private Element maximumRadiusElement(EditorSnapshot snapshot, UUID viewerId)
-	{
-		SettingsSnapshot settings = snapshot.settings();
-		return numericElement(snapshot, viewerId, new NumericControl(
-				"rtp-maximum-radius", "Maximum Radius", Integer.toString(settings.maximumRadius()),
-				"Outer edge of the destination annulus.", Material.TARGET, "128", "1024",
-				adjustMaximumRadius(settings, 128), adjustMaximumRadius(settings, -128),
-				adjustMaximumRadius(settings, 1024), adjustMaximumRadius(settings, -1024), true));
-	}
-
-	private RadiiMutation adjustMinimumRadius(SettingsSnapshot settings, int delta)
-	{
-		int selected = clamp(settings.minimumRadius() + delta, 0, MAXIMUM_RADIUS);
-		if(selected < settings.maximumRadius())
-		{
-			return new RadiiMutation(selected, settings.maximumRadius());
-		}
-		if(selected < MAXIMUM_RADIUS)
-		{
-			return new RadiiMutation(selected, selected + 1);
-		}
-		return new RadiiMutation(MAXIMUM_RADIUS - 1, MAXIMUM_RADIUS);
-	}
-
-	private RadiiMutation adjustMaximumRadius(SettingsSnapshot settings, int delta)
-	{
-		int selected = clamp(settings.maximumRadius() + delta, 0, MAXIMUM_RADIUS);
-		if(selected > settings.minimumRadius())
-		{
-			return new RadiiMutation(settings.minimumRadius(), selected);
-		}
-		if(selected > 0)
-		{
-			return new RadiiMutation(selected - 1, selected);
-		}
-		return new RadiiMutation(0, 1);
-	}
-
-	private Element verticalModeElement(EditorSnapshot snapshot, UUID viewerId)
-	{
-		SettingsSnapshot settings = snapshot.settings();
-		UIElement element = new UIElement("rtp-vertical-mode");
-		element.setName(ChatColor.GREEN + "" + ChatColor.BOLD + "Vertical: " + verticalLabel(settings.verticalMode()));
-		element.setMaterial(new MaterialBlock(settings.verticalMode() == RtpVerticalMode.SURFACE ? Material.GRASS_BLOCK : Material.AMETHYST_SHARD));
-		element.addLore(ChatColor.GRAY + "Choose surface or preferred-average search.");
-		element.addLore(ChatColor.DARK_GRAY + "Left/Shift-left: next.");
-		element.addLore(ChatColor.DARK_GRAY + "Right/Shift-right: previous.");
-		VerticalModeMutation next = new VerticalModeMutation(cycle(settings.verticalMode(), 1));
-		VerticalModeMutation previous = new VerticalModeMutation(cycle(settings.verticalMode(), -1));
-		bindBidirectional(element, snapshot, viewerId, next, previous);
-		return element;
-	}
-
-	private Element yElement(EditorSnapshot snapshot, UUID viewerId, YField field)
+	private NumericControl yControl(EditorSnapshot snapshot, YField field)
 	{
 		SettingsSnapshot settings = snapshot.settings();
 		WorldOption target = snapshot.world(settings.targetWorldKey());
@@ -321,27 +637,48 @@ public final class RtpPortalEditor
 			case UPPER -> settings.upperY();
 			case PREFERRED -> settings.preferredY();
 		};
-		String id = switch(field)
+		TextKey label = switch(field)
 		{
-			case LOWER -> "rtp-lower-y";
-			case UPPER -> "rtp-upper-y";
-			case PREFERRED -> "rtp-preferred-y";
-		};
-		String label = switch(field)
-		{
-			case LOWER -> "Lower Y";
-			case UPPER -> "Upper Y";
-			case PREFERRED -> "Preferred Y";
+			case LOWER -> WormholesMessages.RTP_LABEL_LOWER_Y;
+			case UPPER -> WormholesMessages.RTP_LABEL_UPPER_Y;
+			case PREFERRED -> WormholesMessages.RTP_LABEL_PREFERRED_Y;
 		};
 		boolean enabled = target != null;
-		Mutation left = enabled ? adjustY(settings, target, field, 1) : null;
-		Mutation right = enabled ? adjustY(settings, target, field, -1) : null;
-		Mutation shiftLeft = enabled ? adjustY(settings, target, field, 8) : null;
-		Mutation shiftRight = enabled ? adjustY(settings, target, field, -8) : null;
-		return numericElement(snapshot, viewerId, new NumericControl(id, label, Integer.toString(current),
-				enabled ? "Legal feet-height search bound." : "Load the target world to edit Y values.",
-				field == YField.PREFERRED ? Material.AMETHYST_SHARD : Material.LADDER,
-				"1", "8", left, right, shiftLeft, shiftRight, enabled));
+		return new NumericControl(label, Integer.toString(current), WormholesMessages.RTP_DESCRIPTION_Y,
+				field == YField.PREFERRED ? Material.AMETHYST_SHARD : Material.LADDER, "1", "8",
+				enabled ? adjustY(settings, target, field, -1) : null,
+				enabled ? adjustY(settings, target, field, 1) : null,
+				enabled ? adjustY(settings, target, field, -8) : null,
+				enabled ? adjustY(settings, target, field, 8) : null,
+				enabled);
+	}
+
+	private CustomCenterMutation centerMutation(double x, double z, boolean xAxis, double delta)
+	{
+		double adjusted = clamp((xAxis ? x : z) + delta, MINIMUM_COORDINATE, MAXIMUM_COORDINATE);
+		return xAxis ? new CustomCenterMutation(adjusted, z) : new CustomCenterMutation(x, adjusted);
+	}
+
+	private RadiiMutation adjustMinimumRadius(SettingsSnapshot settings, int delta)
+	{
+		int selected = clamp(settings.minimumRadius() + delta, 0, MAXIMUM_RADIUS);
+		if(selected < settings.maximumRadius())
+		{
+			return new RadiiMutation(selected, settings.maximumRadius());
+		}
+		return selected < MAXIMUM_RADIUS
+				? new RadiiMutation(selected, selected + 1)
+				: new RadiiMutation(MAXIMUM_RADIUS - 1, MAXIMUM_RADIUS);
+	}
+
+	private RadiiMutation adjustMaximumRadius(SettingsSnapshot settings, int delta)
+	{
+		int selected = clamp(settings.maximumRadius() + delta, 0, MAXIMUM_RADIUS);
+		if(selected > settings.minimumRadius())
+		{
+			return new RadiiMutation(settings.minimumRadius(), selected);
+		}
+		return selected > 0 ? new RadiiMutation(selected - 1, selected) : new RadiiMutation(0, 1);
 	}
 
 	private YMutation adjustY(SettingsSnapshot settings, WorldOption target, YField field, int delta)
@@ -366,150 +703,14 @@ public final class RtpPortalEditor
 		return new YMutation(lower, upper, preferred);
 	}
 
-	private Element allocationElement(EditorSnapshot snapshot, UUID viewerId)
+	private Page numericParent(NumericField field)
 	{
-		SettingsSnapshot settings = snapshot.settings();
-		UIElement element = new UIElement("rtp-allocation");
-		element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Allocation: " + allocationLabel(settings.allocationMode()));
-		element.setMaterial(new MaterialBlock(settings.allocationMode() == RtpAllocationMode.SHARED ? Material.ENDER_CHEST : Material.PLAYER_HEAD));
-		element.addLore(ChatColor.GRAY + "Shared route or private reservations.");
-		element.addLore(ChatColor.DARK_GRAY + "Left/Shift-left: next.");
-		element.addLore(ChatColor.DARK_GRAY + "Right/Shift-right: previous.");
-		AllocationMutation next = new AllocationMutation(cycle(settings.allocationMode(), 1));
-		AllocationMutation previous = new AllocationMutation(cycle(settings.allocationMode(), -1));
-		bindBidirectional(element, snapshot, viewerId, next, previous);
-		return element;
-	}
-
-	private Element rotationElement(EditorSnapshot snapshot, UUID viewerId)
-	{
-		SettingsSnapshot settings = snapshot.settings();
-		UIElement element = new UIElement("rtp-shared-rotation");
-		element.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Rotation: " + rotationLabel(settings.rotationMode()));
-		element.setMaterial(new MaterialBlock(Material.CLOCK));
-		element.addLore(ChatColor.GRAY + "Controls shared destination rotation.");
-		element.addLore(ChatColor.DARK_GRAY + "Left/Shift-left: next.");
-		element.addLore(ChatColor.DARK_GRAY + "Right/Shift-right: previous.");
-		RotationMutation next = new RotationMutation(cycle(settings.rotationMode(), 1));
-		RotationMutation previous = new RotationMutation(cycle(settings.rotationMode(), -1));
-		bindBidirectional(element, snapshot, viewerId, next, previous);
-		return element;
-	}
-
-	private Element cycleElement(EditorSnapshot snapshot, UUID viewerId)
-	{
-		long current = snapshot.settings().cycleDurationMillis();
-		return numericElement(snapshot, viewerId, new NumericControl(
-				"rtp-cycle-duration", "Cycle Duration", formatDuration(current),
-				"Time between shared timed rotations.", Material.CLOCK, "30s", "5m",
-				new CycleDurationMutation(clamp(current + 30_000L, MINIMUM_CYCLE_MILLIS, MAXIMUM_CYCLE_MILLIS)),
-				new CycleDurationMutation(clamp(current - 30_000L, MINIMUM_CYCLE_MILLIS, MAXIMUM_CYCLE_MILLIS)),
-				new CycleDurationMutation(clamp(current + 300_000L, MINIMUM_CYCLE_MILLIS, MAXIMUM_CYCLE_MILLIS)),
-				new CycleDurationMutation(clamp(current - 300_000L, MINIMUM_CYCLE_MILLIS, MAXIMUM_CYCLE_MILLIS)), true));
-	}
-
-	private Element leaseElement(EditorSnapshot snapshot, UUID viewerId)
-	{
-		long current = snapshot.settings().leaseIdleMillis();
-		return numericElement(snapshot, viewerId, new NumericControl(
-				"rtp-lease-idle", "Lease Idle", formatDuration(current),
-				"Delay before unattended destination leases release.", Material.LEAD, "5s", "30s",
-				new LeaseIdleMutation(clamp(current + 5_000L, MINIMUM_LEASE_MILLIS, MAXIMUM_LEASE_MILLIS)),
-				new LeaseIdleMutation(clamp(current - 5_000L, MINIMUM_LEASE_MILLIS, MAXIMUM_LEASE_MILLIS)),
-				new LeaseIdleMutation(clamp(current + 30_000L, MINIMUM_LEASE_MILLIS, MAXIMUM_LEASE_MILLIS)),
-				new LeaseIdleMutation(clamp(current - 30_000L, MINIMUM_LEASE_MILLIS, MAXIMUM_LEASE_MILLIS)), true));
-	}
-
-	private Element reservationElement(EditorSnapshot snapshot, UUID viewerId)
-	{
-		long current = snapshot.settings().reservationTimeoutMillis();
-		return numericElement(snapshot, viewerId, new NumericControl(
-				"rtp-reservation-timeout", "Reservation Leave", formatDuration(current),
-				"Delay before an unused private reservation releases.", Material.TRIPWIRE_HOOK, "5s", "30s",
-				new ReservationTimeoutMutation(clamp(current + 5_000L, MINIMUM_RESERVATION_MILLIS, MAXIMUM_RESERVATION_MILLIS)),
-				new ReservationTimeoutMutation(clamp(current - 5_000L, MINIMUM_RESERVATION_MILLIS, MAXIMUM_RESERVATION_MILLIS)),
-				new ReservationTimeoutMutation(clamp(current + 30_000L, MINIMUM_RESERVATION_MILLIS, MAXIMUM_RESERVATION_MILLIS)),
-				new ReservationTimeoutMutation(clamp(current - 30_000L, MINIMUM_RESERVATION_MILLIS, MAXIMUM_RESERVATION_MILLIS)), true));
-	}
-
-	private Element rimElement(EditorSnapshot snapshot, UUID viewerId)
-	{
-		boolean enabled = snapshot.settings().rimEnabled();
-		UIElement element = new UIElement("rtp-rim");
-		element.setName((enabled ? ChatColor.GREEN : ChatColor.RED) + "" + ChatColor.BOLD + "Rim: " + (enabled ? "On" : "Off"));
-		element.setMaterial(new MaterialBlock(enabled ? Material.GLOWSTONE_DUST : Material.GUNPOWDER));
-		element.setEnchanted(enabled);
-		element.addLore(ChatColor.GRAY + "Show private RTP readiness on the rim.");
-		element.addLore(ChatColor.DARK_GRAY + "Any left/right click toggles.");
-		RimMutation mutation = new RimMutation(!enabled);
-		bindBidirectional(element, snapshot, viewerId, mutation, mutation);
-		return element;
-	}
-
-	private Element manualElement(EditorSnapshot snapshot, UUID viewerId)
-	{
-		boolean shared = snapshot.settings().allocationMode() == RtpAllocationMode.SHARED;
-		ManualAction action = shared ? ManualAction.REROLL : ManualAction.REBUILD_POOL;
-		UIElement element = new UIElement(shared ? "rtp-manual-reroll" : "rtp-rebuild-pool");
-		element.setName(ChatColor.RED + "" + ChatColor.BOLD + (shared ? "Manual Reroll" : "Rebuild Pool"));
-		element.setMaterial(new MaterialBlock(shared ? Material.FIRE_CHARGE : Material.BLAZE_POWDER));
-		element.addLore(ChatColor.GRAY + (shared ? "Prepare a replacement shared route." : "Rebuild free candidates without removing reservations."));
-		element.addLore(" ");
-		element.addLore(ChatColor.RED + "" + ChatColor.UNDERLINE + "Shift + Left Click to confirm");
-		element.onShiftLeftClick(clicked -> host.manual(viewerId, snapshot.configurationRevision(), action));
-		return element;
-	}
-
-	private Element backElement(Window window, UUID viewerId)
-	{
-		UIElement element = new UIElement("rtp-back");
-		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Back");
-		element.setMaterial(new MaterialBlock(Material.ARROW));
-		element.addLore(ChatColor.GRAY + "Return to the portal menu.");
-		element.onLeftClick(clicked ->
+		return switch(field)
 		{
-			window.close();
-			host.back(viewerId);
-		});
-		return element;
-	}
-
-	private Element numericElement(EditorSnapshot snapshot, UUID viewerId, NumericControl control)
-	{
-		UIElement element = new UIElement(control.id());
-		element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + control.label() + " " + ChatColor.WHITE + control.value());
-		element.setMaterial(new MaterialBlock(control.material()));
-		element.addLore(ChatColor.GRAY + control.description());
-		element.addLore(" ");
-		element.addLore(ChatColor.GRAY + "Current: " + ChatColor.AQUA + control.value());
-		element.addLore(" ");
-		if(!control.enabled())
-		{
-			element.addLore(ChatColor.RED + "Unavailable until the target world is loaded.");
-			return element;
-		}
-		element.addLore(ChatColor.DARK_GRAY + "Left: +" + control.normalStep());
-		element.addLore(ChatColor.DARK_GRAY + "Right: -" + control.normalStep());
-		element.addLore(ChatColor.DARK_GRAY + "Shift-left: +" + control.largeStep());
-		element.addLore(ChatColor.DARK_GRAY + "Shift-right: -" + control.largeStep());
-		element.onLeftClick(clicked -> dispatch(snapshot, viewerId, control.left()));
-		element.onRightClick(clicked -> dispatch(snapshot, viewerId, control.right()));
-		element.onShiftLeftClick(clicked -> dispatch(snapshot, viewerId, control.shiftLeft()));
-		element.onShiftRightClick(clicked -> dispatch(snapshot, viewerId, control.shiftRight()));
-		return element;
-	}
-
-	private void bindBidirectional(UIElement element, EditorSnapshot snapshot, UUID viewerId, Mutation next, Mutation previous)
-	{
-		element.onLeftClick(clicked -> dispatch(snapshot, viewerId, next));
-		element.onShiftLeftClick(clicked -> dispatch(snapshot, viewerId, next));
-		element.onRightClick(clicked -> dispatch(snapshot, viewerId, previous));
-		element.onShiftRightClick(clicked -> dispatch(snapshot, viewerId, previous));
-	}
-
-	private void dispatch(EditorSnapshot snapshot, UUID viewerId, Mutation mutation)
-	{
-		host.mutate(viewerId, snapshot.configurationRevision(), mutation);
+			case CENTER_X, CENTER_Z, MINIMUM_RADIUS, MAXIMUM_RADIUS -> Page.DESTINATION;
+			case LOWER_Y, UPPER_Y, PREFERRED_Y -> Page.LANDING;
+			case CYCLE_DURATION, LEASE_IDLE, RESERVATION_TIMEOUT -> Page.ROUTING;
+		};
 	}
 
 	private static Material statusMaterial(StatusState state)
@@ -523,60 +724,36 @@ public final class RtpPortalEditor
 		};
 	}
 
-	private static ChatColor statusColor(StatusState state)
+	private String statusLabel(StatusState state)
 	{
-		return switch(state)
+		TextKey key = switch(state)
 		{
-			case READY -> ChatColor.GREEN;
-			case WARMING, REROLLING -> ChatColor.YELLOW;
-			case IDLE -> ChatColor.GRAY;
-			case BACKOFF, FAILED, INTEGRATION_FAILED, TARGET_WORLD_UNAVAILABLE -> ChatColor.RED;
+			case READY -> WormholesMessages.RTP_STATUS_READY;
+			case WARMING -> WormholesMessages.RTP_STATUS_WARMING;
+			case REROLLING -> WormholesMessages.RTP_STATUS_REROLLING;
+			case BACKOFF -> WormholesMessages.RTP_STATUS_BACKOFF;
+			case TARGET_WORLD_UNAVAILABLE -> WormholesMessages.RTP_STATUS_WORLD_UNAVAILABLE;
+			case INTEGRATION_FAILED -> WormholesMessages.RTP_STATUS_INTEGRATION_FAILED;
+			case FAILED -> WormholesMessages.RTP_STATUS_FAILED;
+			case IDLE -> WormholesMessages.RTP_STATUS_IDLE;
 		};
+		return Wormholes.text().plain(key);
 	}
 
-	private static String statusLabel(StatusState state)
+	private String readiness(boolean ready)
 	{
-		return switch(state)
+		return Wormholes.text().plain(ready ? WormholesMessages.LABEL_READY : WormholesMessages.LABEL_PREPARING);
+	}
+
+	private String rotationLabel(RtpRotationMode mode)
+	{
+		TextKey key = switch(mode)
 		{
-			case READY -> "Ready";
-			case WARMING -> "Warming";
-			case REROLLING -> "Rerolling";
-			case BACKOFF -> "Retry Backoff";
-			case TARGET_WORLD_UNAVAILABLE -> "Target World Unavailable";
-			case INTEGRATION_FAILED -> "Access Integration Failed";
-			case FAILED -> "Failed";
-			case IDLE -> "Idle";
+			case STATIC -> WormholesMessages.RTP_ROTATION_STATIC;
+			case TIMED -> WormholesMessages.RTP_ROTATION_TIMED;
+			case ON_TRAVERSAL -> WormholesMessages.RTP_ROTATION_TRIP;
 		};
-	}
-
-	private static String readiness(boolean ready)
-	{
-		return ready ? ChatColor.GREEN + "Ready" : ChatColor.YELLOW + "Preparing";
-	}
-
-	private static String centerLabel(RtpCenterMode mode)
-	{
-		return mode == RtpCenterMode.PORTAL_RELATIVE ? "Portal Relative" : "Custom";
-	}
-
-	private static String verticalLabel(RtpVerticalMode mode)
-	{
-		return mode == RtpVerticalMode.SURFACE ? "Surface" : "Preferred Average";
-	}
-
-	private static String allocationLabel(RtpAllocationMode mode)
-	{
-		return mode == RtpAllocationMode.SHARED ? "Shared" : "Per-player";
-	}
-
-	private static String rotationLabel(RtpRotationMode mode)
-	{
-		return switch(mode)
-		{
-			case STATIC -> "Static";
-			case TIMED -> "Timed";
-			case ON_TRAVERSAL -> "On Traversal";
-		};
+		return Wormholes.text().plain(key);
 	}
 
 	private static String formatCoordinate(double coordinate)
@@ -584,21 +761,27 @@ public final class RtpPortalEditor
 		return Double.toString(coordinate);
 	}
 
-	private static String formatDuration(long durationMillis)
+	private String formatDuration(long durationMillis)
 	{
 		if(durationMillis % 3_600_000L == 0L)
 		{
-			return durationMillis / 3_600_000L + "h";
+			return Wormholes.text().plain(WormholesMessages.RTP_DURATION_HOURS, durationArguments(durationMillis / 3_600_000L));
 		}
 		if(durationMillis % 60_000L == 0L)
 		{
-			return durationMillis / 60_000L + "m";
+			return Wormholes.text().plain(WormholesMessages.RTP_DURATION_MINUTES, durationArguments(durationMillis / 60_000L));
 		}
 		if(durationMillis % 1_000L == 0L)
 		{
-			return durationMillis / 1_000L + "s";
+			return Wormholes.text().plain(WormholesMessages.RTP_DURATION_SECONDS, durationArguments(durationMillis / 1_000L));
 		}
-		return String.format(Locale.ROOT, "%.1fs", Double.valueOf(durationMillis / 1_000.0D));
+		String seconds = String.format(Locale.ROOT, "%.1f", Double.valueOf(durationMillis / 1_000.0D));
+		return Wormholes.text().plain(WormholesMessages.RTP_DURATION_DECIMAL_SECONDS, durationArguments(seconds));
+	}
+
+	private static MessageArgs durationArguments(Object value)
+	{
+		return WormholesLocalization.args(MessageArgument.untrusted("value", value));
 	}
 
 	private static int clamp(int value, int minimum, int maximum)
@@ -616,17 +799,15 @@ public final class RtpPortalEditor
 		return Math.max(minimum, Math.min(maximum, value));
 	}
 
-	private static <E extends Enum<E>> E cycle(E current, int direction)
-	{
-		E[] values = current.getDeclaringClass().getEnumConstants();
-		return values[Math.floorMod(current.ordinal() + direction, values.length)];
-	}
-
 	public interface Host
 	{
 		EditorSnapshot snapshot(UUID viewerId);
 
 		void mutate(UUID viewerId, long expectedRevision, Mutation mutation);
+
+		void apply(UUID viewerId, long expectedRevision);
+
+		void discard(UUID viewerId);
 
 		void manual(UUID viewerId, long expectedRevision, ManualAction action);
 
@@ -634,36 +815,60 @@ public final class RtpPortalEditor
 	}
 
 	private record NumericControl(
-			String id,
-			String label,
+			TextKey label,
 			String value,
-			String description,
+			TextKey description,
 			Material material,
-			String normalStep,
+			String smallStep,
 			String largeStep,
-			Mutation left,
-			Mutation right,
-			Mutation shiftLeft,
-			Mutation shiftRight,
+			Mutation decreaseSmall,
+			Mutation increaseSmall,
+			Mutation decreaseLarge,
+			Mutation increaseLarge,
 			boolean enabled)
 	{
 		private NumericControl
 		{
-			Objects.requireNonNull(id, "id");
 			Objects.requireNonNull(label, "label");
 			Objects.requireNonNull(value, "value");
 			Objects.requireNonNull(description, "description");
 			Objects.requireNonNull(material, "material");
-			Objects.requireNonNull(normalStep, "normalStep");
+			Objects.requireNonNull(smallStep, "smallStep");
 			Objects.requireNonNull(largeStep, "largeStep");
 			if(enabled)
 			{
-				Objects.requireNonNull(left, "left");
-				Objects.requireNonNull(right, "right");
-				Objects.requireNonNull(shiftLeft, "shiftLeft");
-				Objects.requireNonNull(shiftRight, "shiftRight");
+				Objects.requireNonNull(decreaseSmall, "decreaseSmall");
+				Objects.requireNonNull(increaseSmall, "increaseSmall");
+				Objects.requireNonNull(decreaseLarge, "decreaseLarge");
+				Objects.requireNonNull(increaseLarge, "increaseLarge");
 			}
 		}
+	}
+
+	private enum Page
+	{
+		OVERVIEW,
+		DESTINATION,
+		LANDING,
+		ROUTING,
+		EFFECTS,
+		NUMERIC,
+		MANUAL_CONFIRM,
+		EXIT_CONFIRM
+	}
+
+	private enum NumericField
+	{
+		CENTER_X,
+		CENTER_Z,
+		MINIMUM_RADIUS,
+		MAXIMUM_RADIUS,
+		LOWER_Y,
+		UPPER_Y,
+		PREFERRED_Y,
+		CYCLE_DURATION,
+		LEASE_IDLE,
+		RESERVATION_TIMEOUT
 	}
 
 	private enum YField
@@ -672,5 +877,4 @@ public final class RtpPortalEditor
 		UPPER,
 		PREFERRED
 	}
-
 }

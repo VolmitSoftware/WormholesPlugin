@@ -3,7 +3,6 @@ package art.arcane.wormholes;
 import java.util.Set;
 import java.util.UUID;
 
-import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.block.Block;
 import org.bukkit.event.Listener;
@@ -13,6 +12,7 @@ import art.arcane.wormholes.portal.LocalPortal;
 import art.arcane.wormholes.portal.PortalFrame;
 import art.arcane.wormholes.portal.PortalStructure;
 import art.arcane.wormholes.portal.PortalType;
+import art.arcane.wormholes.localization.WormholesMessages;
 import art.arcane.wormholes.util.Axis;
 import art.arcane.wormholes.util.Cuboid;
 import art.arcane.wormholes.util.Direction;
@@ -81,11 +81,11 @@ public class ConstructionManager implements Listener
 			portal.open();
 			portal.save();
 			Wormholes.portalManager.addLocalPortal(portal);
-			Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + "Portal opened. Hold the wand and CLICK the portal to configure.", center);
+			Wormholes.effectManager.playNotificationSuccess(Wormholes.text().legacy(WormholesMessages.PORTAL_OPENED), center);
 			return;
 		}
 
-		Wormholes.effectManager.playNotificationFail(ChatColor.RED + "Portal must lie flat on one wall, floor, or ceiling.", new KList<Block>(blocks).getRandom().getLocation());
+		Wormholes.effectManager.playNotificationFail(Wormholes.text().legacy(WormholesMessages.PORTAL_MUST_BE_FLAT), new KList<Block>(blocks).getRandom().getLocation());
 		Wormholes.effectManager.playPortalFailOpen(blocks);
 		Wormholes.blockManager.refund(blocks, type);
 	}

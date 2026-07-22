@@ -1,9 +1,14 @@
 package art.arcane.wormholes.door;
 
 import art.arcane.volmlib.util.bukkit.WorldIdentity;
+import art.arcane.volmlib.util.localization.MessageArgument;
+import art.arcane.volmlib.util.localization.TextKey;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.localization.WormholesLocalization;
+import art.arcane.wormholes.localization.WormholesMessages;
 import art.arcane.wormholes.platform.WormholesPlatform;
+import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.wormholes.survival.doors.dimension.PocketWorldService;
 import org.bukkit.Chunk;
 import org.bukkit.GameMode;
@@ -186,6 +191,16 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		return active;
 	}
 
+	public void onLanguageReload()
+	{
+		DoorItemService activeItems = items();
+		activeItems.acceptWormholeRune(plugin.getBlockManager().getWormholeRune(1));
+		if(!activeItems.registerRecipes())
+		{
+			plugin.getLogger().warning("One or more dimensional-door recipes could not be re-registered after a language reload.");
+		}
+	}
+
 	public DoorStateService state()
 	{
 		DoorStateService active = state;
@@ -221,7 +236,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		if(result == DoorItemService.CraftHookResult.SHIFT_CRAFT_BLOCKED
 			&& event.getWhoClicked() instanceof Player player)
 		{
-			player.sendMessage(Wormholes.tag + "Craft dimensional doors one at a time so each receives a unique identity.");
+			WormholesAudience.sendMessage(player, Wormholes.text().component(WormholesMessages.DOOR_CRAFT_ONE));
 		}
 	}
 
@@ -274,14 +289,14 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		{
 			plugin.getLogger().log(Level.SEVERE, "Could not persist dimensional-door pair "
 				+ contents.pairIdentity().pairId(), ex);
-			event.getPlayer().sendMessage(Wormholes.tag + "The door pair could not be unpacked; the kit was not consumed.");
+			WormholesAudience.sendMessage(event.getPlayer(), Wormholes.text().component(WormholesMessages.DOOR_PAIR_UNPACK_FAILED));
 			return;
 		}
 
 		event.setCancelled(true);
 		consumeHeldItem(event.getPlayer(), event.getHand());
 		giveOrDrop(event.getPlayer(), contents.endpointA(), contents.endpointB());
-		event.getPlayer().sendMessage(Wormholes.tag + "The entangled pair separated into linked Wormhole Doors A and B.");
+		WormholesAudience.sendMessage(event.getPlayer(), Wormholes.text().component(WormholesMessages.DOOR_PAIR_UNPACKED));
 	}
 
 	@EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -291,8 +306,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		if(carriedIdentity.isPresent() && !DoorSkin.isPlayerOperable(event.getItemInHand().getType()))
 		{
 			event.setCancelled(true);
-			event.getPlayer().sendMessage(Wormholes.tag
-				+ "Combine this legacy dimensional door with a wooden door before placing it.");
+			WormholesAudience.sendMessage(event.getPlayer(), Wormholes.text().component(WormholesMessages.DOOR_LEGACY_COMBINE));
 			return;
 		}
 		Optional<DoorItemIdentity> decoded = items().decodeDoor(event.getItemInHand());
@@ -309,7 +323,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		if(identity.kind() == DoorKind.PAIR && state().findPair(identity.pairId()).isEmpty())
 		{
 			event.setCancelled(true);
-			event.getPlayer().sendMessage(Wormholes.tag + "That paired door has no registered partner identity.");
+			WormholesAudience.sendMessage(event.getPlayer(), Wormholes.text().component(WormholesMessages.DOOR_PAIR_MISSING));
 			return;
 		}
 
@@ -332,7 +346,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		{
 			event.setCancelled(true);
 			plugin.getLogger().log(Level.WARNING, "Rejected dimensional-door placement for " + identity.itemId(), ex);
-			event.getPlayer().sendMessage(Wormholes.tag + "That dimensional door is already placed, or its state could not be saved.");
+			WormholesAudience.sendMessage(event.getPlayer(), Wormholes.text().component(WormholesMessages.DOOR_ALREADY_PLACED));
 			return;
 		}
 		RuntimeDoor runtime = installRuntime(endpoint);
@@ -367,7 +381,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			if(endpoint.identity().kind() == DoorKind.RETURN)
 			{
 				event.setCancelled(true);
-				event.getPlayer().sendMessage(Wormholes.tag + "The dimensional exit is anchored to this pocket.");
+				WormholesAudience.sendMessage(event.getPlayer(), Wormholes.text().component(WormholesMessages.DOOR_EXIT_ANCHORED));
 			}
 			return;
 		}
@@ -376,7 +390,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		if(supported.isPresent())
 		{
 			event.setCancelled(true);
-			event.getPlayer().sendMessage(Wormholes.tag + "Break the dimensional door before removing its support block.");
+			WormholesAudience.sendMessage(event.getPlayer(), Wormholes.text().component(WormholesMessages.DOOR_BREAK_FIRST));
 			return;
 		}
 		if(isPocketCoreBlock(event.getBlock()))
@@ -729,12 +743,12 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			destination.pairId(), destination.endpoint());
 		if(target.isEmpty())
 		{
-			abortTransit(traveler, source, "The linked Wormhole Door has not been placed yet.", TicketContext.NONE);
+			abortTransit(traveler, source, WormholesMessages.DOOR_LINK_NOT_PLACED, TicketContext.NONE);
 			return;
 		}
 		loadEndpointArrival(target.get(), transit, arrival ->
 			closeAndTeleport(traveler, source, arrival, TicketContext.NONE),
-			() -> abortTransit(traveler, source, "The linked Wormhole Door is unavailable or obstructed.", TicketContext.NONE));
+			() -> abortTransit(traveler, source, WormholesMessages.DOOR_LINK_UNAVAILABLE, TicketContext.NONE));
 	}
 
 	private void beginPocketTransit(
@@ -746,14 +760,13 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 	{
 		if(pocketWorldService.isPocketWorld(sourceWorld))
 		{
-			abortTransit(traveler, source,
-				"A pocket door cannot open another pocket from inside the shared void dimension.", TicketContext.NONE);
+			abortTransit(traveler, source, WormholesMessages.DOOR_NESTED_POCKET, TicketContext.NONE);
 			return;
 		}
 		World pocketWorld = pocketWorldService.world().orElse(null);
 		if(pocketWorld == null)
 		{
-			abortTransit(traveler, source, "The pocket dimension is not ready.", TicketContext.NONE);
+			abortTransit(traveler, source, WormholesMessages.DOOR_POCKET_NOT_READY, TicketContext.NONE);
 			return;
 		}
 
@@ -766,13 +779,13 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		catch(IOException | RuntimeException ex)
 		{
 			plugin.getLogger().log(Level.SEVERE, "Could not allocate dimensional pocket", ex);
-			abortTransit(traveler, source, "The pocket dimension could not be allocated.", TicketContext.NONE);
+			abortTransit(traveler, source, WormholesMessages.DOOR_POCKET_ALLOCATION_FAILED, TicketContext.NONE);
 			return;
 		}
 		Optional<Location> safeReturn = safeSourceDoorReturn(sourceWorld, transit);
 		if(safeReturn.isEmpty())
 		{
-			abortTransit(traveler, source, "A safe return route could not be found on this side of the door.", TicketContext.NONE);
+			abortTransit(traveler, source, WormholesMessages.DOOR_SAFE_RETURN_NOT_FOUND, TicketContext.NONE);
 			return;
 		}
 		Location savedReturnLocation = safeReturn.get();
@@ -817,7 +830,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			catch(IOException | RuntimeException ex)
 			{
 				plugin.getLogger().log(Level.SEVERE, "Could not provision pocket " + space.spaceId(), ex);
-				abortTransit(traveler, source, "The pocket could not be prepared safely.", TicketContext.NONE);
+				abortTransit(traveler, source, WormholesMessages.DOOR_POCKET_PREPARE_FAILED, TicketContext.NONE);
 				return;
 			}
 
@@ -842,7 +855,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			catch(IOException ex)
 			{
 				plugin.getLogger().log(Level.SEVERE, "Could not save a pocket return ticket", ex);
-				abortTransit(traveler, source, "A safe return route could not be saved.", TicketContext.NONE);
+				abortTransit(traveler, source, WormholesMessages.DOOR_RETURN_TICKET_SAVE_FAILED, TicketContext.NONE);
 				return;
 			}
 
@@ -852,11 +865,11 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			if(!isSafeStanding(arrival))
 			{
 				removeTicketQuietly(travelerId, ticket);
-				abortTransit(traveler, source, "The pocket entry is not safe.", TicketContext.NONE);
+				abortTransit(traveler, source, WormholesMessages.DOOR_POCKET_ENTRY_UNSAFE, TicketContext.NONE);
 				return;
 			}
 			closeAndTeleport(traveler, source, arrival, TicketContext.keep(ticket));
-		}, () -> abortTransit(traveler, source, "The pocket dimension could not load its entry chunk.", TicketContext.NONE));
+		}, () -> abortTransit(traveler, source, WormholesMessages.DOOR_POCKET_ENTRY_CHUNK_FAILED, TicketContext.NONE));
 	}
 
 	private void retirePreviousReturnDoor(World world, PocketSpace space, PlacedDoorEndpoint previous)
@@ -881,7 +894,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		Optional<ReturnTicket> found = state().getReturnTicket(traveler.getUniqueId());
 		if(found.isEmpty())
 		{
-			abortTransit(traveler, source, "You do not have a return route stored for this pocket.", TicketContext.NONE);
+			abortTransit(traveler, source, WormholesMessages.DOOR_NO_RETURN_ROUTE, TicketContext.NONE);
 			return;
 		}
 		ReturnTicket ticket = found.get();
@@ -893,7 +906,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 				() -> abortTransit(
 					traveler,
 					source,
-						"Your return door is unavailable or obstructed on its corresponding face.",
+						WormholesMessages.DOOR_RETURN_UNAVAILABLE,
 					TicketContext.NONE));
 			return;
 		}
@@ -909,7 +922,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		}
 		if(world == null)
 		{
-			abortTransit(traveler, source, "Your return world is not loaded.", TicketContext.NONE);
+			abortTransit(traveler, source, WormholesMessages.DOOR_RETURN_WORLD_UNLOADED, TicketContext.NONE);
 			return;
 		}
 		World targetWorld = world;
@@ -919,11 +932,11 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			Optional<Location> safe = findSafeNear(stored, 3);
 			if(safe.isEmpty())
 			{
-				abortTransit(traveler, source, "Your saved return point is obstructed.", TicketContext.NONE);
+				abortTransit(traveler, source, WormholesMessages.DOOR_RETURN_POINT_OBSTRUCTED, TicketContext.NONE);
 				return;
 			}
 			closeAndTeleport(traveler, source, safe.get(), TicketContext.remove(ticket));
-		}, () -> abortTransit(traveler, source, "Your saved return chunk could not be loaded.", TicketContext.NONE));
+		}, () -> abortTransit(traveler, source, WormholesMessages.DOOR_RETURN_CHUNK_FAILED, TicketContext.NONE));
 	}
 
 	private void beginPocketRescue(Player player)
@@ -931,7 +944,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		Optional<ReturnTicket> found = state().getReturnTicket(player.getUniqueId());
 		if(found.isEmpty())
 		{
-			loadPocketRescueFallback(player, null, "The pocket has no saved return route.");
+			loadPocketRescueFallback(player, null, WormholesMessages.DOOR_RESCUE_NO_ROUTE);
 			return;
 		}
 		ReturnTicket ticket = found.get();
@@ -942,7 +955,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		}
 		if(world == null || pocketWorldService.isPocketWorld(world))
 		{
-			loadPocketRescueFallback(player, ticket, "The saved return world is unavailable.");
+			loadPocketRescueFallback(player, ticket, WormholesMessages.DOOR_RESCUE_RETURN_WORLD_UNAVAILABLE);
 			return;
 		}
 		World targetWorld = world;
@@ -953,22 +966,22 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			Optional<Location> safe = findSafeNear(stored, 3);
 			if(safe.isEmpty())
 			{
-				loadPocketRescueFallback(player, ticket, "The saved return point is obstructed.");
+				loadPocketRescueFallback(player, ticket, WormholesMessages.DOOR_RESCUE_RETURN_POINT_OBSTRUCTED);
 				return;
 			}
 			beginPocketRescueTeleport(player, safe.get(), ticket);
 		}, () -> loadPocketRescueFallback(
-			player, ticket, "The saved return chunk could not be loaded."));
+			player, ticket, WormholesMessages.DOOR_RESCUE_RETURN_CHUNK_FAILED));
 	}
 
-	private void loadPocketRescueFallback(Player player, ReturnTicket ticket, String routeFailure)
+	private void loadPocketRescueFallback(Player player, ReturnTicket ticket, TextKey routeFailure)
 	{
 		if(!FoliaScheduler.runGlobal(plugin, () ->
 		{
 			World fallbackWorld = pocketRescueFallbackWorld();
 			if(fallbackWorld == null)
 			{
-				failPocketRescue(player, routeFailure + " No non-pocket fallback world is loaded.");
+				failPocketRescue(player, routeFailure, WormholesMessages.DOOR_RESCUE_NO_FALLBACK_WORLD);
 				return;
 			}
 			Location spawn = fallbackWorld.getSpawnLocation();
@@ -978,14 +991,14 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 				Optional<Location> safe = findSafeNear(currentSpawn, 3);
 				if(safe.isEmpty())
 				{
-					failPocketRescue(player, routeFailure + " The fallback spawn is obstructed.");
+					failPocketRescue(player, routeFailure, WormholesMessages.DOOR_RESCUE_FALLBACK_OBSTRUCTED);
 					return;
 				}
 				beginPocketRescueTeleport(player, safe.get(), ticket);
-			}, () -> failPocketRescue(player, routeFailure + " The fallback spawn could not be loaded."));
+			}, () -> failPocketRescue(player, routeFailure, WormholesMessages.DOOR_RESCUE_FALLBACK_CHUNK_FAILED));
 		}))
 		{
-			failPocketRescue(player, routeFailure + " The fallback ejection could not be scheduled.");
+			failPocketRescue(player, routeFailure, WormholesMessages.DOOR_RESCUE_FALLBACK_SCHEDULE_FAILED);
 		}
 	}
 
@@ -1043,7 +1056,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		catch(Throwable ex)
 		{
 			plugin.getLogger().log(Level.WARNING, "Could not initiate pocket rescue teleport", ex);
-			failPocketRescue(player, "The emergency ejection could not start.");
+			failPocketRescue(player, WormholesMessages.DOOR_RESCUE_START_FAILED, null);
 			return;
 		}
 		future.whenComplete((success, error) ->
@@ -1068,7 +1081,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 				releasePocketRescue(player);
 				if(!moved)
 				{
-					player.sendMessage(Wormholes.tag + "Your emergency ejection was cancelled; the route was kept.");
+					WormholesAudience.sendMessage(player, Wormholes.text().component(WormholesMessages.DOOR_RESCUE_CANCELLED));
 				}
 			}, retired);
 			if(!scheduled)
@@ -1091,13 +1104,17 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		releasePocketRescue(player);
 	}
 
-	private void failPocketRescue(Player player, String reason)
+	private void failPocketRescue(Player player, TextKey routeFailure, TextKey fallbackFailure)
 	{
 		Runnable retired = () -> releasePocketRescue(player);
 		if(!scheduleEntityWithRetirement(plugin, player, () ->
 		{
 			releasePocketRescue(player);
-			message(player, reason + " You remain protected at one heart.");
+			WormholesAudience.sendMessage(player, Wormholes.text().component(
+				WormholesMessages.DOOR_RESCUE_FAILED,
+				WormholesLocalization.args(
+					MessageArgument.untrusted("route", Wormholes.text().plain(routeFailure)),
+					MessageArgument.untrusted("fallback", fallbackFailure == null ? "" : Wormholes.text().plain(fallbackFailure)))));
 		}, retired))
 		{
 			retired.run();
@@ -1270,7 +1287,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 					{
 						removeTicketQuietly(traveler.getUniqueId(), ticketContext.expected());
 					}
-					message(traveler, "The dimensional door closed before transit completed.");
+					message(traveler, WormholesMessages.DOOR_CLOSED_DURING_TRANSIT);
 					return;
 				}
 				try
@@ -1286,7 +1303,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 					{
 						removeTicketQuietly(traveler.getUniqueId(), ticketContext.expected());
 					}
-					message(traveler, "The source door could not close safely.");
+					message(traveler, WormholesMessages.DOOR_SOURCE_CLOSE_FAILED);
 					return;
 				}
 				hideTransitVisual(endpoint.identity().itemId());
@@ -1301,7 +1318,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 				}
 		}))
 		{
-			abortTransit(traveler, source, "The source door region is unavailable.", ticketContext);
+			abortTransit(traveler, source, WormholesMessages.DOOR_SOURCE_REGION_UNAVAILABLE, ticketContext);
 		}
 	}
 
@@ -1325,7 +1342,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 			{
 				removeTicketQuietly(traveler.getUniqueId(), ticketContext.expected());
 			}
-			message(traveler, "The dimensional transit could not start.");
+			message(traveler, WormholesMessages.DOOR_TRANSIT_START_FAILED);
 			return;
 		}
 		teleportFuture.whenComplete((success, error) ->
@@ -1359,7 +1376,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 				}
 				if(!moved)
 				{
-					message(traveler, "The dimensional transit was cancelled.");
+					message(traveler, WormholesMessages.DOOR_TRANSIT_CANCELLED);
 				}
 			}, retired);
 			if(!scheduled)
@@ -1427,7 +1444,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		}
 	}
 
-	private void abortTransit(Entity traveler, RuntimeDoor source, String reason, TicketContext ticketContext)
+	private void abortTransit(Entity traveler, RuntimeDoor source, TextKey reason, TicketContext ticketContext)
 	{
 		completeCycle(source, false, source.cycle().physicallyOpen());
 		travelersInTransit.remove(traveler.getUniqueId(), traveler);
@@ -2029,11 +2046,13 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		}
 	}
 
-	private void message(Entity traveler, String text)
+	private void message(Entity traveler, TextKey key)
 	{
 		if(traveler instanceof Player player)
 		{
-			FoliaScheduler.runEntity(plugin, player, () -> player.sendMessage(Wormholes.tag + text));
+			FoliaScheduler.runEntity(plugin, player, () -> WormholesAudience.sendMessage(player, Wormholes.text().component(
+				WormholesMessages.DOOR_TRANSIT_MESSAGE,
+				WormholesLocalization.args(MessageArgument.untrusted("message", Wormholes.text().plain(key))))));
 		}
 	}
 

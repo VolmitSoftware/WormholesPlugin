@@ -30,6 +30,7 @@ public final class RtpPortalRuntimeTest
 	{
 		assertThrows(IllegalArgumentException.class, () -> RtpPortalRuntime.shared(1L, RtpRotationMode.TIMED, 0L));
 		assertThrows(IllegalArgumentException.class, () -> RtpPortalRuntime.perPlayer(1L, 0L));
+		assertThrows(IllegalArgumentException.class, () -> RtpPortalRuntime.perPlayer(1L, 1_000L, 0L));
 	}
 
 	@Test
@@ -298,6 +299,25 @@ public final class RtpPortalRuntimeTest
 		assertEquals(1, runtime.expireReservations(2_100L));
 		assertTrue(runtime.reservationFor(playerId).isEmpty());
 		assertEquals(3, runtime.snapshot().freeCandidates());
+	}
+
+	@Test
+	public void perPlayerRotationSwapsFromTheWarmPoolAtTheConfiguredDeadline()
+	{
+		RtpPortalRuntime runtime = RtpPortalRuntime.perPlayer(38L, 100L, 1_000L);
+		UUID playerId = uuid("rotating-player");
+		runtime.touchPlayer(playerId);
+		fillPerPlayer(runtime, 3, "rotating");
+		RtpDestination initial = runtime.reservePlayer(playerId, 100L).orElseThrow();
+
+		assertEquals(1_100L, runtime.snapshot().nextRotationAtMillis());
+		assertEquals(0, runtime.rotatePlayerReservations(1_099L));
+		assertEquals(1, runtime.rotatePlayerReservations(1_100L));
+		RtpDestination replacement = runtime.reservationFor(playerId).orElseThrow();
+
+		assertFalse(initial.equals(replacement));
+		assertTrue(runtime.snapshot().freeEntries().contains(initial));
+		assertEquals(2_100L, runtime.snapshot().nextRotationAtMillis());
 	}
 
 	@Test

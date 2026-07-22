@@ -70,13 +70,11 @@ public final class RtpSampler
 	{
 		int lowerY = settings.getLowerY();
 		int upperY = settings.getUpperY();
-		int startY = clamp(surfaceFeetYHint, lowerY, upperY);
-		List<Integer> probes = new ArrayList<Integer>(startY - lowerY + 1);
-		for(int y = startY; y >= lowerY; y--)
+		if(surfaceFeetYHint < lowerY || surfaceFeetYHint > upperY)
 		{
-			probes.add(Integer.valueOf(y));
+			return List.of();
 		}
-		return List.copyOf(probes);
+		return List.of(Integer.valueOf(surfaceFeetYHint));
 	}
 
 	private List<Integer> preferredProbeOrder(RtpSettings settings)

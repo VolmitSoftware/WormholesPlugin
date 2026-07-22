@@ -1,22 +1,23 @@
 package art.arcane.wormholes.portal;
 
+import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.localization.WormholesMessages;
+
 public enum NetworkViewQuality
 {
-	STANDARD("Standard", 64, 60, 10, 30),
-	PERFORMANCE("Performance", 32, 100, 20, 10),
-	BALANCED("Balanced", 64, 40, 5, 30),
-	CINEMATIC("Cinematic", 96, 20, 2, 45),
-	CUSTOM("Custom", -1, -1, -1, -1);
+	STANDARD(64, 60, 10, 30),
+	PERFORMANCE(32, 100, 20, 10),
+	BALANCED(64, 40, 5, 30),
+	CINEMATIC(96, 20, 2, 45),
+	CUSTOM(-1, -1, -1, -1);
 
-	private final String displayName;
 	private final int depth;
 	private final int heartbeatTicks;
 	private final int entityIntervalTicks;
 	private final int unsubscribeGraceSeconds;
 
-	NetworkViewQuality(String displayName, int depth, int heartbeatTicks, int entityIntervalTicks, int unsubscribeGraceSeconds)
+	NetworkViewQuality(int depth, int heartbeatTicks, int entityIntervalTicks, int unsubscribeGraceSeconds)
 	{
-		this.displayName = displayName;
 		this.depth = depth;
 		this.heartbeatTicks = heartbeatTicks;
 		this.entityIntervalTicks = entityIntervalTicks;
@@ -25,7 +26,14 @@ public enum NetworkViewQuality
 
 	public String getDisplayName()
 	{
-		return displayName;
+		return Wormholes.text().plain(switch(this)
+		{
+			case STANDARD -> WormholesMessages.PORTAL_LABEL_STANDARD;
+			case PERFORMANCE -> WormholesMessages.PORTAL_LABEL_PERFORMANCE;
+			case BALANCED -> WormholesMessages.PORTAL_LABEL_BALANCED;
+			case CINEMATIC -> WormholesMessages.PORTAL_LABEL_CINEMATIC;
+			case CUSTOM -> WormholesMessages.PORTAL_LABEL_CUSTOM;
+		});
 	}
 
 	public int getDepth()

@@ -1,27 +1,34 @@
 package art.arcane.wormholes.portal;
 
+import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.localization.WormholesMessages;
+
 public enum PortalTravelMode
 {
-	BOTH("Both Ways", true, true),
-	OUTBOUND("Outbound Only", true, false),
-	INBOUND("Inbound Only", false, true),
-	LOCKED("Locked", false, false);
+	BOTH(true, true),
+	OUTBOUND(true, false),
+	INBOUND(false, true),
+	LOCKED(false, false);
 
 	private static final PortalTravelMode[] CYCLE = values();
-	private final String displayName;
 	private final boolean outgoing;
 	private final boolean incoming;
 
-	PortalTravelMode(String displayName, boolean outgoing, boolean incoming)
+	PortalTravelMode(boolean outgoing, boolean incoming)
 	{
-		this.displayName = displayName;
 		this.outgoing = outgoing;
 		this.incoming = incoming;
 	}
 
 	public String getDisplayName()
 	{
-		return displayName;
+		return Wormholes.text().plain(switch(this)
+		{
+			case BOTH -> WormholesMessages.PORTAL_LABEL_BOTH_WAYS;
+			case OUTBOUND -> WormholesMessages.PORTAL_LABEL_OUTBOUND_ONLY;
+			case INBOUND -> WormholesMessages.PORTAL_LABEL_INBOUND_ONLY;
+			case LOCKED -> WormholesMessages.PORTAL_LABEL_LOCKED;
+		});
 	}
 
 	public boolean allowsOutgoing()

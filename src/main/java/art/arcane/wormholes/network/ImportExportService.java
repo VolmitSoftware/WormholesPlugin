@@ -1,16 +1,17 @@
 package art.arcane.wormholes.network;
 
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
+import art.arcane.volmlib.util.localization.MessageArgument;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.config.toml.NetworkConfig;
+import art.arcane.wormholes.localization.WormholesLocalization;
+import art.arcane.wormholes.localization.WormholesMessages;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.service.WormholesAudience;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
-import net.kyori.adventure.text.format.NamedTextColor;
-import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -28,7 +29,7 @@ public final class ImportExportService {
     }
 
     public void exportToChat(Player player, ILocalPortal portal) {
-        WormholesAudience.sendMessage(player, Component.text("Building portal code...", NamedTextColor.DARK_GRAY));
+        WormholesAudience.sendMessage(player, Wormholes.text().component(WormholesMessages.NETWORK_BUILDING_CODE));
         FoliaScheduler.runAsync(Wormholes.instance, () -> exportNow(player, portal));
     }
 
@@ -63,20 +64,26 @@ public final class ImportExportService {
         );
         String encoded = code.encode();
 
-        Component message = Component.text("[Copy portal code: " + portal.getName() + "]", NamedTextColor.GOLD, TextDecoration.BOLD)
+        Component message = Wormholes.text().component(
+                WormholesMessages.NETWORK_COPY_CODE,
+                WormholesLocalization.args(MessageArgument.untrusted("portal", portal.getName())))
             .clickEvent(ClickEvent.copyToClipboard(encoded))
-            .hoverEvent(HoverEvent.showText(Component.text("Click to copy. Paste it on the other server:\nportal menu > Import, or /wh network import <code>", NamedTextColor.GRAY)));
+            .hoverEvent(HoverEvent.showText(Wormholes.text().component(WormholesMessages.NETWORK_COPY_CODE_HOVER)));
         WormholesAudience.sendMessage(player, message);
-        WormholesAudience.sendMessage(player, Component.text("Contains this server's address and public key fingerprint " + network.getPublicKeyFingerprint() + ".", NamedTextColor.DARK_GRAY));
+        WormholesAudience.sendMessage(player, Wormholes.text().component(
+                WormholesMessages.NETWORK_CODE_FINGERPRINT,
+                WormholesLocalization.args(MessageArgument.untrusted("fingerprint", network.getPublicKeyFingerprint()))));
         if (encoded.length() > CHAT_SAFE_CODE_LENGTH) {
-            WormholesAudience.sendMessage(player, Component.text("This code is too long to paste into chat - use /wh network import <code> on the other server instead.", NamedTextColor.YELLOW));
+            WormholesAudience.sendMessage(player, Wormholes.text().component(WormholesMessages.NETWORK_CODE_TOO_LONG));
         }
     }
 
     private void importNow(CommandSender sender, ILocalPortal portal, String raw) {
         PortalCode code = PortalCode.decode(raw);
         if (code == null) {
-            WormholesAudience.sendMessage(sender, Component.text("Invalid portal code. Codes start with " + PortalCode.PREFIX + " - if pasted into chat it may have been truncated; try /wh network import <code>. Codes from older plugin versions must be re-exported.", NamedTextColor.RED));
+            WormholesAudience.sendMessage(sender, Wormholes.text().component(
+                    WormholesMessages.NETWORK_CODE_INVALID,
+                    WormholesLocalization.args(MessageArgument.untrusted("prefix", PortalCode.PREFIX))));
             return;
         }
 
@@ -85,9 +92,11 @@ public final class ImportExportService {
         if (code.serverName().equals(network.getLocalName())) {
             boolean ownPortal = Wormholes.portalManager != null && Wormholes.portalManager.getLocalPortal(code.portalId()) != null;
             if (ownPortal) {
-                WormholesAudience.sendMessage(sender, Component.text("That code is from this server.", NamedTextColor.RED));
+                WormholesAudience.sendMessage(sender, Wormholes.text().component(WormholesMessages.NETWORK_CODE_SAME_SERVER));
             } else {
-                WormholesAudience.sendMessage(sender, Component.text("That code resolved to this server identity (" + code.serverName() + "). Re-export from the other server after both servers restart with their own Wormholes identity.", NamedTextColor.RED));
+                WormholesAudience.sendMessage(sender, Wormholes.text().component(
+                        WormholesMessages.NETWORK_CODE_SAME_IDENTITY,
+                        WormholesLocalization.args(MessageArgument.untrusted("server", code.serverName()))));
             }
             return;
         }
@@ -114,17 +123,21 @@ public final class ImportExportService {
 
         if (portal != null) {
             FoliaScheduler.runRegion(Wormholes.instance, portal.getCenter(), () -> portal.linkRemote(code.serverName(), code.portalId()));
-            WormholesAudience.sendMessage(sender, Component.text("Linked ", NamedTextColor.GREEN)
-                .append(Component.text(portal.getName(), NamedTextColor.WHITE))
-                .append(Component.text(" -> ", NamedTextColor.GRAY))
-                .append(Component.text(code.portalName(), NamedTextColor.WHITE))
-                .append(Component.text(" on ", NamedTextColor.GREEN))
-                .append(Component.text(code.serverName(), NamedTextColor.WHITE))
-                .append(Component.text(". It opens once the servers connect.", NamedTextColor.GREEN)));
+            WormholesAudience.sendMessage(sender, Wormholes.text().component(
+                    WormholesMessages.NETWORK_LINKED,
+                    WormholesLocalization.args(
+                            MessageArgument.untrusted("portal", portal.getName()),
+                            MessageArgument.untrusted("destination", code.portalName()),
+                            MessageArgument.untrusted("server", code.serverName()))));
         } else {
-            WormholesAudience.sendMessage(sender, Component.text("Saved route to " + code.serverName() + " with public key " + Handshake.fingerprint(Handshake.decodePublicKeyText(code.publicKey())) + ". '" + code.portalName() + "' will appear in gateway Link menus once connected.", NamedTextColor.GREEN));
+            WormholesAudience.sendMessage(sender, Wormholes.text().component(
+                    WormholesMessages.NETWORK_ROUTE_SAVED,
+                    WormholesLocalization.args(
+                            MessageArgument.untrusted("server", code.serverName()),
+                            MessageArgument.untrusted("fingerprint", Handshake.fingerprint(Handshake.decodePublicKeyText(code.publicKey()))),
+                            MessageArgument.untrusted("portal", code.portalName()))));
         }
-        WormholesAudience.sendMessage(sender, Component.text("Check /wh network status for the connection state.", NamedTextColor.DARK_GRAY));
+        WormholesAudience.sendMessage(sender, Wormholes.text().component(WormholesMessages.NETWORK_CHECK_STATUS));
     }
 
     private String resolveAdvertiseHost(CommandSender sender, NetworkConfig config) {
@@ -132,7 +145,9 @@ public final class ImportExportService {
             return config.advertiseHostOverride;
         }
         String resolved = network.getAdvertiseHost();
-        WormholesAudience.sendMessage(sender, Component.text("Using " + resolved + " in this portal code; the public address auto-detects and self-corrects over the signed handshake if it changes.", NamedTextColor.GRAY));
+        WormholesAudience.sendMessage(sender, Wormholes.text().component(
+                WormholesMessages.NETWORK_USING_ADDRESS,
+                WormholesLocalization.args(MessageArgument.untrusted("address", resolved))));
         return resolved;
     }
 

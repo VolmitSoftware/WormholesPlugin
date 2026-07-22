@@ -2,6 +2,9 @@ package art.arcane.wormholes.portal;
 
 import org.bukkit.entity.Player;
 
+import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.localization.WormholesMessages;
+
 import java.util.Locale;
 
 public enum PortalPermissionMode
@@ -22,12 +25,16 @@ public enum PortalPermissionMode
 
 	public String getDisplayName()
 	{
-		return this == WHITELIST ? "Whitelist" : "Blacklist";
+		return Wormholes.text().plain(this == WHITELIST
+				? WormholesMessages.PORTAL_LABEL_WHITELIST
+				: WormholesMessages.PORTAL_LABEL_BLACKLIST);
 	}
 
 	public String getLoreLine()
 	{
-		return this == WHITELIST ? "Players need the node to use this portal." : "Players with the node are blocked.";
+		return Wormholes.text().plain(this == WHITELIST
+				? WormholesMessages.PORTAL_PERMISSION_DESCRIPTION_WHITELIST
+				: WormholesMessages.PORTAL_PERMISSION_DESCRIPTION_BLACKLIST);
 	}
 
 	public static PortalPermissionMode fromName(String name)

@@ -7,6 +7,8 @@ import art.arcane.volmlib.util.director.runtime.DirectorRuntimeEngine;
 import art.arcane.volmlib.util.director.runtime.DirectorRuntimeNode;
 import art.arcane.volmlib.util.director.runtime.DirectorSender;
 import art.arcane.wormholes.commands.CommandWormholes;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.junit.jupiter.api.Test;
@@ -140,6 +142,10 @@ class WormholesCommandServiceTest {
 						if(value instanceof String message)
 						{
 							messages.add(message);
+						}
+						else if(value instanceof Component component)
+						{
+							messages.add(PlainTextComponentSerializer.plainText().serialize(component));
 						}
 					}
 					return null;

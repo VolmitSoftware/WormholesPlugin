@@ -5,11 +5,19 @@ import art.arcane.volmlib.util.director.DirectorParameterHandler;
 import art.arcane.volmlib.util.director.annotations.Director;
 import art.arcane.volmlib.util.director.annotations.Param;
 import art.arcane.volmlib.util.director.exceptions.DirectorParsingException;
+import art.arcane.volmlib.util.localization.LinesKey;
+import art.arcane.volmlib.util.localization.LocalizationReloadResult;
+import art.arcane.volmlib.util.localization.MessageArgs;
+import art.arcane.volmlib.util.localization.MessageArgument;
+import art.arcane.volmlib.util.localization.TextKey;
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.door.DimensionalDoorManager;
+import art.arcane.wormholes.localization.WormholesLocalization;
+import art.arcane.wormholes.localization.WormholesMessages;
 import art.arcane.wormholes.service.StatsSnapshotWriter;
-import org.bukkit.ChatColor;
+import art.arcane.wormholes.service.WormholesAudience;
+import net.kyori.adventure.text.Component;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
@@ -18,7 +26,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 
-@Director(name = "wormholes", aliases = {"wh", "wormhole"}, description = "Wormholes command root")
+@Director(name = "wormholes", aliases = {"wh", "wormhole"}, descriptionKey = "command.help.root", description = "Wormholes command root")
 public class CommandWormholes {
     private static final List<String> DOOR_TYPE_COMPLETIONS = List.of("pair", "personal", "public");
 
@@ -30,20 +38,20 @@ public class CommandWormholes {
         this.plugin = plugin;
     }
 
-    @Director(name = "wand", sync = true, description = "Give yourself the portal wand, or runes with rune=<type>")
+    @Director(name = "wand", sync = true, descriptionKey = "command.help.wand", description = "Give yourself the portal wand, or runes with rune=<type>")
     public void wand(@Param(name = "sender", contextual = true) CommandSender sender,
-                     @Param(name = "rune", description = "portal | wormhole | gateway", defaultValue = "none") String rune,
-                     @Param(name = "count", description = "How many runes (default 1)", defaultValue = "1") int count) {
+                     @Param(name = "rune", descriptionKey = "command.help.wand.rune", description = "portal | wormhole | gateway", defaultValue = "none") String rune,
+                     @Param(name = "count", descriptionKey = "command.help.wand.count", description = "How many runes (default 1)", defaultValue = "1") int count) {
         if (!sender.hasPermission("wormholes.admin.items")) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
+            send(sender, WormholesMessages.COMMAND_NO_PERMISSION);
             return;
         }
         if (!(sender instanceof Player player)) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Only players can receive items.");
+            send(sender, WormholesMessages.COMMAND_ONLY_PLAYERS);
             return;
         }
 
-        String runeType = rune == null ? "none" : rune.toLowerCase();
+        String runeType = rune == null ? "none" : rune.toLowerCase(Locale.ROOT);
         if (!runeType.equals("none")) {
             int safeCount = Math.max(1, Math.min(count, 64));
             ItemStack runes = switch (runeType) {
@@ -53,36 +61,37 @@ public class CommandWormholes {
                 default -> null;
             };
             if (runes == null) {
-                sender.sendMessage(Wormholes.tag + ChatColor.RED + "Unknown rune type '" + runeType + "'. Use portal, wormhole, or gateway.");
+                send(sender, WormholesMessages.COMMAND_UNKNOWN_RUNE, args("rune", runeType));
                 return;
             }
             player.getInventory().addItem(runes);
-            player.sendMessage(Wormholes.tag + ChatColor.GREEN + "Granted " + ChatColor.WHITE + safeCount + " " + runeType + ChatColor.GREEN + " rune" + (safeCount == 1 ? "." : "s."));
+            WormholesAudience.sendMessage(player, Wormholes.text().component(
+                    WormholesMessages.COMMAND_GRANTED_RUNES,
+                    args("count", Integer.valueOf(safeCount), "rune", runeType)
+            ));
             return;
         }
 
         ItemStack wand = Wormholes.blockManager.getWand();
         ItemStack wormholeRune = Wormholes.blockManager.getWormholeRune(1);
         player.getInventory().addItem(wand, wormholeRune);
-        player.sendMessage(Wormholes.tag + ChatColor.GREEN + "Portal Wand and 1 Wormhole Rune granted.");
-        player.sendMessage(Wormholes.tag + ChatColor.GRAY + "Build TWO wormhole-rune shapes (any connected shape on one flat surface), link them, and stand within 16 blocks to see the projection.");
-        player.sendMessage(Wormholes.tag + ChatColor.GRAY + "Run " + ChatColor.WHITE + "/wormholes info" + ChatColor.GRAY + " for the full step-by-step.");
+        sendLines(player, WormholesMessages.COMMAND_GRANTED_STARTER, MessageArgs.empty());
     }
 
-    @Director(name = "door", sync = true, description = "Give a survival Dimensional Door item")
+    @Director(name = "door", sync = true, descriptionKey = "command.help.door", description = "Give a survival Dimensional Door item")
     public void door(@Param(name = "sender", contextual = true) CommandSender sender,
-                     @Param(name = "type", description = "pair | personal | public", defaultValue = "pair", customHandler = DoorTypeHandler.class) String type) {
+                     @Param(name = "type", descriptionKey = "command.help.door.type", description = "pair | personal | public", defaultValue = "pair", customHandler = DoorTypeHandler.class) String type) {
         if (!sender.hasPermission("wormholes.admin.items")) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
+            send(sender, WormholesMessages.COMMAND_NO_PERMISSION);
             return;
         }
         if (!(sender instanceof Player player)) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Only players can receive items.");
+            send(sender, WormholesMessages.COMMAND_ONLY_PLAYERS);
             return;
         }
         DimensionalDoorManager manager = plugin.getDimensionalDoorManager();
         if (!Settings.DIMENSIONAL_DOORS_ENABLED || manager == null) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Dimensional Doors are unavailable.");
+            send(sender, WormholesMessages.COMMAND_DOORS_UNAVAILABLE);
             return;
         }
 
@@ -94,70 +103,83 @@ public class CommandWormholes {
             default -> null;
         };
         if (item == null) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Unknown door type. Use pair, personal, or public.");
+            send(sender, WormholesMessages.COMMAND_UNKNOWN_DOOR);
             return;
         }
         player.getInventory().addItem(item).values().forEach(overflow ->
-            player.getWorld().dropItemNaturally(player.getLocation(), overflow));
-        sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Granted a " + ChatColor.WHITE + normalized + ChatColor.GREEN + " dimensional door item.");
+                player.getWorld().dropItemNaturally(player.getLocation(), overflow));
+        send(sender, WormholesMessages.COMMAND_GRANTED_DOOR, args("type", normalized));
     }
 
-    @Director(name = "reload", sync = true, description = "Reload Wormholes configuration")
+    @Director(name = "reload", sync = true, descriptionKey = "command.help.reload", description = "Reload Wormholes configuration and language files")
     public void reload(@Param(name = "sender", contextual = true) CommandSender sender) {
         if (!sender.hasPermission("wormholes.admin.reload")) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
+            send(sender, WormholesMessages.COMMAND_NO_PERMISSION);
             return;
         }
-        plugin.reloadAll();
-        sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Wormholes configuration reloaded.");
+        LocalizationReloadResult result = plugin.reloadAll();
+        send(sender, result.applied()
+                ? WormholesMessages.COMMAND_RELOADED
+                : WormholesMessages.COMMAND_RELOADED_LANGUAGE_RETAINED);
     }
 
-    @Director(name = "debug", sync = true, description = "Toggle verbose console logs and one-second telemetry")
+    @Director(name = "debug", sync = true, descriptionKey = "command.help.debug", description = "Toggle verbose console logs and one-second telemetry")
     public void debug(@Param(name = "sender", contextual = true) CommandSender sender) {
         if (!sender.hasPermission("wormholes.admin")) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
+            send(sender, WormholesMessages.COMMAND_NO_PERMISSION);
             return;
         }
         plugin.toggleDebugTelemetry(sender.getName());
     }
 
-    @Director(name = "stats", sync = true, description = "Print the live stats-snapshot file path, optionally force a refresh with now=true")
+    @Director(name = "stats", sync = true, descriptionKey = "command.help.stats", description = "Print the live stats-snapshot file path, optionally force a refresh with now=true")
     public void stats(@Param(name = "sender", contextual = true) CommandSender sender,
-                      @Param(name = "now", description = "Force-rebuild the snapshot synchronously", defaultValue = "false") boolean now) {
+                      @Param(name = "now", descriptionKey = "command.help.stats.now", description = "Force-rebuild the snapshot synchronously", defaultValue = "false") boolean now) {
         if (!sender.hasPermission("wormholes.admin")) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
+            send(sender, WormholesMessages.COMMAND_NO_PERMISSION);
             return;
         }
         StatsSnapshotWriter writer = plugin.getStatsSnapshotWriter();
         if (writer == null) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Stats snapshot writer is unavailable.");
+            send(sender, WormholesMessages.COMMAND_STATS_UNAVAILABLE);
             return;
         }
         if (now) {
             writer.writeNow();
-            sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Snapshot refreshed.");
+            send(sender, WormholesMessages.COMMAND_STATS_REFRESHED);
         }
         Path output = writer.getOutputFile();
-        sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "Snapshot file: " + ChatColor.WHITE + output.toAbsolutePath());
-        sender.sendMessage(Wormholes.tag + ChatColor.DARK_GRAY + "Tail this file to share live network/view state. The file is overwritten in place each interval.");
+        sendLines(sender, WormholesMessages.COMMAND_STATS_PATH, args("path", output.toAbsolutePath()));
     }
 
-    @Director(name = "info", sync = true, description = "Show portal building instructions")
+    @Director(name = "info", sync = true, descriptionKey = "command.help.info", description = "Show portal building instructions")
     public void info(@Param(name = "sender", contextual = true) CommandSender sender) {
-        sender.sendMessage(Wormholes.tag + ChatColor.GRAY + "" + ChatColor.BOLD + "How to build a Wormhole");
-		sender.sendMessage(ChatColor.DARK_GRAY + "1. " + ChatColor.GRAY + "Get a Portal Wand and portal runes from your server or an administrator.");
-        sender.sendMessage(ChatColor.DARK_GRAY + "2. " + ChatColor.GRAY + "Place the runes in any connected shape on one flat surface.");
-        sender.sendMessage(ChatColor.GRAY + "   Any connected shape works: rectangles, lines (3x1), single blocks, L-shapes, crosses.");
-        sender.sendMessage(ChatColor.GRAY + "   The runes must sit flat on one axis-aligned wall, floor, or ceiling.");
-        sender.sendMessage(ChatColor.DARK_GRAY + "3. " + ChatColor.GRAY + "Hold the Portal Wand and " + ChatColor.WHITE + "left-click any rune block" + ChatColor.GRAY + " to form the portal.");
-        sender.sendMessage(ChatColor.GRAY + "   Shapes that do not sit flat on one surface are refunded automatically.");
-        sender.sendMessage(ChatColor.DARK_GRAY + "4. " + ChatColor.GRAY + "Build a SECOND portal somewhere else (any distance, any world).");
-        sender.sendMessage(ChatColor.DARK_GRAY + "5. " + ChatColor.GRAY + "Click the open portal with the wand to open the main menu.");
-		sender.sendMessage(ChatColor.GRAY + "   Choose " + ChatColor.WHITE + "Destination" + ChatColor.GRAY + " and select the other portal. Repeat from the other side.");
-		sender.sendMessage(ChatColor.GRAY + "   Orientation and access controls are grouped into their own simple menus.");
-        sender.sendMessage(ChatColor.DARK_GRAY + "6. " + ChatColor.GRAY + "Stand within 16 blocks of either portal — the destination world will project through the frame and walking in teleports you.");
-        sender.sendMessage(ChatColor.GRAY + "Administrators can create supplies with " + ChatColor.WHITE + "/wormholes wand rune=<portal|wormhole|gateway> count=<n>");
-		sender.sendMessage(ChatColor.GRAY + "Dimensional Doors are crafted with Wormhole Runes. Open a placed door and physically cross its threshold to travel; a closed door never activates.");
+        sendLines(sender, WormholesMessages.COMMAND_INFO, MessageArgs.empty());
+    }
+
+    private static MessageArgs args(String name, Object value) {
+        return WormholesLocalization.args(MessageArgument.untrusted(name, value));
+    }
+
+    private static MessageArgs args(String firstName, Object firstValue, String secondName, Object secondValue) {
+        return WormholesLocalization.args(
+                MessageArgument.untrusted(firstName, firstValue),
+                MessageArgument.untrusted(secondName, secondValue)
+        );
+    }
+
+    private static void send(CommandSender sender, TextKey key) {
+        send(sender, key, MessageArgs.empty());
+    }
+
+    private static void send(CommandSender sender, TextKey key, MessageArgs arguments) {
+        WormholesAudience.sendMessage(sender, Wormholes.text().component(key, arguments));
+    }
+
+    private static void sendLines(CommandSender sender, LinesKey key, MessageArgs arguments) {
+        for (Component line : Wormholes.text().components(key, arguments)) {
+            WormholesAudience.sendMessage(sender, line);
+        }
     }
 
     public static final class DoorTypeHandler implements DirectorParameterHandler<String> {
@@ -174,7 +196,7 @@ public class CommandWormholes {
         @Override
         public String parse(String input, boolean force) throws DirectorParsingException {
             if (input == null || input.trim().isEmpty()) {
-                throw new DirectorParsingException("Door type cannot be empty");
+                throw new DirectorParsingException(Wormholes.text().plain(WormholesMessages.COMMAND_EMPTY_DOOR));
             }
             return input.trim();
         }

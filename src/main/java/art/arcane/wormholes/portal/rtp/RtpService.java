@@ -240,6 +240,7 @@ public final class RtpService
 			return false;
 		}
 		boolean changed = entry.viewers.add(viewerId);
+		entry.idleToken = nextGeneration(entry.idleToken);
 		RtpProjectionView currentView = entry.views.get(viewerId);
 		boolean refreshAccess = changed
 				|| currentView == null
@@ -280,7 +281,7 @@ public final class RtpService
 		}
 		if(entry.viewers.isEmpty())
 		{
-			idleEntry(entry);
+			scheduleIdle(entry);
 		}
 		markChanged(entry);
 		maintain(entry);
@@ -306,7 +307,6 @@ public final class RtpService
 			return false;
 		}
 		entry.nextSearchAllowedAtMillis = 0L;
-		clearViews(entry);
 		markChanged(entry);
 		maintain(entry);
 		return true;
@@ -353,7 +353,8 @@ public final class RtpService
 		if(before.allocationMode() == RtpAllocationMode.PER_PLAYER)
 		{
 			entry.runtime.expireReservations(nowMillis);
-			assignReservations(entry);
+			entry.runtime.rotatePlayerReservations(nowMillis);
+			assignReservations(entry, nowMillis);
 		}
 		else
 		{
@@ -376,13 +377,13 @@ public final class RtpService
 		publish(entry);
 	}
 
-	private void assignReservations(PortalEntry entry)
+	private void assignReservations(PortalEntry entry, long nowMillis)
 	{
 		for(UUID viewerId : entry.viewers)
 		{
 			if(entry.runtime.reservationFor(viewerId).isEmpty())
 			{
-				entry.runtime.reservePlayer(viewerId);
+				entry.runtime.reservePlayer(viewerId, nowMillis);
 			}
 		}
 	}
@@ -528,7 +529,7 @@ public final class RtpService
 		RtpDestination destination = destinationForViewer(entry, viewerId, runtimeSnapshot);
 		if(destination == null)
 		{
-			setView(entry, viewerId, ViewState.WARMING, null, 0L);
+			setWarmingUnlessReady(entry, viewerId, null, 0L);
 			return;
 		}
 		long routeRevision = routeRevision(entry, runtimeSnapshot, destination);
@@ -536,17 +537,18 @@ public final class RtpService
 		if(entry.preparationFailures.contains(destination))
 		{
 			setView(entry, viewerId, ViewState.FAILED, identity, routeRevision);
+			pruneSharedRetentions(entry, runtimeSnapshot);
 			return;
 		}
 		if(!destinationReady(entry, runtimeSnapshot, destination))
 		{
-			setView(entry, viewerId, ViewState.WARMING, identity, routeRevision);
+			setWarmingUnlessReady(entry, viewerId, identity, routeRevision);
 			return;
 		}
 		AccessAttempt existingAttempt = entry.accessAttempts.get(viewerId);
 		if(existingAttempt != null && existingAttempt.identity.equals(identity))
 		{
-			setView(entry, viewerId, ViewState.WARMING, identity, routeRevision);
+			setWarmingUnlessReady(entry, viewerId, identity, routeRevision);
 			return;
 		}
 		ViewIdentity publishedIdentity = entry.viewIdentities.get(viewerId);
@@ -593,7 +595,7 @@ public final class RtpService
 	{
 		AccessAttempt attempt = new AccessAttempt(identity);
 		entry.accessAttempts.put(viewerId, attempt);
-		setView(entry, viewerId, ViewState.WARMING, identity, routeRevision);
+		setWarmingUnlessReady(entry, viewerId, identity, routeRevision);
 		CompletionStage<RtpAccessResult> stage;
 		try
 		{
@@ -627,8 +629,7 @@ public final class RtpService
 				|| !attempt.identity.destination().equals(currentDestination)
 				|| !destinationReady(entry, runtimeSnapshot, currentDestination))
 		{
-			entry.viewIdentities.remove(viewerId);
-			setView(entry, viewerId, ViewState.WARMING, null, 0L);
+			setWarmingUnlessReady(entry, viewerId, null, 0L);
 			publish(entry);
 			return;
 		}
@@ -647,6 +648,7 @@ public final class RtpService
 			entry.accessIntegrationFailed = false;
 			setReadyView(entry, viewerId, attempt.identity);
 		}
+		pruneSharedRetentions(entry, runtimeSnapshot);
 		publish(entry);
 	}
 
@@ -667,6 +669,20 @@ public final class RtpService
 		{
 			setView(entry, viewerId, ViewState.FAILED, identity, identity.routeRevision());
 		}
+	}
+
+	private void setWarmingUnlessReady(
+			PortalEntry entry,
+			UUID viewerId,
+			ViewIdentity identity,
+			long routeRevision)
+	{
+		RtpProjectionView current = entry.views.get(viewerId);
+		if(current != null && current.state() == RtpProjectionView.State.READY)
+		{
+			return;
+		}
+		setView(entry, viewerId, ViewState.WARMING, identity, routeRevision);
 	}
 
 	private void setView(
@@ -905,6 +921,7 @@ public final class RtpService
 			entry.retentions.put(result.destination(), retention);
 			entry.searchCampaign = null;
 			entry.nextSearchAllowedAtMillis = 0L;
+			pruneSharedRetentions(entry, entry.runtime.snapshot());
 			markChanged(entry);
 			maintain(entry);
 			return;
@@ -1002,12 +1019,6 @@ public final class RtpService
 				entry);
 		preparationReference.set(preparation);
 		entry.traversals.add(preparation);
-		if(actor.playerId().isPresent())
-		{
-			UUID viewerId = actor.playerId().get();
-			entry.viewIdentities.remove(viewerId);
-			setView(entry, viewerId, ViewState.WARMING, null, 0L);
-		}
 		markChanged(entry);
 		publish(entry);
 		dependencies.sourceDispatcher().schedule(portalId, () ->
@@ -1094,10 +1105,11 @@ public final class RtpService
 		boolean succeeded = preparation.request().state() == RtpTraversalRequest.State.SUCCEEDED;
 		entry.runtime.completeTraversal(preparation.claim(), succeeded, dependencies.timeSource().nowMillis());
 		entry.traversals.remove(preparation);
-		if(succeeded && consumesDestination(entry, preparation.claim()))
+		if(succeeded && preparation.claim().kind() != RtpPortalRuntime.ClaimKind.SHARED)
 		{
 			closeRetention(entry, preparation.claim().destination());
 		}
+		pruneSharedRetentions(entry, entry.runtime.snapshot());
 		if(!preparation.admission.isDone())
 		{
 			preparation.admission.complete(Optional.empty());
@@ -1113,15 +1125,6 @@ public final class RtpService
 		}
 	}
 
-	private boolean consumesDestination(PortalEntry entry, RtpPortalRuntime.TraversalClaim claim)
-	{
-		if(claim.kind() != RtpPortalRuntime.ClaimKind.SHARED)
-		{
-			return true;
-		}
-		return entry.registration.settings().getRotationMode() == RtpRotationMode.ON_TRAVERSAL;
-	}
-
 	private void idleEntry(PortalEntry entry)
 	{
 		cancelSearch(entry);
@@ -1130,6 +1133,25 @@ public final class RtpService
 		entry.accessAttempts.clear();
 		entry.viewIdentities.clear();
 		entry.views.clear();
+	}
+
+	private void scheduleIdle(PortalEntry entry)
+	{
+		long token = nextGeneration(entry.idleToken);
+		entry.idleToken = token;
+		dependencies.sourceDispatcher().schedule(
+				entry.registration.portalId(),
+				() ->
+				{
+					if(!isCurrent(entry) || !entry.viewers.isEmpty() || entry.idleToken != token)
+					{
+						return;
+					}
+					idleEntry(entry);
+					markChanged(entry);
+					publish(entry);
+				},
+				entry.registration.settings().getLeaseIdleMillis());
 	}
 
 	private void cancelSearch(PortalEntry entry)
@@ -1180,6 +1202,18 @@ public final class RtpService
 		{
 			retained.add(snapshot.standby());
 		}
+		for(ViewIdentity identity : entry.viewIdentities.values())
+		{
+			retained.add(identity.destination());
+		}
+		for(AccessAttempt attempt : entry.accessAttempts.values())
+		{
+			retained.add(attempt.identity().destination());
+		}
+		for(TraversalPreparation traversal : entry.traversals)
+		{
+			retained.add(traversal.claim().destination());
+		}
 		List<RtpDestination> obsolete = new ArrayList<RtpDestination>();
 		for(RtpDestination destination : entry.retentions.keySet())
 		{
@@ -1228,18 +1262,14 @@ public final class RtpService
 		}
 	}
 
-	private void clearViews(PortalEntry entry)
-	{
-		entry.accessAttempts.clear();
-		entry.viewIdentities.clear();
-		entry.views.clear();
-	}
-
 	private RtpPortalRuntime createRuntime(long generation, RtpSettings settings)
 	{
 		return settings.getAllocationMode() == RtpAllocationMode.SHARED
 				? RtpPortalRuntime.shared(generation, settings.getRotationMode(), settings.getCycleDurationMillis())
-				: RtpPortalRuntime.perPlayer(generation, settings.getPrivateReleaseMillis());
+				: RtpPortalRuntime.perPlayer(
+						generation,
+						settings.getPrivateReleaseMillis(),
+						settings.getCycleDurationMillis());
 	}
 
 	private void dispatch(PortalEntry entry, Runnable command)
@@ -1583,6 +1613,7 @@ public final class RtpService
 		private int nextAttemptOrdinal;
 		private boolean accessIntegrationFailed;
 		private boolean closed;
+		private long idleToken;
 
 		private PortalEntry(Registration registration, long generation, RtpPortalRuntime runtime)
 		{

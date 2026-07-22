@@ -12,11 +12,15 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.bukkit.HeightMap;
 import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.Tag;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Lightable;
+import org.bukkit.block.data.Waterlogged;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.util.BoundingBox;
 
@@ -87,7 +91,8 @@ public final class BukkitRtpCandidateLoader implements AutoCloseable
 		{
 			try
 			{
-				return capture(world, requiredRequest.destination(), requiredEnvelope).handle((validationRequest, failure) ->
+				return capture(world, requiredRequest.destination(), requiredEnvelope,
+						requiredRequest.settings().getVerticalMode() == RtpVerticalMode.SURFACE).handle((validationRequest, failure) ->
 				{
 					if(failure != null || validationRequest == null)
 					{
@@ -172,7 +177,8 @@ public final class BukkitRtpCandidateLoader implements AutoCloseable
 				sampled.blockZ(),
 				sampled.generation(),
 				sampled.attempt());
-		capture(world, candidate, envelope).whenComplete((validationRequest, failure) ->
+		capture(world, candidate, envelope, request.settings().getVerticalMode() == RtpVerticalMode.SURFACE)
+				.whenComplete((validationRequest, failure) ->
 		{
 			if(failure != null || validationRequest == null)
 			{
@@ -244,7 +250,10 @@ public final class BukkitRtpCandidateLoader implements AutoCloseable
 		{
 			try
 			{
-				result.complete(Integer.valueOf(world.getHighestBlockYAt(destination.blockX(), destination.blockZ()) + 1));
+				result.complete(Integer.valueOf(world.getHighestBlockAt(
+						destination.blockX(),
+						destination.blockZ(),
+						HeightMap.MOTION_BLOCKING_NO_LEAVES).getY() + 1));
 			}
 			catch(RuntimeException exception)
 			{
@@ -261,7 +270,8 @@ public final class BukkitRtpCandidateLoader implements AutoCloseable
 	private CompletionStage<RtpValidationRequest> capture(
 			World world,
 			RtpDestination destination,
-			RtpValidationRequest.EntityEnvelope envelope)
+			RtpValidationRequest.EntityEnvelope envelope,
+			boolean surfaceMode)
 	{
 		Set<ChunkCoordinate> chunks = touchedChunks(destination, envelope);
 		List<CompletableFuture<RtpValidationRequest.RegionSnapshot>> snapshots = new ArrayList<CompletableFuture<RtpValidationRequest.RegionSnapshot>>(chunks.size());
@@ -293,7 +303,7 @@ public final class BukkitRtpCandidateLoader implements AutoCloseable
 			{
 				completed.add(snapshot.join());
 			}
-			return validationRequest(world, destination, envelope, completed);
+			return validationRequest(world, destination, envelope, surfaceMode, completed);
 		});
 	}
 
@@ -331,7 +341,11 @@ public final class BukkitRtpCandidateLoader implements AutoCloseable
 	private RtpValidationRequest.BlockSnapshot blockSnapshot(Block block)
 	{
 		BlockData data = block.getBlockData();
+		Material material = block.getType();
 		boolean active = data instanceof Lightable lightable && lightable.isLit();
+		boolean liquid = block.isLiquid()
+				|| data instanceof Waterlogged waterlogged && waterlogged.isWaterlogged()
+				|| isAquaticOccupant(material);
 		Collection<BoundingBox> shape = block.getCollisionShape().getBoundingBoxes();
 		List<RtpValidationRequest.CollisionBox> collisions = new ArrayList<RtpValidationRequest.CollisionBox>(shape.size());
 		for(BoundingBox box : shape)
@@ -353,9 +367,35 @@ public final class BukkitRtpCandidateLoader implements AutoCloseable
 				block.getY(),
 				block.getZ(),
 				block.getType().getKey().toString(),
-				block.isLiquid(),
+				liquid,
 				active,
+				isTreePart(material),
 				collisions);
+	}
+
+	private boolean isAquaticOccupant(Material material)
+	{
+		return material == Material.SEAGRASS
+				|| material == Material.TALL_SEAGRASS
+				|| material == Material.KELP
+				|| material == Material.KELP_PLANT;
+	}
+
+	private boolean isTreePart(Material material)
+	{
+		return Tag.LEAVES.isTagged(material)
+				|| Tag.LOGS.isTagged(material)
+				|| Tag.SAPLINGS.isTagged(material)
+				|| Tag.WART_BLOCKS.isTagged(material)
+				|| Tag.BAMBOO_BLOCKS.isTagged(material)
+				|| switch(material)
+				{
+					case BAMBOO, MANGROVE_ROOTS, MUDDY_MANGROVE_ROOTS, HANGING_ROOTS,
+							MUSHROOM_STEM, BROWN_MUSHROOM_BLOCK, RED_MUSHROOM_BLOCK,
+							CHORUS_PLANT, CHORUS_FLOWER, AZALEA, FLOWERING_AZALEA,
+							SHROOMLIGHT, BEE_NEST, CREAKING_HEART -> true;
+					default -> false;
+				};
 	}
 
 	private double normalizeCollisionCoordinate(double value, int blockCoordinate)
@@ -368,6 +408,7 @@ public final class BukkitRtpCandidateLoader implements AutoCloseable
 			World world,
 			RtpDestination destination,
 			RtpValidationRequest.EntityEnvelope envelope,
+			boolean surfaceMode,
 			List<RtpValidationRequest.RegionSnapshot> snapshots)
 	{
 		org.bukkit.WorldBorder border = world.getWorldBorder();
@@ -392,6 +433,7 @@ public final class BukkitRtpCandidateLoader implements AutoCloseable
 						? Math.min(world.getMaxHeight(), 128)
 						: world.getMaxHeight())
 				.entityEnvelope(envelope)
+				.surfaceMode(surfaceMode)
 				.configuredHazards(Set.of())
 				.regionSnapshots(snapshots)
 				.build();

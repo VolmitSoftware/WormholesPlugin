@@ -2,50 +2,69 @@ package art.arcane.wormholes.commands;
 
 import art.arcane.volmlib.util.director.annotations.Director;
 import art.arcane.volmlib.util.director.annotations.Param;
-import art.arcane.volmlib.util.scheduling.FoliaScheduler;
+import art.arcane.volmlib.util.localization.MessageArgs;
+import art.arcane.volmlib.util.localization.MessageArgument;
+import art.arcane.volmlib.util.localization.TextKey;
 import art.arcane.wormholes.Wormholes;
-import org.bukkit.ChatColor;
+import art.arcane.wormholes.localization.WormholesLocalization;
+import art.arcane.wormholes.localization.WormholesMessages;
+import art.arcane.wormholes.service.WormholesAudience;
+import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import org.bukkit.command.CommandSender;
 
 import java.util.logging.Level;
 
-@Director(name = "admin", description = "Destructive Wormholes maintenance commands")
+@Director(name = "admin", descriptionKey = "command.help.admin", description = "Destructive Wormholes maintenance commands")
 public class CommandAdmin {
-    @Director(name = "deleteallportals", sync = true, description = "Delete every local portal and saved portal link")
+    @Director(name = "deleteallportals", sync = true, descriptionKey = "command.help.admin.delete_portals", description = "Delete every local portal and saved portal link")
     public void deleteAllPortals(@Param(name = "sender", contextual = true) CommandSender sender) {
         if (!sender.hasPermission("wormholes.admin.reset")) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
+            send(sender, WormholesMessages.COMMAND_NO_PERMISSION);
             return;
         }
         if (!FoliaScheduler.runGlobal(Wormholes.instance, () -> {
             try {
                 int deleted = Wormholes.instance.deleteAllPortalsNow();
-                sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Deleted " + ChatColor.WHITE + deleted + ChatColor.GREEN + " portal" + (deleted == 1 ? "" : "s") + " and cleared local portal links.");
-            } catch (Throwable e) {
-                Wormholes.instance.getLogger().log(Level.SEVERE, "Failed to delete all Wormholes portals", e);
-                sender.sendMessage(Wormholes.tag + ChatColor.RED + "Failed to delete all portals. Check console for the full stacktrace.");
+                WormholesAudience.sendMessage(sender, Wormholes.text().component(
+                        WormholesMessages.COMMAND_DELETED_PORTALS,
+                        countArgs(deleted)
+                ));
+            } catch (Throwable exception) {
+                Wormholes.instance.getLogger().log(Level.SEVERE, "Failed to delete all Wormholes portals", exception);
+                send(sender, WormholesMessages.COMMAND_DELETE_FAILED);
             }
         })) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Could not schedule the portal reset.");
+            send(sender, WormholesMessages.COMMAND_DELETE_SCHEDULE_FAILED);
         }
     }
 
-    @Director(name = "deleteeverything", sync = true, description = "Reset Wormholes data, config, trust, identity, and network state")
+    @Director(name = "deleteeverything", sync = true, descriptionKey = "command.help.admin.delete_everything", description = "Reset Wormholes data, config, trust, identity, and network state")
     public void deleteEverything(@Param(name = "sender", contextual = true) CommandSender sender) {
         if (!sender.hasPermission("wormholes.admin.reset")) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "You do not have permission.");
+            send(sender, WormholesMessages.COMMAND_NO_PERMISSION);
             return;
         }
         if (!FoliaScheduler.runGlobal(Wormholes.instance, () -> {
             try {
                 Wormholes.ResetResult result = Wormholes.instance.resetEverythingNow();
-                sender.sendMessage(Wormholes.tag + ChatColor.GREEN + "Wormholes reset to default state. Deleted " + ChatColor.WHITE + result.deletedPortals() + ChatColor.GREEN + " portal" + (result.deletedPortals() == 1 ? "" : "s") + ", closed network connections, and regenerated default config files.");
-            } catch (Throwable e) {
-                Wormholes.instance.getLogger().log(Level.SEVERE, "Failed to reset Wormholes", e);
-                sender.sendMessage(Wormholes.tag + ChatColor.RED + "Failed to reset Wormholes. Check console for the full stacktrace.");
+                WormholesAudience.sendMessage(sender, Wormholes.text().component(
+                        WormholesMessages.COMMAND_RESET_EVERYTHING,
+                        countArgs(result.deletedPortals())
+                ));
+            } catch (Throwable exception) {
+                Wormholes.instance.getLogger().log(Level.SEVERE, "Failed to reset Wormholes", exception);
+                send(sender, WormholesMessages.COMMAND_RESET_FAILED);
             }
         })) {
-            sender.sendMessage(Wormholes.tag + ChatColor.RED + "Could not schedule the Wormholes reset.");
+            send(sender, WormholesMessages.COMMAND_RESET_SCHEDULE_FAILED);
         }
+    }
+
+    private static MessageArgs countArgs(int count) {
+        return WormholesLocalization.args(MessageArgument.untrusted("count", Integer.valueOf(count)));
+    }
+
+    private static void send(CommandSender sender, TextKey key) {
+        WormholesAudience.sendMessage(sender, Wormholes.text().component(key));
     }
 }

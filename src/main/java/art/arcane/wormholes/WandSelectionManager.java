@@ -31,10 +31,10 @@ import org.bukkit.util.Vector;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
-import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
-
+import art.arcane.volmlib.util.localization.MessageArgument;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
+import art.arcane.wormholes.localization.WormholesLocalization;
+import art.arcane.wormholes.localization.WormholesMessages;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.PortalType;
 import art.arcane.wormholes.service.WormholesAudience;
@@ -250,8 +250,8 @@ public class WandSelectionManager implements Listener
 	{
 		if(!selection.isComplete())
 		{
-			String message = primary ? "Corner A set. Right-click the opposite corner." : "Corner B set. Left-click the opposite corner.";
-			WormholesAudience.sendActionBar(player, Component.text(message, NamedTextColor.AQUA));
+			WormholesAudience.sendActionBar(player, Wormholes.text().component(
+					primary ? WormholesMessages.WAND_CORNER_A : WormholesMessages.WAND_CORNER_B));
 			return;
 		}
 		int[] min = selectionMin(selection.cornerA, selection.cornerB);
@@ -260,15 +260,21 @@ public class WandSelectionManager implements Listener
 		long cells = cellCount(min, max);
 		if(flat < 0)
 		{
-			WormholesAudience.sendActionBar(player, Component.text("Selection must be one block thick. Re-click a corner to flatten it.", NamedTextColor.RED));
+			WormholesAudience.sendActionBar(player, Wormholes.text().component(WormholesMessages.WAND_NOT_FLAT));
 			return;
 		}
 		if(cells > MAX_DRAWN_CELLS)
 		{
-			WormholesAudience.sendActionBar(player, Component.text("Selection too large: " + cells + " cells (max " + MAX_DRAWN_CELLS + ").", NamedTextColor.RED));
+			WormholesAudience.sendActionBar(player, Wormholes.text().component(
+					WormholesMessages.WAND_TOO_LARGE,
+					WormholesLocalization.args(
+							MessageArgument.untrusted("count", cells),
+							MessageArgument.untrusted("maximum", MAX_DRAWN_CELLS))));
 			return;
 		}
-		WormholesAudience.sendActionBar(player, Component.text("Selected " + cells + " cells. Left-click the glass pane to open the portal.", NamedTextColor.AQUA));
+		WormholesAudience.sendActionBar(player, Wormholes.text().component(
+				WormholesMessages.WAND_SELECTED,
+				WormholesLocalization.args(MessageArgument.untrusted("count", cells))));
 	}
 
 	private void buildSelection(Player player, WandSelection selection)
@@ -277,13 +283,17 @@ public class WandSelectionManager implements Listener
 		int[] max = selectionMax(selection.cornerA, selection.cornerB);
 		if(flatAxis(min, max) < 0)
 		{
-			WormholesAudience.sendActionBar(player, Component.text("Selection must be one block thick. Re-click a corner to flatten it.", NamedTextColor.RED));
+			WormholesAudience.sendActionBar(player, Wormholes.text().component(WormholesMessages.WAND_NOT_FLAT));
 			return;
 		}
 		long cells = cellCount(min, max);
 		if(cells > MAX_DRAWN_CELLS)
 		{
-			WormholesAudience.sendActionBar(player, Component.text("Selection too large: " + cells + " cells (max " + MAX_DRAWN_CELLS + ").", NamedTextColor.RED));
+			WormholesAudience.sendActionBar(player, Wormholes.text().component(
+					WormholesMessages.WAND_TOO_LARGE,
+					WormholesLocalization.args(
+							MessageArgument.untrusted("count", cells),
+							MessageArgument.untrusted("maximum", MAX_DRAWN_CELLS))));
 			return;
 		}
 		World world = player.getWorld();
@@ -301,10 +311,10 @@ public class WandSelectionManager implements Listener
 		clearSelection(player.getUniqueId());
 		if(Wormholes.constructionManager.constructPortal(player.getUniqueId(), blocks, PortalType.PORTAL, player.getLocation().getDirection()))
 		{
-			WormholesAudience.sendActionBar(player, Component.text("Opening portal...", NamedTextColor.AQUA));
+			WormholesAudience.sendActionBar(player, Wormholes.text().component(WormholesMessages.WAND_OPENING));
 			return;
 		}
-		WormholesAudience.sendActionBar(player, Component.text("The portal could not be opened here.", NamedTextColor.RED));
+		WormholesAudience.sendActionBar(player, Wormholes.text().component(WormholesMessages.WAND_OPEN_FAILED));
 	}
 
 	private boolean isBuildClick(Player player, WandSelection selection, Block clicked)

@@ -76,13 +76,14 @@ public final class RtpPortalEditorModel
 			case LeaseIdleMutation change -> builder.leaseIdleMillis(change.durationMillis());
 			case ReservationTimeoutMutation change -> builder.privateReleaseMillis(change.durationMillis());
 			case RimMutation change -> builder.rimEnabled(change.enabled());
+			case SoundMutation change -> builder.soundEnabled(change.enabled());
 		}
 		return builder.build();
 	}
 
 	public sealed interface Mutation permits AllocationMutation, CenterModeMutation, CustomCenterMutation,
 			CycleDurationMutation, LeaseIdleMutation, RadiiMutation, ReservationTimeoutMutation,
-			ResetCenterTargetMutation, RimMutation, RotationMutation, TargetWorldMutation,
+			ResetCenterTargetMutation, RimMutation, RotationMutation, SoundMutation, TargetWorldMutation,
 			VerticalModeMutation, YMutation
 	{
 	}
@@ -112,7 +113,8 @@ public final class RtpPortalEditorModel
 			StatusSnapshot status,
 			List<WorldOption> loadedWorlds,
 			double sourceCenterX,
-			double sourceCenterZ)
+			double sourceCenterZ,
+			boolean dirty)
 	{
 		public EditorSnapshot
 		{
@@ -162,7 +164,8 @@ public final class RtpPortalEditorModel
 			long cycleDurationMillis,
 			long leaseIdleMillis,
 			long reservationTimeoutMillis,
-			boolean rimEnabled)
+			boolean rimEnabled,
+			boolean soundEnabled)
 	{
 		public SettingsSnapshot
 		{
@@ -219,7 +222,8 @@ public final class RtpPortalEditorModel
 					requiredSettings.getCycleDurationMillis(),
 					requiredSettings.getLeaseIdleMillis(),
 					requiredSettings.getPrivateReleaseMillis(),
-					requiredSettings.isRimEnabled());
+					requiredSettings.isRimEnabled(),
+					requiredSettings.isSoundEnabled());
 		}
 	}
 
@@ -444,6 +448,10 @@ public final class RtpPortalEditorModel
 	}
 
 	public record RimMutation(boolean enabled) implements Mutation
+	{
+	}
+
+	public record SoundMutation(boolean enabled) implements Mutation
 	{
 	}
 

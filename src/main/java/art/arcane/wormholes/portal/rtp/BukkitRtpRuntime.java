@@ -71,7 +71,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 		PortalRegistration replacement = registration(requiredPortal);
 		environment.sourceRegistered(requiredPortal.getId(), requiredPortal.getCenter());
 		PortalRegistration previous = registrations.put(requiredPortal.getId(), replacement);
-		if(replacement.equals(previous))
+		if(previous != null && replacement.hasSameRouteAs(previous))
 		{
 			return;
 		}
@@ -131,7 +131,11 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 			return false;
 		}
 		Optional<RtpService.Snapshot> snapshot = service.snapshot(Objects.requireNonNull(portalId, "portalId"));
-		return snapshot.isPresent() && !snapshot.get().viewers().isEmpty() && snapshot.get().runtime().ready();
+		return snapshot.isPresent()
+				&& !snapshot.get().viewers().isEmpty()
+				&& (snapshot.get().runtime().ready()
+						|| snapshot.get().views().values().stream()
+								.anyMatch(view -> view.state() == RtpProjectionView.State.READY));
 	}
 
 	public Optional<RtpPortalEditorModel.StatusSnapshot> editorStatus(UUID portalId)
@@ -650,19 +654,23 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 		}
 		RtpService.Snapshot snapshot = optionalSnapshot.get();
 		RtpRuntimeSnapshot runtime = snapshot.runtime();
-		long durationMillis = snapshot.settings().getRotationMode() == RtpRotationMode.TIMED
-				? snapshot.settings().getCycleDurationMillis() : 0L;
+		RtpSettings liveSettings = portal instanceof LocalPortal localPortal && localPortal.getRtpSettings() != null
+				? localPortal.getRtpSettings() : snapshot.settings();
+		long durationMillis = liveSettings.getRotationMode() == RtpRotationMode.TIMED
+				? liveSettings.getCycleDurationMillis() : 0L;
 		long elapsedMillis = durationMillis == 0L || runtime.nextRotationAtMillis() <= 0L
 				? 0L : Math.max(0L, durationMillis - Math.max(0L, runtime.nextRotationAtMillis() - environment.nowMillis()));
-		RtpRimRenderer.Phase phase = runtime.ready() ? RtpRimRenderer.Phase.READY
+		RtpProjectionView view = service.projectionView(portal.getId(), viewerId);
+		RtpRimRenderer.Phase phase = runtime.ready() || view.state() == RtpProjectionView.State.READY
+				? RtpRimRenderer.Phase.READY
 				: runtime.sharedClaims() + runtime.playerClaims() + runtime.anonymousClaims() > 0
 						? RtpRimRenderer.Phase.CLOSING : RtpRimRenderer.Phase.PREPARING;
 		return new ProjectionManager.RtpProjectionResult(
-				service.projectionView(portal.getId(), viewerId),
+				view,
 				portal.isProjecting(),
-				snapshot.settings().isRimEnabled(),
+				liveSettings.isRimEnabled(),
 				attended,
-				snapshot.settings().getRotationMode(),
+				liveSettings.getRotationMode(),
 				phase,
 				elapsedMillis,
 				durationMillis);
@@ -869,6 +877,17 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 		{
 			Objects.requireNonNull(registration, "registration");
 			Objects.requireNonNull(sourceWorldId, "sourceWorldId");
+		}
+
+		private boolean hasSameRouteAs(PortalRegistration other)
+		{
+			return registration.portalId().equals(other.registration.portalId())
+					&& Double.compare(registration.centerX(), other.registration.centerX()) == 0
+					&& Double.compare(registration.centerZ(), other.registration.centerZ()) == 0
+					&& registration.seed() == other.registration.seed()
+					&& registration.settings().hasSameRouteAs(other.registration.settings())
+					&& sourceWorldId.equals(other.sourceWorldId)
+					&& Objects.equals(targetWorldId, other.targetWorldId);
 		}
 	}
 

@@ -10,12 +10,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
 import org.bukkit.GameMode;
 import org.bukkit.Keyed;
 import org.bukkit.Location;
@@ -41,9 +41,10 @@ import org.bukkit.inventory.ShapedRecipe;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.util.Vector;
 
-import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
-
+import art.arcane.volmlib.util.localization.LinesKey;
+import art.arcane.volmlib.util.localization.MessageArgument;
+import art.arcane.wormholes.localization.WormholesLocalization;
+import art.arcane.wormholes.localization.WormholesMessages;
 import art.arcane.wormholes.portal.PortalBlock;
 import art.arcane.wormholes.portal.PortalType;
 import art.arcane.wormholes.service.WormholesAudience;
@@ -62,32 +63,85 @@ public class BlockManager implements Listener
 	private final Map<GChunk, Set<PortalBlock>> blocks;
 	private final Object runeMutationLock = new Object();
 	private final Set<RuneCell> reservedRuneCells = ConcurrentHashMap.newKeySet();
-	private final ItemStack wandTemplate;
-	private final ItemStack portalRuneTemplate;
-	private final ItemStack wormholeRuneTemplate;
-	private final ItemStack gatewayRuneTemplate;
+	private final List<ItemStack> acceptedWandTemplates = new CopyOnWriteArrayList<ItemStack>();
+	private final List<ItemStack> acceptedPortalRuneTemplates = new CopyOnWriteArrayList<ItemStack>();
+	private final List<ItemStack> acceptedWormholeRuneTemplates = new CopyOnWriteArrayList<ItemStack>();
+	private final List<ItemStack> acceptedGatewayRuneTemplates = new CopyOnWriteArrayList<ItemStack>();
+	private volatile ItemStack wandTemplate;
+	private volatile ItemStack portalRuneTemplate;
+	private volatile ItemStack wormholeRuneTemplate;
+	private volatile ItemStack gatewayRuneTemplate;
 
 	public BlockManager()
 	{
 		Wormholes.v("Starting Block Manager");
-		wandTemplate = buildTemplate(Material.BLAZE_ROD, ChatColor.GOLD + "" + ChatColor.BOLD + "Portal Wand");
-		portalRuneTemplate = buildTemplate(Material.PRISMARINE, ChatColor.GOLD + "" + ChatColor.BOLD + "Portal Rune");
-		wormholeRuneTemplate = buildTemplate(Material.DARK_PRISMARINE, ChatColor.GOLD + "" + ChatColor.BOLD + "Wormhole Rune");
-		gatewayRuneTemplate = buildTemplate(Material.BLACK_STAINED_GLASS, ChatColor.RED + "" + ChatColor.BOLD + "Gateway Rune");
+		WormholesLocalization english = WormholesLocalization.english();
+		wandTemplate = buildTemplate(Material.BLAZE_ROD, WormholesMessages.ITEM_PORTAL_WAND, english);
+		portalRuneTemplate = buildTemplate(Material.PRISMARINE, WormholesMessages.ITEM_PORTAL_RUNE, english);
+		wormholeRuneTemplate = buildTemplate(Material.DARK_PRISMARINE, WormholesMessages.ITEM_WORMHOLE_RUNE, english);
+		gatewayRuneTemplate = buildTemplate(Material.BLACK_STAINED_GLASS, WormholesMessages.ITEM_GATEWAY_RUNE, english);
+		refreshLocalizedTemplates();
 		registerRecipes();
 		blocks = new ConcurrentHashMap<GChunk, Set<PortalBlock>>();
 		J.ar(() -> updatePlacedBlocks(), 9);
 	}
 
-	private static ItemStack buildTemplate(Material material, String displayName)
+	private static ItemStack buildTemplate(Material material, LinesKey key, WormholesLocalization localization)
 	{
 		ItemStack is = new ItemStack(material);
 		ItemMeta meta = is.getItemMeta();
 		meta.addEnchant(Enchantment.INFINITY, 1, true);
-		meta.setDisplayName(displayName);
+		meta.setDisplayName(localization.legacyLines(key).getFirst());
 		is.setItemMeta(meta);
 
 		return is;
+	}
+
+	public void onLanguageReload()
+	{
+		refreshLocalizedTemplates();
+		registerRecipes();
+	}
+
+	private void refreshLocalizedTemplates()
+	{
+		rememberTemplate(acceptedWandTemplates, wandTemplate);
+		rememberTemplate(acceptedPortalRuneTemplates, portalRuneTemplate);
+		rememberTemplate(acceptedWormholeRuneTemplates, wormholeRuneTemplate);
+		rememberTemplate(acceptedGatewayRuneTemplates, gatewayRuneTemplate);
+		WormholesLocalization localization = Wormholes.text();
+		wandTemplate = buildTemplate(Material.BLAZE_ROD, WormholesMessages.ITEM_PORTAL_WAND, localization);
+		portalRuneTemplate = buildTemplate(Material.PRISMARINE, WormholesMessages.ITEM_PORTAL_RUNE, localization);
+		wormholeRuneTemplate = buildTemplate(Material.DARK_PRISMARINE, WormholesMessages.ITEM_WORMHOLE_RUNE, localization);
+		gatewayRuneTemplate = buildTemplate(Material.BLACK_STAINED_GLASS, WormholesMessages.ITEM_GATEWAY_RUNE, localization);
+		rememberTemplate(acceptedWandTemplates, wandTemplate);
+		rememberTemplate(acceptedPortalRuneTemplates, portalRuneTemplate);
+		rememberTemplate(acceptedWormholeRuneTemplates, wormholeRuneTemplate);
+		rememberTemplate(acceptedGatewayRuneTemplates, gatewayRuneTemplate);
+	}
+
+	private static void rememberTemplate(List<ItemStack> acceptedTemplates, ItemStack template)
+	{
+		for(ItemStack acceptedTemplate : acceptedTemplates)
+		{
+			if(acceptedTemplate.isSimilar(template))
+			{
+				return;
+			}
+		}
+		acceptedTemplates.add(template.clone());
+	}
+
+	private boolean matchesAnyTemplate(ItemStack item, List<ItemStack> acceptedTemplates)
+	{
+		for(ItemStack acceptedTemplate : acceptedTemplates)
+		{
+			if(isTemplateMatch(item, acceptedTemplate))
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	public void destroyAll()
@@ -208,10 +262,12 @@ public class BlockManager implements Listener
 		e.setCancelled(true);
 		if(b.getType() == PortalType.RTP)
 		{
-			WormholesAudience.sendActionBar(e.getPlayer(), Component.text("Random teleport portals cannot be formed from runes.", NamedTextColor.RED));
+			WormholesAudience.sendActionBar(e.getPlayer(), Wormholes.text().component(WormholesMessages.PORTAL_RTP_RUNE_UNSUPPORTED));
 			return;
 		}
-		WormholesAudience.sendActionBar(e.getPlayer(),Component.text("Forming portal... " + b.getType().name().toLowerCase() + " runes must connect on one flat wall, floor, or ceiling.", NamedTextColor.AQUA));
+		WormholesAudience.sendActionBar(e.getPlayer(), Wormholes.text().component(
+				WormholesMessages.PORTAL_FORMING,
+				WormholesLocalization.args(MessageArgument.untrusted("type", b.getType().name().toLowerCase()))));
 		construct(e.getPlayer(), e.getClickedBlock());
 	}
 
@@ -224,7 +280,7 @@ public class BlockManager implements Listener
 		}
 		if(!reservation.coplanar())
 		{
-			Wormholes.effectManager.playNotificationFail(ChatColor.RED + "Portal must lie flat on one wall, floor, or ceiling.", clickedBlock.getLocation());
+			Wormholes.effectManager.playNotificationFail(Wormholes.text().legacy(WormholesMessages.PORTAL_MUST_BE_FLAT), clickedBlock.getLocation());
 			return;
 		}
 		Vector look = player.getLocation().getDirection();
@@ -426,7 +482,7 @@ public class BlockManager implements Listener
 		if(player != null)
 		{
 			FoliaScheduler.runEntity(Wormholes.instance, player,
-					() -> WormholesAudience.sendActionBar(player, Component.text("Portal formation was interrupted; the reserved runes were restored.", NamedTextColor.RED)));
+					() -> WormholesAudience.sendActionBar(player, Wormholes.text().component(WormholesMessages.PORTAL_FORM_INTERRUPTED)));
 		}
 	}
 
@@ -541,15 +597,15 @@ public class BlockManager implements Listener
 		ItemStack inHand = e.getItemInHand();
 		PortalType placedType = null;
 
-		if(isTemplateMatch(inHand, portalRuneTemplate))
+		if(matchesAnyTemplate(inHand, acceptedPortalRuneTemplates))
 		{
 			placedType = PortalType.PORTAL;
 		}
-		else if(isTemplateMatch(inHand, wormholeRuneTemplate))
+		else if(matchesAnyTemplate(inHand, acceptedWormholeRuneTemplates))
 		{
 			placedType = PortalType.WORMHOLE;
 		}
-		else if(isTemplateMatch(inHand, gatewayRuneTemplate))
+		else if(matchesAnyTemplate(inHand, acceptedGatewayRuneTemplates))
 		{
 			placedType = PortalType.GATEWAY;
 		}
@@ -560,7 +616,7 @@ public class BlockManager implements Listener
 		}
 
 		placeBlock(new PortalBlock(placedType, e.getBlock().getLocation()));
-		WormholesAudience.sendActionBar(e.getPlayer(),Component.text("Rune placed. Build any connected shape on one flat surface, then left-click any rune with the Portal Wand.", NamedTextColor.AQUA));
+		WormholesAudience.sendActionBar(e.getPlayer(), Wormholes.text().component(WormholesMessages.PORTAL_RUNE_PLACED));
 	}
 
 	@EventHandler(priority = EventPriority.LOWEST)
@@ -811,12 +867,14 @@ public class BlockManager implements Listener
 
 	public boolean isWand(ItemStack item)
 	{
-		return isTemplateMatch(item, wandTemplate);
+		return matchesAnyTemplate(item, acceptedWandTemplates);
 	}
 
 	public boolean isPortalRune(ItemStack item)
 	{
-		return isTemplateMatch(item, portalRuneTemplate) || isTemplateMatch(item, wormholeRuneTemplate) || isTemplateMatch(item, gatewayRuneTemplate);
+		return matchesAnyTemplate(item, acceptedPortalRuneTemplates)
+				|| matchesAnyTemplate(item, acceptedWormholeRuneTemplates)
+				|| matchesAnyTemplate(item, acceptedGatewayRuneTemplates);
 	}
 
 	public ItemStack getWand()

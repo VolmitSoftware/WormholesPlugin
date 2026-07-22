@@ -1,9 +1,12 @@
 package art.arcane.wormholes.network;
 
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
+import art.arcane.volmlib.util.localization.MessageArgument;
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.config.toml.NetworkConfig;
+import art.arcane.wormholes.localization.WormholesLocalization;
+import art.arcane.wormholes.localization.WormholesMessages;
 import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.LocalPortal;
@@ -12,7 +15,6 @@ import art.arcane.wormholes.portal.UniversalTunnel;
 import art.arcane.wormholes.service.WormholesAudience;
 
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.NamespacedKey;
@@ -821,7 +823,7 @@ public final class TraversalService implements Listener {
         }
         if (placement.attempt() + 1 >= MAX_ARRIVAL_PLACEMENT_ATTEMPTS) {
             inboundAdmissions.completeArrival(placement.reservation(), System.currentTimeMillis());
-            WormholesAudience.sendActionBar(player, Component.text("Portal arrival could not be placed; you remain at the destination spawn", NamedTextColor.RED));
+            WormholesAudience.sendActionBar(player, Wormholes.text().component(WormholesMessages.PORTAL_ARRIVAL_FAILED));
             return;
         }
         inboundAdmissions.releaseArrival(placement.reservation(), System.currentTimeMillis());
@@ -950,19 +952,33 @@ public final class TraversalService implements Listener {
     }
 
     private void notifyUnreachable(Player player, String reason) {
-        String text = reason == null || reason.isBlank()
-            ? "Destination server unreachable"
-            : "Destination server unreachable: " + reason;
-        sendActionBar(player, Component.text(text, NamedTextColor.RED));
+        if (reason == null || reason.isBlank()) {
+            sendActionBar(player, Wormholes.text().component(WormholesMessages.PORTAL_DESTINATION_UNREACHABLE));
+            return;
+        }
+        sendActionBar(player, Wormholes.text().component(
+                WormholesMessages.PORTAL_DESTINATION_UNREACHABLE_DETAIL,
+                WormholesLocalization.args(MessageArgument.untrusted("reason", reason))));
     }
 
     private void notifyCooldown(Player player, long retryAfterMillis) {
-        sendActionBar(player, Component.text("Cross-server portal cooling down: " + formatSeconds(retryAfterMillis) + "s", NamedTextColor.GOLD));
+        sendActionBar(player, Wormholes.text().component(
+                WormholesMessages.PORTAL_TRANSFER_COOLDOWN,
+                WormholesLocalization.args(MessageArgument.untrusted("seconds", formatSeconds(retryAfterMillis)))));
     }
 
     private void notifyDenied(Player player, String reason, long retryAfterMillis) {
-        String retry = retryAfterMillis <= 0L ? "" : " (retry in " + formatSeconds(retryAfterMillis) + "s)";
-        sendActionBar(player, Component.text("Portal transfer blocked: " + reason + retry, NamedTextColor.RED));
+        if (retryAfterMillis <= 0L) {
+            sendActionBar(player, Wormholes.text().component(
+                    WormholesMessages.PORTAL_TRANSFER_BLOCKED,
+                    WormholesLocalization.args(MessageArgument.untrusted("reason", reason))));
+            return;
+        }
+        sendActionBar(player, Wormholes.text().component(
+                WormholesMessages.PORTAL_TRANSFER_BLOCKED_RETRY,
+                WormholesLocalization.args(
+                        MessageArgument.untrusted("reason", reason),
+                        MessageArgument.untrusted("seconds", formatSeconds(retryAfterMillis)))));
     }
 
     private void sendActionBar(Player player, Component message) {

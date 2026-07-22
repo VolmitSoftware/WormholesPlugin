@@ -35,7 +35,6 @@ import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.util.Vector;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.title.Title;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 
@@ -43,6 +42,8 @@ import art.arcane.wormholes.PortalManager;
 import art.arcane.wormholes.Settings;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.geometry.Raycast;
+import art.arcane.wormholes.localization.WormholesLocalization;
+import art.arcane.wormholes.localization.WormholesMessages;
 import art.arcane.wormholes.network.PortalSyncService;
 import art.arcane.wormholes.platform.WormholesPlatform;
 import art.arcane.wormholes.portal.rtp.RtpAllocationMode;
@@ -53,6 +54,10 @@ import art.arcane.wormholes.portal.rtp.RtpSettings;
 import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.wormholes.service.WormholesTelemetry;
 import art.arcane.volmlib.util.bukkit.WorldIdentity;
+import art.arcane.volmlib.util.localization.LinesKey;
+import art.arcane.volmlib.util.localization.MessageArgs;
+import art.arcane.volmlib.util.localization.MessageArgument;
+import art.arcane.volmlib.util.localization.TextKey;
 import art.arcane.volmlib.util.scheduling.AR;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
 import art.arcane.volmlib.util.inventorygui.Element;
@@ -655,7 +660,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		bounceRejectedTraversal(entity, traversive);
 		if(entity instanceof Player player)
 		{
-			WormholesAudience.sendActionBar(player, Component.text("Portal cooling down", NamedTextColor.GOLD));
+			WormholesAudience.sendActionBar(player, Wormholes.text().component(WormholesMessages.PORTAL_COOLDOWN));
 		}
 	}
 
@@ -686,7 +691,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	{
 		if(entity instanceof Player player)
 		{
-			WormholesAudience.sendActionBar(player, Component.text("Portal access denied"));
+			WormholesAudience.sendActionBar(player, Wormholes.text().component(WormholesMessages.PORTAL_ACCESS_DENIED));
 		}
 	}
 
@@ -814,16 +819,22 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		{
 			case PUSH:
 				ParticleEffect.SMOKE.display(0.01f, 6, location, 32);
-				location.getWorld().playSound(location, MSound.ENDERMAN_TELEPORT.bukkitSound(), 0.5f, 1.7f + (float) (Math.random() * 0.2));
-				location.getWorld().playSound(location, MSound.ENDERMAN_TELEPORT.bukkitSound(), 0.5f, 1.5f + (float) (Math.random() * 0.2));
-				location.getWorld().playSound(location, MSound.ENDERMAN_TELEPORT.bukkitSound(), 0.5f, 1.3f + (float) (Math.random() * 0.2));
+				if(isPortalSoundEnabled())
+				{
+					location.getWorld().playSound(location, MSound.ENDERMAN_TELEPORT.bukkitSound(), 0.5f, 1.7f + (float) (Math.random() * 0.2));
+					location.getWorld().playSound(location, MSound.ENDERMAN_TELEPORT.bukkitSound(), 0.5f, 1.5f + (float) (Math.random() * 0.2));
+					location.getWorld().playSound(location, MSound.ENDERMAN_TELEPORT.bukkitSound(), 0.5f, 1.3f + (float) (Math.random() * 0.2));
+				}
 
 				break;
 			case REJECT:
 				ParticleEffect.SMOKE.display(0.08f, 24, location, 32);
 				ParticleEffect.REDSTONE.display(new ParticleEffect.OrdinaryColor(255, 70, 70), location, 32);
-				location.getWorld().playSound(location, MSound.ANVIL_LAND.bukkitSound(), 0.7f, 1.8f);
-				location.getWorld().playSound(location, MSound.GLASS.bukkitSound(), 0.6f, 0.7f);
+				if(isPortalSoundEnabled())
+				{
+					location.getWorld().playSound(location, MSound.ANVIL_LAND.bukkitSound(), 0.7f, 1.8f);
+					location.getWorld().playSound(location, MSound.GLASS.bukkitSound(), 0.6f, 0.7f);
+				}
 				break;
 			case AMBIENT_CLOSED:
 				for(int i = 0; i < 1; i++)
@@ -838,12 +849,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					ParticleEffect.TOWN_AURA.display(0f, 1, getStructure().randomLocation(), 16);
 				}
 
-				if(M.r(0.01))
+				if(isPortalSoundEnabled() && M.r(0.01))
 				{
 					getStructure().getCenter().getWorld().playSound(getStructure().getCenter(), Sound.BLOCK_LAVA_AMBIENT, 0.25f, 0.025f);
 				}
 
-				if(M.r(0.01))
+				if(isPortalSoundEnabled() && M.r(0.01))
 				{
 					getStructure().getCenter().getWorld().playSound(getStructure().getCenter(), MSound.PORTAL.bukkitSound(), 0.25f, 0.025f);
 				}
@@ -860,7 +871,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					double sy = Math.abs(closeArea.getYb() - closeArea.getYa());
 					double sz = Math.abs(closeArea.getZb() - closeArea.getZa());
 					FoliaScheduler.runRegion(Wormholes.instance, corner,
-							() -> Wormholes.effectManager.playPortalClose(closeWorld, corner, sx, sy, sz, () -> effectSequence.get() == closeSequence), 1L);
+							() -> Wormholes.effectManager.playPortalClose(
+									closeWorld,
+									corner,
+									sx,
+									sy,
+									sz,
+									() -> effectSequence.get() == closeSequence,
+									this::isPortalSoundEnabled), 1L);
 				}
 				break;
 			case OPEN:
@@ -874,7 +892,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					double sy = Math.abs(openArea.getYb() - openArea.getYa());
 					double sz = Math.abs(openArea.getZb() - openArea.getZa());
 					FoliaScheduler.runRegion(Wormholes.instance, openCenter,
-							() -> Wormholes.effectManager.playPortalOpen(openWorld, openCenter, sx, sy, sz, () -> effectSequence.get() == openSequence), 1L);
+							() -> Wormholes.effectManager.playPortalOpen(
+									openWorld,
+									openCenter,
+									sx,
+									sy,
+									sz,
+									() -> effectSequence.get() == openSequence,
+									this::isPortalSoundEnabled), 1L);
 				}
 				break;
 			case AMBIENT_DEBUG:
@@ -883,6 +908,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			default:
 				break;
 		}
+	}
+
+	private boolean isPortalSoundEnabled()
+	{
+		RtpSettings settings = rtpSettings;
+		return type != PortalType.RTP || settings == null || settings.isSoundEnabled();
 	}
 
 	@Override
@@ -1119,7 +1150,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void confirmDeparture(Entity entity, Traversive t)
 	{
-		if(entity instanceof Player player)
+		if(entity instanceof Player player && isPortalSoundEnabled())
 		{
 			player.playSound(player.getLocation(), MSound.ENDERMAN_TELEPORT.bukkitSound(), 0.5F, 1.5F);
 		}
@@ -1639,7 +1670,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			}
 			if(deletionCenter != null && Wormholes.effectManager != null)
 			{
-				Wormholes.effectManager.playNotificationFail(ChatColor.RED + getName() + " Deleted", deletionCenter);
+				Wormholes.effectManager.playNotificationFail(Wormholes.text().legacy(
+						WormholesMessages.PORTAL_DELETED,
+						arguments("portal", getName())), deletionCenter);
 			}
 		});
 	}
@@ -1977,28 +2010,22 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 			RtpSettings currentRtpSettings = rtpSettings;
 			boolean rtp = type == PortalType.RTP && currentRtpSettings != null;
-			String linkLore = rtp
-					? ChatColor.GRAY + "Rotation: " + ChatColor.AQUA + rtpRotationLabel(currentRtpSettings.getRotationMode())
-					: hasTunnel()
-							? ChatColor.GRAY + "Currently linked: " + ChatColor.GOLD + getTunnel().getDestination().getName()
-							: ChatColor.GRAY + "Currently linked: " + ChatColor.RED + "None";
-			window.setElement(-2, 1, new UIElement("set-destination")
-					.setName(ChatColor.GOLD + "" + ChatColor.BOLD + (rtp ? "Random Destination" : isGateway() ? "Pair & Destination" : "Destination"))
-					.addLore(ChatColor.GRAY + (rtp
-							? "Configure where and when this portal rerolls."
-							: isGateway() ? "Pair another server or choose a gateway." : "Choose a portal to link to."))
-					.addLore(linkLore)
-					.addLore(" ")
-					.addLore(ChatColor.DARK_GRAY + (rtp
-							? "Click to open random teleport settings."
-							: isGateway() ? "Click to open the pairing hub." : "Click to open the destination picker."))
-					.setMaterial(new MaterialBlock(rtp ? Material.COMPASS : isGateway() ? Material.END_CRYSTAL : Material.ENDER_EYE))
-					.setCount(rtp ? 1 : Math.max(1, Wormholes.portalManager.getAccessableCount(getType()) - 1))
-					.onLeftClick((e) ->
-					{
+			UIElement destination = new UIElement("set-destination");
+			LinesKey destinationKey = rtp
+					? WormholesMessages.PORTAL_MENU_RTP_DESTINATION
+					: isGateway() ? WormholesMessages.PORTAL_MENU_GATEWAY_DESTINATION : WormholesMessages.PORTAL_MENU_DESTINATION;
+			String destinationLabel = rtp
+					? rtpRotationSummary(currentRtpSettings)
+					: hasTunnel() ? getTunnel().getDestination().getName() : localized(WormholesMessages.LABEL_NONE);
+			String destinationArgument = rtp ? "rotation" : "destination";
+			Wormholes.text().apply(destination, destinationKey, arguments(destinationArgument, destinationLabel));
+			destination.setMaterial(new MaterialBlock(rtp ? Material.COMPASS : isGateway() ? Material.END_CRYSTAL : Material.ENDER_EYE));
+			destination.setCount(rtp ? 1 : Math.max(1, Wormholes.portalManager.getAccessableCount(getType()) - 1));
+			destination.onLeftClick((e) ->
+			{
 						if(dimensionalPortalKind.isManagedPortal())
 						{
-							notifySetting(p, "This dimensional portal keeps its generated link.");
+							notifySetting(p, WormholesMessages.PORTAL_DIMENSIONAL_LINK_MANAGED);
 							return;
 						}
 						if(rtp)
@@ -2015,37 +2042,31 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 						{
 							uiChooseDestination(p);
 						}
-					}));
+					});
+			window.setElement(-2, 1, destination);
 
-			window.setElement(-2, 2, new UIElement("set-name")
-					.setName(ChatColor.GREEN + "" + ChatColor.BOLD + "Rename Portal")
-					.addLore(ChatColor.GRAY + "Change the name shown on links and menus.")
-					.addLore(ChatColor.GRAY + "Current: " + ChatColor.WHITE + getName())
-					.addLore(" ")
-					.addLore(ChatColor.DARK_GRAY + "Click to type a new name.")
-					.setMaterial(new MaterialBlock(Material.NAME_TAG))
-					.onLeftClick((e) -> uiChangeName(p)));
+			UIElement rename = localizedElement(
+					"set-name", WormholesMessages.PORTAL_MENU_RENAME, arguments("portal", getName()), Material.NAME_TAG);
+			rename.onLeftClick((e) -> uiChangeName(p));
+			window.setElement(-2, 2, rename);
 
 			window.setElement(0, 1, projectionsElement(window, p));
 			window.setElement(2, 1, settingsOpenerElement(window, p));
 			window.setElement(0, 2, orientationOpenerElement(window, p));
 			window.setElement(2, 2, modeOpenerElement(window, p));
 
-			window.setElement(0, 3, new UIElement("destroy")
-					.setName(ChatColor.RED + "" + ChatColor.BOLD + "Delete Portal")
-					.addLore(ChatColor.GRAY + "Permanently removes this portal.")
-					.addLore(" ")
-					.addLore(ChatColor.RED + "" + ChatColor.UNDERLINE + "Shift + Left Click to confirm")
-					.setMaterial(new MaterialBlock(Material.GUNPOWDER))
-					.onShiftLeftClick((e) ->
-					{
+			UIElement destroy = localizedElement(
+					"destroy", WormholesMessages.PORTAL_MENU_DELETE, MessageArgs.empty(), Material.GUNPOWDER);
+			destroy.onShiftLeftClick((e) ->
+			{
 						if(!ensureCanManagePortal(p))
 						{
 							return;
 						}
 						window.close();
 						destroy();
-					}));
+					});
+			window.setElement(0, 3, destroy);
 		});
 	}
 
@@ -2057,7 +2078,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 		if(type != PortalType.RTP || rtpSettings == null)
 		{
-			notifySetting(viewer, "This portal is no longer in random teleport mode.");
+			notifySetting(viewer, WormholesMessages.PORTAL_NOT_RTP);
 			uiOpenPortalMenu(viewer);
 			return;
 		}
@@ -2095,6 +2116,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		private final UUID viewerId;
 		private final UIWindow window;
 		private final RtpPortalEditor editor;
+		private RtpSettings baseSettings;
+		private RtpSettings draftSettings;
+		private long baseRevision;
 
 		private RtpEditorSession(Player viewer)
 		{
@@ -2103,6 +2127,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			window.setResolution(WindowResolution.W9_H6);
 			window.onClosed(closed -> rtpEditorSessions.remove(viewerId, this));
 			editor = new RtpPortalEditor(this);
+			baseSettings = Objects.requireNonNull(rtpSettings, "RTP settings");
+			draftSettings = baseSettings;
+			baseRevision = rtpConfigurationRevision.get();
 		}
 
 		private void open()
@@ -2127,7 +2154,13 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			{
 				throw new IllegalStateException("RTP editor session is stale");
 			}
-			RtpSettings settings = rtpSettings;
+			if(rtpConfigurationRevision.get() != baseRevision && !draftDirty())
+			{
+				baseSettings = rtpSettings;
+				draftSettings = baseSettings;
+				baseRevision = rtpConfigurationRevision.get();
+			}
+			RtpSettings settings = draftSettings;
 			ArrayList<RtpPortalEditorModel.WorldOption> worlds = new ArrayList<RtpPortalEditorModel.WorldOption>();
 			for(World world : Bukkit.getWorlds())
 			{
@@ -2139,13 +2172,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					: Wormholes.rtpRuntime.editorStatus(getId()).orElseGet(() -> idleStatus(targetWorldAvailable));
 			Location center = Objects.requireNonNull(structure.getCenter(), "portal center");
 			return new RtpPortalEditorModel.EditorSnapshot(
-					rtpConfigurationRevision.get(),
-					"RTP: " + getName(),
+					baseRevision,
+					Wormholes.text().plain(WormholesMessages.PORTAL_RTP_EDITOR_TITLE, arguments("portal", getName())),
 					RtpPortalEditorModel.SettingsSnapshot.from(settings),
 					status,
 					worlds,
 					center.getX(),
-					center.getZ());
+					center.getZ(),
+					draftDirty());
 		}
 
 		@Override
@@ -2157,6 +2191,34 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				return;
 			}
 			FoliaScheduler.runEntity(Wormholes.instance, viewer, () -> mutateForViewer(viewer, expectedRevision, mutation));
+		}
+
+		@Override
+		public void apply(UUID requestedViewerId, long expectedRevision)
+		{
+			Player viewer = Bukkit.getPlayer(requestedViewerId);
+			if(viewer == null || !viewerId.equals(requestedViewerId))
+			{
+				return;
+			}
+			FoliaScheduler.runEntity(Wormholes.instance, viewer, () -> applyForViewer(viewer, expectedRevision));
+		}
+
+		@Override
+		public void discard(UUID requestedViewerId)
+		{
+			Player viewer = Bukkit.getPlayer(requestedViewerId);
+			if(viewer == null || !viewerId.equals(requestedViewerId))
+			{
+				return;
+			}
+			FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
+			{
+				baseSettings = rtpSettings;
+				draftSettings = baseSettings;
+				baseRevision = rtpConfigurationRevision.get();
+				refresh(WormholesMessages.PORTAL_RTP_DRAFT_DISCARDED);
+			});
 		}
 
 		@Override
@@ -2196,37 +2258,85 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			{
 				if(type != PortalType.RTP || rtpSettings == null)
 				{
-					refresh("This portal is no longer in random teleport mode.");
+					refresh(WormholesMessages.PORTAL_NOT_RTP);
 					return;
 				}
-				if(rtpConfigurationRevision.get() != expectedRevision)
+				if(baseRevision != expectedRevision || rtpConfigurationRevision.get() != baseRevision)
 				{
-					refresh("Settings changed; the editor was refreshed.");
+					baseSettings = rtpSettings;
+					draftSettings = baseSettings;
+					baseRevision = rtpConfigurationRevision.get();
+					refresh(WormholesMessages.PORTAL_RTP_DRAFT_REFRESHED);
 					return;
 				}
 				try
 				{
 					World sourceWorld = Objects.requireNonNull(structure.getWorld(), "portal source world");
-					RtpSettings updated = RtpPortalEditorModel.applyMutation(
-							rtpSettings,
+					draftSettings = RtpPortalEditorModel.applyMutation(
+							draftSettings,
 							mutation,
 							sourceWorld,
 							LocalPortal.this::resolveRtpWorld);
-					applyRtpSettings(updated);
-					Wormholes.v("QA_EVT {\"event\":\"rtp_editor_mutation\",\"status\":\"pass\",\"details\":\""
+					Wormholes.v("QA_EVT {\"event\":\"rtp_editor_stage\",\"status\":\"pass\",\"details\":\""
 							+ mutation.getClass().getSimpleName() + "\",\"context\":{\"portal\":\"" + getId()
-							+ "\",\"revision\":" + rtpConfigurationRevision.get() + "}}");
-					refresh("Random destination settings updated.");
+							+ "\",\"revision\":" + baseRevision + "}}");
+					refresh(WormholesMessages.PORTAL_RTP_CHANGE_STAGED);
 				}
 				catch(IllegalArgumentException | IllegalStateException exception)
 				{
-					refresh("Could not apply that setting: " + exception.getMessage());
+					refresh(WormholesMessages.PORTAL_RTP_SETTING_REJECTED, arguments("reason", exception.getMessage()));
 				}
 			};
 			if(!runRtpSourceTask(mutationTask))
 			{
-				refresh("The portal region is unavailable; try again.");
+				refresh(WormholesMessages.PORTAL_REGION_UNAVAILABLE);
 			}
+		}
+
+		private void applyForViewer(Player viewer, long expectedRevision)
+		{
+			if(!ensureCanManagePortal(viewer))
+			{
+				close();
+				return;
+			}
+			Runnable applyTask = () ->
+			{
+				if(type != PortalType.RTP || rtpSettings == null)
+				{
+					refresh(WormholesMessages.PORTAL_NOT_RTP);
+					return;
+				}
+				if(baseRevision != expectedRevision || rtpConfigurationRevision.get() != baseRevision)
+				{
+					baseSettings = rtpSettings;
+					draftSettings = baseSettings;
+					baseRevision = rtpConfigurationRevision.get();
+					refresh(WormholesMessages.PORTAL_RTP_STALE_APPLY);
+					return;
+				}
+				if(!draftDirty())
+				{
+					refresh(WormholesMessages.PORTAL_RTP_NO_CHANGES);
+					return;
+				}
+				applyRtpSettings(draftSettings);
+				baseSettings = rtpSettings;
+				draftSettings = baseSettings;
+				baseRevision = rtpConfigurationRevision.get();
+				Wormholes.v("QA_EVT {\"event\":\"rtp_editor_apply\",\"status\":\"pass\",\"details\":\"batch\",\"context\":{\"portal\":\""
+						+ getId() + "\",\"revision\":" + baseRevision + "}}");
+				refresh(WormholesMessages.PORTAL_RTP_APPLIED);
+			};
+			if(!runRtpSourceTask(applyTask))
+			{
+				refresh(WormholesMessages.PORTAL_REGION_UNAVAILABLE);
+			}
+		}
+
+		private boolean draftDirty()
+		{
+			return !draftSettings.equals(baseSettings);
 		}
 
 		private void manualForViewer(Player viewer, long expectedRevision, RtpPortalEditorModel.ManualAction action)
@@ -2236,33 +2346,39 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				close();
 				return;
 			}
-			if(type != PortalType.RTP || rtpSettings == null || rtpConfigurationRevision.get() != expectedRevision)
+			if(type != PortalType.RTP || rtpSettings == null || baseRevision != expectedRevision
+					|| rtpConfigurationRevision.get() != baseRevision || draftDirty())
 			{
-				refresh("Settings changed; the editor was refreshed.");
+				refresh(WormholesMessages.PORTAL_RTP_EDITOR_REFRESHED);
 				return;
 			}
 			if(Wormholes.rtpRuntime == null)
 			{
-				refresh("Random teleport runtime is unavailable.");
+				refresh(WormholesMessages.PORTAL_RTP_RUNTIME_UNAVAILABLE);
 				return;
 			}
 			if(action == RtpPortalEditorModel.ManualAction.REROLL)
 			{
 				Wormholes.rtpRuntime.requestManualReroll(getId()).whenComplete((accepted, failure) ->
 						refresh(failure != null
-								? "Manual reroll failed; see the server log."
+								? WormholesMessages.PORTAL_RTP_REROLL_FAILED
 								: Boolean.TRUE.equals(accepted)
-										? "Preparing a new random destination."
-										: "Reroll is unavailable while the route is preparing or in use."));
+										? WormholesMessages.PORTAL_RTP_REROLL_PREPARING
+										: WormholesMessages.PORTAL_RTP_REROLL_UNAVAILABLE));
 				return;
 			}
 			Wormholes.rtpRuntime.requestPoolRebuild(getId()).whenComplete((removed, failure) ->
 					refresh(failure == null
-							? "Rebuilding the private destination pool."
-							: "Pool rebuild failed; see the server log."));
+							? WormholesMessages.PORTAL_RTP_POOL_REBUILDING
+							: WormholesMessages.PORTAL_RTP_POOL_FAILED));
 		}
 
-		private void refresh(String message)
+		private void refresh(TextKey message)
+		{
+			refresh(message, MessageArgs.empty());
+		}
+
+		private void refresh(TextKey message, MessageArgs arguments)
 		{
 			Player viewer = Bukkit.getPlayer(viewerId);
 			if(viewer == null)
@@ -2274,7 +2390,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			{
 				if(message != null)
 				{
-					notifySetting(viewer, message);
+					notifySetting(viewer, message, arguments);
 				}
 				if(type != PortalType.RTP || rtpSettings == null)
 				{
@@ -2351,17 +2467,21 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		window.setViewportHeight(4);
 		window.setDecorator(new UIPaneDecorator(Material.BLACK_STAINED_GLASS_PANE));
 		window.setElement(0, 0, advancedSettingsPlacardElement());
-		window.setElement(-3, 1, networkViewNumberElement(window, p, "network-view-depth", "Capture Radius",
-				ChatColor.GRAY + "Blocks streamed around the destination portal.",
+		window.setElement(-3, 1, networkViewNumberElement(window, p, "network-view-depth",
+				WormholesMessages.PORTAL_NETWORK_LABEL_CAPTURE_RADIUS,
+				WormholesMessages.PORTAL_NETWORK_DESCRIPTION_CAPTURE_RADIUS,
 				Material.SPYGLASS, this::getNetworkViewDepth, this::setNetworkViewDepth, 4, 16));
-		window.setElement(-1, 1, networkViewNumberElement(window, p, "network-view-heartbeat", "Full Refresh",
-				ChatColor.GRAY + "Ticks between full block refreshes.",
+		window.setElement(-1, 1, networkViewNumberElement(window, p, "network-view-heartbeat",
+				WormholesMessages.PORTAL_NETWORK_LABEL_FULL_REFRESH,
+				WormholesMessages.PORTAL_NETWORK_DESCRIPTION_FULL_REFRESH,
 				Material.CLOCK, this::getNetworkViewHeartbeatTicks, this::setNetworkViewHeartbeatTicks, 10, 60));
-		window.setElement(1, 1, networkViewNumberElement(window, p, "network-view-entities", "Entity Update",
-				ChatColor.GRAY + "Ticks between entity updates.",
+		window.setElement(1, 1, networkViewNumberElement(window, p, "network-view-entities",
+				WormholesMessages.PORTAL_NETWORK_LABEL_ENTITY_UPDATE,
+				WormholesMessages.PORTAL_NETWORK_DESCRIPTION_ENTITY_UPDATE,
 				Material.ENDER_EYE, this::getNetworkViewEntityIntervalTicks, this::setNetworkViewEntityIntervalTicks, 2, 20));
-		window.setElement(3, 1, networkViewNumberElement(window, p, "network-view-grace", "View Grace",
-				ChatColor.GRAY + "Seconds to keep a warm stream after looking away.",
+		window.setElement(3, 1, networkViewNumberElement(window, p, "network-view-grace",
+				WormholesMessages.PORTAL_NETWORK_LABEL_VIEW_GRACE,
+				WormholesMessages.PORTAL_NETWORK_DESCRIPTION_VIEW_GRACE,
 				Material.REDSTONE, this::getNetworkViewUnsubscribeGraceSeconds, this::setNetworkViewUnsubscribeGraceSeconds, 5, 30));
 		window.setElement(0, 2, networkViewFallbackElement(p, window));
 		window.setElement(0, 3, backToSettingsMenuElement(window, p));
@@ -2370,19 +2490,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private Element advancedSettingsPlacardElement()
 	{
-		UIElement element = new UIElement("advanced-settings-placard");
-		element.setName(ChatColor.DARK_AQUA + "" + ChatColor.BOLD + "Advanced Stream Tuning");
-		element.setMaterial(new MaterialBlock(Material.COMPARATOR));
-		element.addLore(ChatColor.GRAY + "Direct controls for diagnostics and unusual links.");
-		element.addLore(ChatColor.GRAY + "Changing one value marks Stream Quality as Custom.");
-		return element;
+		return localizedElement("advanced-settings-placard", WormholesMessages.PORTAL_MENU_ADVANCED_SETTINGS,
+				MessageArgs.empty(), Material.COMPARATOR);
 	}
 
 	private Element backToSettingsMenuElement(Window window, Player viewer)
 	{
-		UIElement element = new UIElement("back-to-settings");
-		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Back to Settings");
-		element.setMaterial(new MaterialBlock(Material.ARROW));
+		UIElement element = localizedElement("back-to-settings", WormholesMessages.PORTAL_MENU_BACK_SETTINGS,
+				MessageArgs.empty(), Material.ARROW);
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
 		{
 			window.close();
@@ -2398,19 +2513,20 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		{
 			if(dimensionalPortalKind.isManagedPortal())
 			{
-				notifySetting(viewer, "Dimensional portal travel is managed automatically.");
+				notifySetting(viewer, WormholesMessages.PORTAL_TRAVEL_MANAGED);
 				return;
 			}
 			if(isMirrorMode())
 			{
-				notifySetting(viewer, "Mirror mode never allows travel.");
+				notifySetting(viewer, WormholesMessages.PORTAL_TRAVEL_MIRROR_LOCKED);
 				return;
 			}
 			PortalTravelMode mode = getTravelMode().next();
 			setTravelMode(mode);
 			applyTravelDirectionElement(element);
 			window.updateInventory();
-			notifySetting(viewer, "Travel " + ChatColor.AQUA + mode.getDisplayName());
+			notifySetting(viewer, WormholesMessages.PORTAL_TRAVEL_CHANGED,
+					arguments("mode", travelModeLabel(mode)));
 		});
 		applyTravelDirectionElement(element);
 		return element;
@@ -2447,31 +2563,35 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		if(dimensionalPortalKind.isManagedPortal())
 		{
 			boolean receiver = dimensionalPortalKind.isReceiverOnly();
-			String direction = dimensionalPortalKind == DimensionalPortalKind.NETHER ? "Both Ways" : receiver ? "Arrival Only" : "Departure Only";
-			element.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Travel: " + direction);
+			String direction = dimensionalPortalKind == DimensionalPortalKind.NETHER
+					? localized(WormholesMessages.PORTAL_LABEL_BOTH_WAYS)
+					: receiver
+							? localized(WormholesMessages.PORTAL_LABEL_ARRIVAL_ONLY)
+							: localized(WormholesMessages.PORTAL_LABEL_DEPARTURE_ONLY);
+			String detail = dimensionalPortalKind == DimensionalPortalKind.NETHER
+					? localized(WormholesMessages.PORTAL_LABEL_DIMENSIONAL_BOTH_ACTIVE)
+					: localized(WormholesMessages.PORTAL_LABEL_DIMENSIONAL_RETURN_DISABLED);
+			Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_TRAVEL_MANAGED,
+					arguments("direction", direction, "detail", detail));
 			element.setEnchanted(true);
 			element.setMaterial(new MaterialBlock(dimensionalPortalKind == DimensionalPortalKind.NETHER ? Material.OBSIDIAN
 					: receiver ? Material.ENDER_EYE : Material.ENDER_PEARL));
-			KList<String> endLore = element.getLore();
-			endLore.clear();
-			endLore.add(ChatColor.GRAY + "Managed dimensional portal direction.");
-			endLore.add(ChatColor.GRAY + (dimensionalPortalKind == DimensionalPortalKind.NETHER ? "Both linked halves stay active." : "The return path stays disabled."));
 			return;
 		}
 		if(isMirrorMode())
 		{
-			element.setName(ChatColor.RED + "" + ChatColor.BOLD + "Travel: Mirror Locked");
+			Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_TRAVEL_MIRROR);
 			element.setEnchanted(false);
 			element.setMaterial(new MaterialBlock(Material.BARRIER));
-			KList<String> mirrorLore = element.getLore();
-			mirrorLore.clear();
-			mirrorLore.add(ChatColor.GRAY + "Mirror mode is visual only.");
-			mirrorLore.add(ChatColor.GRAY + "Entities cannot enter or leave through it.");
 			return;
 		}
 		PortalTravelMode mode = getTravelMode();
 		boolean locked = mode == PortalTravelMode.LOCKED;
-		element.setName((locked ? ChatColor.RED : ChatColor.GREEN) + "" + ChatColor.BOLD + "Travel: " + mode.getDisplayName());
+		Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_TRAVEL,
+				arguments(
+						"mode", travelModeLabel(mode),
+						"outgoing", localized(mode.allowsOutgoing() ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF),
+						"incoming", localized(mode.allowsIncoming() ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF)));
 		element.setEnchanted(!locked);
 		element.setMaterial(new MaterialBlock(switch(mode)
 		{
@@ -2480,14 +2600,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			case INBOUND -> Material.ENDER_EYE;
 			case LOCKED -> Material.BARRIER;
 		}));
-		KList<String> lore = element.getLore();
-		lore.clear();
-		lore.add(ChatColor.GRAY + "Controls travel through this portal.");
-		lore.add(" ");
-		lore.add(ChatColor.GRAY + "Outgoing: " + (mode.allowsOutgoing() ? ChatColor.GREEN + "On" : ChatColor.RED + "Off"));
-		lore.add(ChatColor.GRAY + "Incoming: " + (mode.allowsIncoming() ? ChatColor.GREEN + "On" : ChatColor.RED + "Off"));
-		lore.add(" ");
-		lore.add(ChatColor.DARK_GRAY + "Click to cycle travel direction.");
 	}
 
 	private Element networkViewQualityElement(Window window, Player viewer)
@@ -2499,7 +2611,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			setNetworkViewQuality(quality);
 			applyNetworkViewQualityElement(element);
 			window.updateInventory();
-			notifySetting(viewer, "Stream Quality " + ChatColor.AQUA + quality.getDisplayName());
+			notifySetting(viewer, WormholesMessages.PORTAL_STREAM_QUALITY_CHANGED,
+					arguments("quality", networkViewQualityLabel(quality)));
 		});
 		element.onShiftLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
 		{
@@ -2540,7 +2653,13 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private void applyNetworkViewQualityElement(Element element)
 	{
 		NetworkViewQuality quality = getNetworkViewQuality();
-		element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Stream Quality: " + quality.getDisplayName());
+		Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_STREAM_QUALITY,
+				arguments(
+						"quality", networkViewQualityLabel(quality),
+						"depth", networkViewDepth,
+						"entities", networkViewEntityIntervalTicks,
+						"refresh", networkViewHeartbeatTicks,
+						"grace", networkViewUnsubscribeGraceSeconds));
 		element.setEnchanted(quality == NetworkViewQuality.CINEMATIC);
 		element.setMaterial(new MaterialBlock(switch(quality)
 		{
@@ -2550,28 +2669,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			case CINEMATIC -> Material.BEACON;
 			case CUSTOM -> Material.COMPARATOR;
 		}));
-		KList<String> lore = element.getLore();
-		lore.clear();
-		lore.add(ChatColor.GRAY + "One control for remote view range and cadence.");
-		lore.add(" ");
-		lore.add(ChatColor.GRAY + "Depth " + ChatColor.AQUA + networkViewDepth
-				+ ChatColor.GRAY + "  Entities " + ChatColor.AQUA + networkViewEntityIntervalTicks + "t");
-		lore.add(ChatColor.GRAY + "Refresh " + ChatColor.AQUA + networkViewHeartbeatTicks + "t"
-				+ ChatColor.GRAY + "  Grace " + ChatColor.AQUA + networkViewUnsubscribeGraceSeconds + "s");
-		lore.add(" ");
-		lore.add(ChatColor.DARK_GRAY + "Click: cycle quality.");
-		lore.add(ChatColor.DARK_GRAY + "Shift-click: advanced tuning.");
 	}
 
 	private Element orientationOpenerElement(Window window, Player viewer)
 	{
-		UIElement element = new UIElement("portal-orientation");
-		element.setName(ChatColor.BLUE + "" + ChatColor.BOLD + "Orientation");
-		element.setMaterial(new MaterialBlock(Material.COMPASS));
-		element.addLore(ChatColor.GRAY + "Facing: " + ChatColor.BLUE + getDirection());
-		element.addLore(ChatColor.GRAY + "Up: " + ChatColor.GOLD + getFrame().getUp());
-		element.addLore(" ");
-		element.addLore(ChatColor.DARK_GRAY + "Click for facing, flip, and rotation.");
+		UIElement element = localizedElement("portal-orientation", WormholesMessages.PORTAL_MENU_ORIENTATION,
+				arguments("facing", directionLabel(getDirection()), "up", directionLabel(getFrame().getUp())), Material.COMPASS);
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
 		{
 			window.close();
@@ -2598,12 +2701,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private Element orientationPlacardElement()
 	{
-		UIElement element = new UIElement("orientation-placard");
-		element.setName(ChatColor.BLUE + "" + ChatColor.BOLD + "Portal Orientation");
-		element.setMaterial(new MaterialBlock(Material.COMPASS));
-		element.addLore(ChatColor.GRAY + "Facing: " + ChatColor.BLUE + getDirection());
-		element.addLore(ChatColor.GRAY + "Screen up: " + ChatColor.GOLD + getFrame().getUp());
-		return element;
+		return localizedElement("orientation-placard", WormholesMessages.PORTAL_MENU_ORIENTATION_PLACARD,
+				arguments("facing", directionLabel(getDirection()), "up", directionLabel(getFrame().getUp())), Material.COMPASS);
 	}
 
 	private void uiOpenGatewayPairMenu(Player viewer)
@@ -2615,17 +2714,15 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		window.setDecorator(new UIPaneDecorator(Material.BLACK_STAINED_GLASS_PANE));
 		window.setElement(0, 0, gatewayPairPlacardElement());
 		window.setElement(-2, 1, exportPortalElement(window, viewer));
-		window.setElement(0, 1, new UIElement("choose-gateway-destination")
-				.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Choose Destination")
-				.setMaterial(new MaterialBlock(Material.END_CRYSTAL))
-				.addLore(ChatColor.GRAY + "Choose from discovered local and remote gateways.")
-				.addLore(" ")
-				.addLore(ChatColor.DARK_GRAY + "Click to open the destination list.")
-				.onLeftClick((e) ->
-				{
+		UIElement chooseDestination = localizedElement(
+				"choose-gateway-destination", WormholesMessages.PORTAL_MENU_GATEWAY_CHOOSE,
+				MessageArgs.empty(), Material.END_CRYSTAL);
+		chooseDestination.onLeftClick((e) ->
+		{
 					window.close();
 					uiChooseDestination(viewer);
-				}));
+				});
+		window.setElement(0, 1, chooseDestination);
 		window.setElement(2, 1, importPortalElement(window, viewer));
 		window.setElement(0, 2, backToPortalMenuElement(window, viewer));
 		window.setVisible(true);
@@ -2634,34 +2731,32 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private Element gatewayPairPlacardElement()
 	{
 		UIElement element = new UIElement("gateway-pair-placard");
-		element.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Gateway Pairing");
 		element.setMaterial(new MaterialBlock(Material.RESPAWN_ANCHOR));
 		if(!hasTunnel())
 		{
-			element.addLore(ChatColor.GRAY + "Status: " + ChatColor.RED + "Not paired");
+			Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_GATEWAY_UNPAIRED);
 			return element;
 		}
-		element.addLore(ChatColor.GRAY + "Destination: " + ChatColor.GOLD + getTunnel().getDestination().getName());
+		Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_GATEWAY_PAIRED,
+				arguments("destination", getTunnel().getDestination().getName()));
 		if(getTunnel() instanceof UniversalTunnel universal && Wormholes.networkManager != null)
 		{
 			String peer = universal.getServerName();
 			boolean ready = Wormholes.networkManager.isPeerReady(peer);
-			String transport = Wormholes.networkManager.isSidebandOnlyPeer(peer) ? "Sideband" : "Direct";
-			element.addLore(ChatColor.GRAY + "Server: " + ChatColor.WHITE + peer);
-			element.addLore(ChatColor.GRAY + "Link: " + (ready ? ChatColor.GREEN + transport : ChatColor.RED + "Reconnecting"));
+			String transport = localized(Wormholes.networkManager.isSidebandOnlyPeer(peer)
+					? WormholesMessages.PORTAL_LABEL_SIDEBAND : WormholesMessages.PORTAL_LABEL_DIRECT);
+			String state = ready ? transport : localized(WormholesMessages.PORTAL_LABEL_RECONNECTING);
+			element.addLore(Wormholes.text().legacy(WormholesMessages.PORTAL_MENU_GATEWAY_SERVER, arguments("server", peer)));
+			element.addLore(Wormholes.text().legacy(WormholesMessages.PORTAL_MENU_GATEWAY_LINK, arguments("state", state)));
 		}
 		return element;
 	}
 
 	private Element exportPortalElement(Window window, Player viewer)
 	{
-		return new UIElement("export-portal")
-				.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Create Invite")
-				.addLore(ChatColor.GRAY + "Create a signed gateway code for another server.")
-				.addLore(" ")
-				.addLore(ChatColor.DARK_GRAY + "Click to copy a fresh code.")
-				.setMaterial(new MaterialBlock(Material.PAPER))
-				.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
+		UIElement element = localizedElement("export-portal", WormholesMessages.PORTAL_MENU_GATEWAY_EXPORT,
+				MessageArgs.empty(), Material.PAPER);
+		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
 				{
 					window.close();
 					if(Wormholes.importExportService != null)
@@ -2669,24 +2764,23 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 						Wormholes.importExportService.exportToChat(viewer, LocalPortal.this);
 					}
 				}));
+		return element;
 	}
 
 	private Element importPortalElement(Window window, Player viewer)
 	{
-		return new UIElement("import-portal")
-				.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Use Invite")
-				.addLore(ChatColor.GRAY + "Paste a signed code from another gateway.")
-				.addLore(" ")
-				.addLore(ChatColor.DARK_GRAY + "Click, then paste the code in chat.")
-				.setMaterial(new MaterialBlock(Material.WRITABLE_BOOK))
-				.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
+		UIElement element = localizedElement("import-portal", WormholesMessages.PORTAL_MENU_GATEWAY_IMPORT,
+				MessageArgs.empty(), Material.WRITABLE_BOOK);
+		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
 				{
 					window.close();
 					viewer.closeInventory();
-					viewer.sendMessage(ChatColor.AQUA + "Paste the portal invite in chat (or 'cancel'):");
+					WormholesAudience.sendMessage(viewer, Wormholes.text().component(
+							WormholesMessages.PORTAL_PROMPT_INVITE,
+							arguments("cancel", localized(WormholesMessages.PORTAL_INPUT_CANCEL))));
 					Wormholes.awaitChatInput(viewer, (text) ->
 					{
-						if(text == null || text.equalsIgnoreCase("cancel"))
+						if(text == null || isCancelInput(text))
 						{
 							uiOpenGatewayPairMenu(viewer);
 							return;
@@ -2697,9 +2791,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 						}
 					});
 				}));
+		return element;
 	}
 
-	private Element networkViewNumberElement(Window window, Player viewer, String id, String label, String description, Material material, IntSupplier getter, IntConsumer setter, int step, int largeStep)
+	private Element networkViewNumberElement(Window window, Player viewer, String id, TextKey label, TextKey description, Material material, IntSupplier getter, IntConsumer setter, int step, int largeStep)
 	{
 		UIElement element = new UIElement(id);
 		element.onLeftClick((e) -> adjustNetworkViewNumber(element, window, viewer, label, description, material, getter, setter, step));
@@ -2710,7 +2805,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		return element;
 	}
 
-	private void adjustNetworkViewNumber(UIElement element, Window window, Player viewer, String label, String description, Material material, IntSupplier getter, IntConsumer setter, int delta)
+	private void adjustNetworkViewNumber(UIElement element, Window window, Player viewer, TextKey label, TextKey description, Material material, IntSupplier getter, IntConsumer setter, int delta)
 	{
 		int previous = getter.getAsInt();
 		setter.accept(previous + delta);
@@ -2719,24 +2814,21 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		window.updateInventory();
 		if(current != previous)
 		{
-			notifySetting(viewer, label + " " + ChatColor.AQUA + current);
+			notifySetting(viewer, WormholesMessages.PORTAL_NETWORK_VALUE_CHANGED,
+					arguments("label", localized(label), "value", current));
 		}
 	}
 
-	private void applyNetworkViewNumberElement(Element element, String label, String description, Material material, IntSupplier getter, int step, int largeStep)
+	private void applyNetworkViewNumberElement(Element element, TextKey label, TextKey description, Material material, IntSupplier getter, int step, int largeStep)
 	{
-		element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + label + " " + ChatColor.WHITE + getter.getAsInt());
+		Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_NETWORK_NUMBER,
+				arguments(
+						"label", localized(label),
+						"description", localized(description),
+						"value", getter.getAsInt(),
+						"step", Math.abs(step),
+						"large_step", Math.abs(largeStep)));
 		element.setMaterial(new MaterialBlock(material));
-		KList<String> lore = element.getLore();
-		lore.clear();
-		lore.add(description);
-		lore.add(" ");
-		lore.add(ChatColor.GRAY + "Currently: " + ChatColor.AQUA + getter.getAsInt());
-		lore.add(" ");
-		lore.add(ChatColor.DARK_GRAY + "Left click: +" + Math.abs(step));
-		lore.add(ChatColor.DARK_GRAY + "Right click: -" + Math.abs(step));
-		lore.add(ChatColor.DARK_GRAY + "Shift-left: +" + Math.abs(largeStep));
-		lore.add(ChatColor.DARK_GRAY + "Shift-right: -" + Math.abs(largeStep));
 	}
 
 	private Element networkViewFallbackElement(Player p, Window window)
@@ -2746,10 +2838,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		{
 			window.close();
 			p.closeInventory();
-			p.sendMessage(ChatColor.AQUA + "Enter a block state for this portal's network view edge, or 'cancel':");
+			WormholesAudience.sendMessage(p, Wormholes.text().component(
+					WormholesMessages.PORTAL_PROMPT_BLOCK_STATE,
+					arguments("cancel", localized(WormholesMessages.PORTAL_INPUT_CANCEL))));
 			Wormholes.awaitChatInput(p, (text) ->
 			{
-				if(text == null || text.equalsIgnoreCase("cancel"))
+				if(text == null || isCancelInput(text))
 				{
 					uiOpenSettingsMenu(p);
 					return;
@@ -2759,7 +2853,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				setNetworkViewFallbackBlock(normalized);
 				if(!previous.equals(getNetworkViewFallbackBlock()))
 				{
-					notifySetting(p, "Fallback set to " + ChatColor.AQUA + getNetworkViewFallbackBlock());
+					notifySetting(p, WormholesMessages.PORTAL_FALLBACK_SET,
+							arguments("block", getNetworkViewFallbackBlock()));
 				}
 				uiOpenSettingsMenu(p);
 			});
@@ -2772,7 +2867,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			window.updateInventory();
 			if(!previous.equals(getNetworkViewFallbackBlock()))
 			{
-				notifySetting(p, "Fallback reset to " + ChatColor.AQUA + getNetworkViewFallbackBlock());
+				notifySetting(p, WormholesMessages.PORTAL_FALLBACK_RESET,
+						arguments("block", getNetworkViewFallbackBlock()));
 			}
 		});
 		applyNetworkViewFallbackElement(element);
@@ -2781,16 +2877,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private void applyNetworkViewFallbackElement(Element element)
 	{
-		element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Fallback Block");
+		Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_FALLBACK_BLOCK,
+				arguments("block", getNetworkViewFallbackBlock()));
 		element.setMaterial(new MaterialBlock(Material.GLASS));
-		KList<String> lore = element.getLore();
-		lore.clear();
-		lore.add(ChatColor.GRAY + "Block shown beyond streamed depth.");
-		lore.add(" ");
-		lore.add(ChatColor.GRAY + "Currently: " + ChatColor.WHITE + getNetworkViewFallbackBlock());
-		lore.add(" ");
-		lore.add(ChatColor.DARK_GRAY + "Left: enter a block state.");
-		lore.add(ChatColor.DARK_GRAY + "Right: reset to air.");
 	}
 
 	@Override
@@ -2798,7 +2887,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	{
 		if(dimensionalPortalKind.isManagedPortal())
 		{
-			notifySetting(p, "Managed dimensional portals stay in portal mode.");
+			notifySetting(p, WormholesMessages.PORTAL_MANAGED_MODE);
 			return;
 		}
 		UIWindow window = new UIWindow(Wormholes.instance, p);
@@ -2822,70 +2911,60 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private Element portalPlacardElement()
 	{
 		UIElement element = new UIElement("portal-placard");
-		element.setName(ChatColor.GOLD + "" + ChatColor.BOLD + getName());
 		element.setMaterial(new MaterialBlock(Material.BOOK));
-		element.addLore(ChatColor.GRAY + "Type: " + ChatColor.YELLOW + currentModeLabel());
-		element.addLore(ChatColor.GRAY + "Facing: " + ChatColor.BLUE + getDirection().toString());
 		if(type == PortalType.RTP && rtpSettings != null)
 		{
-			element.addLore(ChatColor.GRAY + "Allocation: " + ChatColor.AQUA + rtpAllocationLabel(rtpSettings.getAllocationMode()));
-			element.addLore(ChatColor.GRAY + "Rotation: " + ChatColor.AQUA + rtpRotationLabel(rtpSettings.getRotationMode()));
+			Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_PLACARD_RTP,
+					arguments(
+							"portal", getName(),
+							"type", currentModeLabel(),
+							"facing", directionLabel(getDirection()),
+							"allocation", rtpAllocationLabel(rtpSettings.getAllocationMode()),
+							"rotation", rtpRotationSummary(rtpSettings)));
 		}
 		else if(hasTunnel())
 		{
-			element.addLore(ChatColor.GRAY + "Linked to: " + ChatColor.GOLD + getTunnel().getDestination().getName());
+			Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_PLACARD_LINKED,
+					arguments(
+							"portal", getName(),
+							"type", currentModeLabel(),
+							"facing", directionLabel(getDirection()),
+							"destination", getTunnel().getDestination().getName()));
 		}
 		else
 		{
-			element.addLore(ChatColor.GRAY + "Linked to: " + ChatColor.RED + "None");
+			Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_PLACARD_UNLINKED,
+					arguments(
+							"portal", getName(),
+							"type", currentModeLabel(),
+							"facing", directionLabel(getDirection()),
+							"none", localized(WormholesMessages.LABEL_NONE)));
 		}
-		element.addLore(" ");
-		element.addLore(ChatColor.DARK_GRAY + "Operators bypass white/blacklist.");
 		return element;
 	}
 
 	private Element settingsPlacardElement()
 	{
-		UIElement element = new UIElement("settings-placard");
-		element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Portal Settings");
-		element.setMaterial(new MaterialBlock(Material.LEVER));
-		element.addLore(ChatColor.GRAY + "Access and transfer controls.");
-		if(isGateway())
-		{
-			element.addLore(ChatColor.GRAY + "Plus cross-server view tuning.");
-			element.addLore(" ");
-			element.addLore(ChatColor.GRAY + "Larger depth / shorter ticks =");
-			element.addLore(ChatColor.GRAY + "richer view, more bandwidth.");
-		}
-		return element;
+		return localizedElement("settings-placard",
+				isGateway() ? WormholesMessages.PORTAL_MENU_SETTINGS_PLACARD_GATEWAY : WormholesMessages.PORTAL_MENU_SETTINGS_PLACARD,
+				MessageArgs.empty(), Material.LEVER);
 	}
 
 	private Element modePlacardElement()
 	{
-		UIElement element = new UIElement("mode-placard");
-		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Portal Mode");
-		element.setMaterial(new MaterialBlock(Material.BEACON));
-		element.addLore(ChatColor.GRAY + "Current: " + ChatColor.YELLOW + currentModeLabel());
-		element.addLore(" ");
-		element.addLore(ChatColor.GRAY + "Portal: basic linked portal.");
-		element.addLore(ChatColor.GRAY + "Wormhole: portal with viewport.");
-		element.addLore(ChatColor.GRAY + "Gateway: cross-server gateway.");
-		element.addLore(ChatColor.GRAY + "RTP: configurable random destinations.");
-		element.addLore(ChatColor.GRAY + "Mirror: reflect this side, no travel.");
-		return element;
+		return localizedElement("mode-placard", WormholesMessages.PORTAL_MENU_MODE_PLACARD,
+				arguments("mode", currentModeLabel()), Material.BEACON);
 	}
 
 	private Element modeOpenerElement(Window window, Player viewer)
 	{
-		UIElement element = new UIElement("set-mode");
-		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Mode");
-		element.setMaterial(new MaterialBlock(isMirrorMode() ? Material.COPPER_TORCH : modeIcon(getType())));
+		String description = isMirrorMode()
+				? localized(WormholesMessages.PORTAL_MODE_DESCRIPTION_MIRROR)
+				: modeDescription(getType());
+		UIElement element = localizedElement("set-mode", WormholesMessages.PORTAL_MENU_MODE_OPENER,
+				arguments("description", description, "mode", currentModeLabel()),
+				isMirrorMode() ? Material.COPPER_TORCH : modeIcon(getType()));
 		element.setEnchanted(true);
-		element.addLore(ChatColor.GRAY + (isMirrorMode() ? "Reflect the local world back with travel locked." : modeDescription(getType())));
-		element.addLore(" ");
-		element.addLore(ChatColor.GRAY + "Currently: " + ChatColor.YELLOW + currentModeLabel());
-		element.addLore(" ");
-		element.addLore(ChatColor.DARK_GRAY + "Click to change mode.");
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
 		{
 			window.close();
@@ -2896,14 +2975,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private Element directionElement(Window window, Player viewer)
 	{
-		UIElement element = new UIElement("set-direction");
-		element.setName(ChatColor.BLUE + "" + ChatColor.BOLD + "Direction");
-		element.setMaterial(new MaterialBlock(Material.COMPASS));
-		element.addLore(ChatColor.GRAY + "Change the portal facing direction.");
-		element.addLore(" ");
-		element.addLore(ChatColor.GRAY + "Currently facing: " + ChatColor.BLUE + getDirection().toString());
-		element.addLore(" ");
-		element.addLore(ChatColor.DARK_GRAY + "Click then look, left click to apply.");
+		UIElement element = localizedElement("set-direction", WormholesMessages.PORTAL_MENU_DIRECTION,
+				arguments("direction", directionLabel(getDirection())), Material.COMPASS);
 		element.onLeftClick((e) ->
 		{
 			window.close();
@@ -2914,19 +2987,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private Element flipFaceElement(Window window, Player viewer)
 	{
-		UIElement element = new UIElement("flip-face");
-		element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Flip Face");
-		element.setMaterial(new MaterialBlock(Material.TARGET));
-		element.addLore(ChatColor.GRAY + "Reverse the portal face direction.");
-		element.addLore(ChatColor.GRAY + "Screen rotation stays aligned.");
-		element.addLore(" ");
-		element.addLore(ChatColor.GRAY + "Currently rolling up: " + ChatColor.AQUA + getFrame().getUp().toString());
-		element.addLore(" ");
-		element.addLore(ChatColor.DARK_GRAY + "Click to flip.");
+		UIElement element = localizedElement("flip-face", WormholesMessages.PORTAL_MENU_FLIP_FACE,
+				arguments("up", directionLabel(getFrame().getUp())), Material.TARGET);
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
 		{
 			setFrame(getFrame().flipNormal());
-			Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " face flipped to " + getDirection().toString() + ".", getStructure().getCenter());
+			Wormholes.effectManager.playNotificationSuccess(Wormholes.text().legacy(
+					WormholesMessages.PORTAL_FACE_FLIPPED,
+					arguments("portal", getName(), "direction", directionLabel(getDirection()))), getStructure().getCenter());
 			window.close();
 			uiOpenPortalMenu(viewer);
 		}));
@@ -2935,19 +3003,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private Element rotateCounterClockwiseElement(Window window, Player viewer)
 	{
-		UIElement element = new UIElement("rotate-counter-clockwise");
-		element.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Rotate Counterclockwise");
-		element.setMaterial(new MaterialBlock(Material.REPEATER));
-		element.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees");
-		element.addLore(ChatColor.GRAY + "without changing the face.");
-		element.addLore(" ");
-		element.addLore(ChatColor.GRAY + "Currently rolling up: " + ChatColor.GOLD + getFrame().getUp().toString());
-		element.addLore(" ");
-		element.addLore(ChatColor.DARK_GRAY + "Click to rotate.");
+		UIElement element = localizedElement("rotate-counter-clockwise", WormholesMessages.PORTAL_MENU_ROTATE_COUNTERCLOCKWISE,
+				arguments("up", directionLabel(getFrame().getUp())), Material.REPEATER);
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
 		{
 			setFrame(getFrame().rotateCounterClockwise());
-			Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " rolled counterclockwise.", getStructure().getCenter());
+			Wormholes.effectManager.playNotificationSuccess(Wormholes.text().legacy(
+					WormholesMessages.PORTAL_ROTATED_COUNTERCLOCKWISE,
+					arguments("portal", getName())), getStructure().getCenter());
 			window.close();
 			uiOpenPortalMenu(viewer);
 		}));
@@ -2956,19 +3019,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private Element rotateClockwiseElement(Window window, Player viewer)
 	{
-		UIElement element = new UIElement("rotate-clockwise");
-		element.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Rotate Clockwise");
-		element.setMaterial(new MaterialBlock(Material.LEVER));
-		element.addLore(ChatColor.GRAY + "Roll the portal viewport 90 degrees");
-		element.addLore(ChatColor.GRAY + "without changing the face.");
-		element.addLore(" ");
-		element.addLore(ChatColor.GRAY + "Currently rolling up: " + ChatColor.GOLD + getFrame().getUp().toString());
-		element.addLore(" ");
-		element.addLore(ChatColor.DARK_GRAY + "Click to rotate.");
+		UIElement element = localizedElement("rotate-clockwise", WormholesMessages.PORTAL_MENU_ROTATE_CLOCKWISE,
+				arguments("up", directionLabel(getFrame().getUp())), Material.LEVER);
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
 		{
 			setFrame(getFrame().rotateClockwise());
-			Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " rolled clockwise.", getStructure().getCenter());
+			Wormholes.effectManager.playNotificationSuccess(Wormholes.text().legacy(
+					WormholesMessages.PORTAL_ROTATED_CLOCKWISE,
+					arguments("portal", getName())), getStructure().getCenter());
 			window.close();
 			uiOpenPortalMenu(viewer);
 		}));
@@ -2977,10 +3035,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private Element backToPortalMenuElement(Window window, Player viewer)
 	{
-		UIElement element = new UIElement("back-to-portal");
-		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Back");
-		element.setMaterial(new MaterialBlock(Material.ARROW));
-		element.addLore(ChatColor.GRAY + "Return to the portal menu.");
+		UIElement element = localizedElement("back-to-portal", WormholesMessages.PORTAL_MENU_BACK,
+				MessageArgs.empty(), Material.ARROW);
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
 		{
 			window.close();
@@ -2997,7 +3053,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			ProjectionMode previous = getProjectionMode();
 			if(dimensionalPortalKind.isReceiverOnly())
 			{
-				notifySetting(viewer, "The End arrival stays visually inactive.");
+				notifySetting(viewer, WormholesMessages.PORTAL_PROJECTION_RECEIVER_INACTIVE);
 				return;
 			}
 			setProjectionMode(previous.next());
@@ -3005,7 +3061,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			window.updateInventory();
 			if(previous != getProjectionMode())
 			{
-				notifySetting(viewer, "Projections: " + ChatColor.AQUA + getProjectionMode().getDisplayName());
+				notifySetting(viewer, WormholesMessages.PORTAL_PROJECTION_CHANGED,
+						arguments("mode", projectionModeLabel(getProjectionMode())));
 			}
 		});
 		applyProjectionMode(element);
@@ -3015,40 +3072,27 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private void applyProjectionMode(Element element)
 	{
 		ProjectionMode mode = getProjectionMode();
-		element.setName(mode.getDisplayName());
+		Wormholes.text().apply(element, mode == ProjectionMode.ON
+				? WormholesMessages.PORTAL_MENU_PROJECTION_ON : WormholesMessages.PORTAL_MENU_PROJECTION_OFF);
 		element.setEnchanted(mode.isEnchanted());
 		element.setMaterial(new MaterialBlock(mode.getIcon()));
-		KList<String> lore = element.getLore();
-		lore.clear();
-		lore.add(ChatColor.GRAY + mode.getLoreLine1());
-		lore.add(ChatColor.GRAY + mode.getLoreLine2());
-		lore.add(" ");
-		lore.add(ChatColor.GRAY + "Currently: " + ChatColor.AQUA + mode.getDisplayName());
-		lore.add(" ");
-		lore.add(ChatColor.DARK_GRAY + "Click to toggle On / Off.");
 	}
 
 	private Element settingsOpenerElement(Window window, Player viewer)
 	{
-		UIElement element = new UIElement("portal-settings");
-		element.setName(ChatColor.AQUA + "" + ChatColor.BOLD + "Settings");
-		element.setMaterial(new MaterialBlock(Material.LEVER));
-		element.addLore(ChatColor.GRAY + "Permissions, transfers" + (isGateway() ? "," : "."));
-		if(isGateway())
-		{
-			element.addLore(ChatColor.GRAY + "and cross-server view tuning.");
-		}
-		element.addLore(" ");
-		element.addLore(ChatColor.GRAY + "Access: " + ChatColor.GOLD + getPermissionMode().getDisplayName());
-		element.addLore(ChatColor.GRAY + "Send " + (isOutgoingTraversalsEnabled() ? ChatColor.GREEN + "On" : ChatColor.RED + "Off")
-				+ ChatColor.GRAY + "  Receive " + (isIncomingTraversalsEnabled() ? ChatColor.GREEN + "On" : ChatColor.RED + "Off"));
-		if(isGateway())
-		{
-			element.addLore(ChatColor.GRAY + "Depth " + ChatColor.AQUA + networkViewDepth
-					+ ChatColor.GRAY + "  Entity " + ChatColor.AQUA + networkViewEntityIntervalTicks + "t");
-		}
-		element.addLore(" ");
-		element.addLore(ChatColor.DARK_GRAY + "Click to open settings.");
+		LinesKey key = isGateway() ? WormholesMessages.PORTAL_MENU_SETTINGS_GATEWAY : WormholesMessages.PORTAL_MENU_SETTINGS;
+		MessageArgs arguments = isGateway()
+				? arguments(
+						"access", permissionModeLabel(getPermissionMode()),
+						"send", localized(isOutgoingTraversalsEnabled() ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF),
+						"receive", localized(isIncomingTraversalsEnabled() ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF),
+						"depth", networkViewDepth,
+						"entity", networkViewEntityIntervalTicks)
+				: arguments(
+						"access", permissionModeLabel(getPermissionMode()),
+						"send", localized(isOutgoingTraversalsEnabled() ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF),
+						"receive", localized(isIncomingTraversalsEnabled() ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF));
+		UIElement element = localizedElement("portal-settings", key, arguments, Material.LEVER);
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
 		{
 			window.close();
@@ -3066,7 +3110,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			setSettingsSyncEnabled(!previous);
 			applySettingsSyncElement(element);
 			window.updateInventory();
-			notifySetting(viewer, "Settings Sync " + (isSettingsSyncEnabled() ? ChatColor.GREEN + "On" : ChatColor.RED + "Off"));
+			notifySetting(viewer, WormholesMessages.PORTAL_SETTINGS_SYNC_CHANGED,
+					arguments("state", localized(isSettingsSyncEnabled() ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF)));
 		});
 		applySettingsSyncElement(element);
 		return element;
@@ -3075,18 +3120,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private void applySettingsSyncElement(Element element)
 	{
 		boolean enabled = isSettingsSyncEnabled();
-		element.setName((enabled ? ChatColor.GREEN : ChatColor.RED) + "" + ChatColor.BOLD + "Settings Sync " + (enabled ? "On" : "Off"));
+		Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_SETTINGS_SYNC,
+				arguments("state", localized(enabled ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF)));
 		element.setEnchanted(enabled);
 		element.setMaterial(new MaterialBlock(enabled ? Material.SOUL_LANTERN : Material.LANTERN));
-		KList<String> lore = element.getLore();
-		lore.clear();
-		lore.add(ChatColor.GRAY + "When On, this portal's settings");
-		lore.add(ChatColor.GRAY + "(depth, ticks, projection, permissions,");
-		lore.add(ChatColor.GRAY + "transfers) sync to all linked peers.");
-		lore.add(" ");
-		lore.add(ChatColor.GRAY + "Currently: " + (enabled ? ChatColor.GREEN + "On" : ChatColor.RED + "Off"));
-		lore.add(" ");
-		lore.add(ChatColor.DARK_GRAY + "Click to toggle.");
 	}
 
 	private Element permissionElement(Window window, Player viewer)
@@ -3100,7 +3137,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			window.updateInventory();
 			if(previous != getPermissionMode())
 			{
-				notifySetting(viewer, "Access " + ChatColor.AQUA + getPermissionMode().getDisplayName());
+				notifySetting(viewer, WormholesMessages.PORTAL_ACCESS_CHANGED,
+						arguments("mode", permissionModeLabel(getPermissionMode())));
 			}
 		});
 		applyPermissionElement(element);
@@ -3110,31 +3148,25 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private void applyPermissionElement(Element element)
 	{
 		PortalPermissionMode mode = getPermissionMode();
-		element.setName(ChatColor.GOLD + "" + ChatColor.BOLD + "Access " + mode.getDisplayName());
+		Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_PERMISSION,
+				arguments(
+						"mode", permissionModeLabel(mode),
+						"description", permissionModeDescription(mode),
+						"node", getPermissionNode()));
 		element.setEnchanted(mode == PortalPermissionMode.WHITELIST);
 		element.setMaterial(new MaterialBlock(mode == PortalPermissionMode.WHITELIST ? Material.GOLDEN_HELMET : Material.IRON_HELMET));
-		KList<String> lore = element.getLore();
-		lore.clear();
-		lore.add(ChatColor.GRAY + mode.getLoreLine());
-		lore.add(ChatColor.GRAY + "Node: " + ChatColor.WHITE + getPermissionNode());
-		lore.add(" ");
-		lore.add(ChatColor.GRAY + "Currently: " + ChatColor.GOLD + mode.getDisplayName());
-		lore.add(" ");
-		lore.add(ChatColor.DARK_GRAY + "Click to toggle whitelist / blacklist.");
-		lore.add(ChatColor.DARK_GRAY + "Operators always bypass.");
 	}
 
 	private Element modeOption(PortalType target, Player p, Window window)
 	{
 		boolean current = getType() == target && !isMirrorMode();
-		String label = F.capitalize(target.name().toLowerCase());
+		String label = portalTypeLabel(target);
 		UIElement element = new UIElement("mode-" + target.name().toLowerCase());
-		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + label);
+		Wormholes.text().apply(element,
+				current ? WormholesMessages.PORTAL_MENU_MODE_OPTION_SELECTED : WormholesMessages.PORTAL_MENU_MODE_OPTION_AVAILABLE,
+				arguments("mode", label, "description", modeDescription(target)));
 		element.setMaterial(new MaterialBlock(modeIcon(target)));
 		element.setEnchanted(current);
-		element.addLore(ChatColor.GRAY + modeDescription(target));
-		element.addLore(" ");
-		element.addLore(current ? ChatColor.GREEN + "Currently Selected" : ChatColor.GRAY + "Click to select");
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () ->
 		{
 			boolean changed = false;
@@ -3150,7 +3182,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			}
 			if(changed)
 			{
-				Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " mode set to " + label + ".", getStructure().getCenter());
+				Wormholes.effectManager.playNotificationSuccess(Wormholes.text().legacy(
+						WormholesMessages.PORTAL_MODE_CHANGED,
+						arguments("portal", getName(), "mode", label)), getStructure().getCenter());
 			}
 			window.close();
 		}));
@@ -3165,7 +3199,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			if(!isMirrorMode())
 			{
 				setMirrorMode(true);
-				Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " mode set to Mirror.", getStructure().getCenter());
+				Wormholes.effectManager.playNotificationSuccess(Wormholes.text().legacy(
+						WormholesMessages.PORTAL_MODE_CHANGED,
+						arguments("portal", getName(), "mode", localized(WormholesMessages.PORTAL_LABEL_MIRROR))),
+						getStructure().getCenter());
 			}
 			window.close();
 		}));
@@ -3178,57 +3215,164 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private void applyMirrorModeOption(Element element)
 	{
 		boolean current = isMirrorMode();
-		element.setName(ChatColor.YELLOW + "" + ChatColor.BOLD + "Mirror");
+		Wormholes.text().apply(element,
+				current ? WormholesMessages.PORTAL_MENU_MIRROR_SELECTED : WormholesMessages.PORTAL_MENU_MIRROR_AVAILABLE);
 		element.setMaterial(new MaterialBlock(Material.COPPER_TORCH));
 		element.setEnchanted(current);
-		KList<String> lore = element.getLore();
-		lore.clear();
-		lore.add(ChatColor.GRAY + "Reflect the local world back.");
-		lore.add(ChatColor.GRAY + "See yourself looking through the frame.");
-		lore.add(ChatColor.GRAY + "No travel while mirrored.");
-		lore.add(" ");
-		lore.add(current ? ChatColor.GREEN + "Currently Selected" : ChatColor.GRAY + "Left click to select");
 		if(!current)
 		{
 			return;
 		}
-		lore.add(ChatColor.GRAY + "Image rotation: " + ChatColor.AQUA + getMirrorRotation().getDegrees() + " degrees");
+		KList<String> lore = element.getLore();
+		lore.add(Wormholes.text().legacy(WormholesMessages.PORTAL_MENU_MIRROR_ROTATION,
+				arguments("degrees", getMirrorRotation().getDegrees())));
 		if(MirrorRotation.supportsQuarterTurns(getFrame()))
 		{
-			lore.add(ChatColor.DARK_GRAY + "Right click: rotate clockwise.");
-			lore.add(ChatColor.DARK_GRAY + "Shift + right click: rotate counterclockwise.");
+			lore.add(Wormholes.text().legacy(WormholesMessages.PORTAL_MENU_MIRROR_ROTATE_CLOCKWISE));
+			lore.add(Wormholes.text().legacy(WormholesMessages.PORTAL_MENU_MIRROR_ROTATE_COUNTERCLOCKWISE));
 			return;
 		}
-		lore.add(ChatColor.GRAY + "Wall mirrors flip in 180 degree steps");
-		lore.add(ChatColor.GRAY + "so reflected entities stay aligned.");
-		lore.add(ChatColor.DARK_GRAY + "Right click: flip the reflected image.");
+		lore.addAll(Wormholes.text().legacyLines(WormholesMessages.PORTAL_MENU_MIRROR_FLIP));
 	}
 
 	private void rotateMirrorImage(Element element, Window window, Player viewer, MirrorRotation rotation)
 	{
 		if(!isMirrorMode())
 		{
-			notifySetting(viewer, "Choose Mirror before rotating the image.");
+			notifySetting(viewer, WormholesMessages.PORTAL_MIRROR_SELECT_FIRST);
 			return;
 		}
 		setMirrorRotation(rotation);
 		applyMirrorModeOption(element);
 		window.updateInventory();
-		notifySetting(viewer, "Mirror Rotation " + ChatColor.AQUA + getMirrorRotation().getDegrees() + " degrees");
+		notifySetting(viewer, WormholesMessages.PORTAL_MIRROR_ROTATION_CHANGED,
+				arguments("degrees", getMirrorRotation().getDegrees()));
 	}
 
-	private void notifySetting(Player viewer, String message)
+	private void notifySetting(Player viewer, TextKey message)
+	{
+		notifySetting(viewer, message, MessageArgs.empty());
+	}
+
+	private void notifySetting(Player viewer, TextKey message, MessageArgs messageArguments)
 	{
 		if(viewer == null)
 		{
 			return;
 		}
-		Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + ": " + ChatColor.RESET + message, viewer);
+		Wormholes.effectManager.playNotificationSuccess(Wormholes.text().legacy(
+				WormholesMessages.PORTAL_SETTING_NOTIFICATION,
+				arguments(
+						"portal", getName(),
+						"message", Wormholes.text().plain(message, messageArguments))), viewer);
+	}
+
+	private static UIElement localizedElement(String id, LinesKey key, MessageArgs arguments, Material material)
+	{
+		UIElement element = new UIElement(id);
+		element.setMaterial(new MaterialBlock(material));
+		Wormholes.text().apply(element, key, arguments);
+		return element;
+	}
+
+	private static MessageArgs arguments(Object... nameValuePairs)
+	{
+		if(nameValuePairs.length % 2 != 0)
+		{
+			throw new IllegalArgumentException("Localization arguments require name-value pairs");
+		}
+		MessageArgument[] arguments = new MessageArgument[nameValuePairs.length / 2];
+		for(int index = 0; index < nameValuePairs.length; index += 2)
+		{
+			String name = Objects.requireNonNull((String) nameValuePairs[index], "Localization argument name");
+			Object value = Objects.requireNonNull(nameValuePairs[index + 1], "Localization argument value");
+			arguments[index / 2] = MessageArgument.untrusted(name, value);
+		}
+		return WormholesLocalization.args(arguments);
+	}
+
+	private static String localized(TextKey key)
+	{
+		return Wormholes.text().plain(key);
+	}
+
+	private static boolean isCancelInput(String text)
+	{
+		return text.equalsIgnoreCase(localized(WormholesMessages.PORTAL_INPUT_CANCEL));
+	}
+
+	private static String directionLabel(Direction direction)
+	{
+		TextKey key = switch(direction)
+		{
+			case U -> WormholesMessages.PORTAL_LABEL_DIRECTION_UP;
+			case D -> WormholesMessages.PORTAL_LABEL_DIRECTION_DOWN;
+			case N -> WormholesMessages.PORTAL_LABEL_DIRECTION_NORTH;
+			case S -> WormholesMessages.PORTAL_LABEL_DIRECTION_SOUTH;
+			case E -> WormholesMessages.PORTAL_LABEL_DIRECTION_EAST;
+			case W -> WormholesMessages.PORTAL_LABEL_DIRECTION_WEST;
+		};
+		return localized(key);
+	}
+
+	private static String travelModeLabel(PortalTravelMode mode)
+	{
+		TextKey key = switch(mode)
+		{
+			case BOTH -> WormholesMessages.PORTAL_LABEL_BOTH_WAYS;
+			case OUTBOUND -> WormholesMessages.PORTAL_LABEL_OUTBOUND_ONLY;
+			case INBOUND -> WormholesMessages.PORTAL_LABEL_INBOUND_ONLY;
+			case LOCKED -> WormholesMessages.PORTAL_LABEL_LOCKED;
+		};
+		return localized(key);
+	}
+
+	private static String networkViewQualityLabel(NetworkViewQuality quality)
+	{
+		TextKey key = switch(quality)
+		{
+			case STANDARD -> WormholesMessages.PORTAL_LABEL_STANDARD;
+			case PERFORMANCE -> WormholesMessages.PORTAL_LABEL_PERFORMANCE;
+			case BALANCED -> WormholesMessages.PORTAL_LABEL_BALANCED;
+			case CINEMATIC -> WormholesMessages.PORTAL_LABEL_CINEMATIC;
+			case CUSTOM -> WormholesMessages.PORTAL_LABEL_CUSTOM;
+		};
+		return localized(key);
+	}
+
+	private static String portalTypeLabel(PortalType type)
+	{
+		TextKey key = switch(type)
+		{
+			case PORTAL -> WormholesMessages.PORTAL_LABEL_PORTAL;
+			case WORMHOLE -> WormholesMessages.PORTAL_LABEL_WORMHOLE;
+			case GATEWAY -> WormholesMessages.PORTAL_LABEL_GATEWAY;
+			case RTP -> WormholesMessages.PORTAL_LABEL_RTP;
+		};
+		return localized(key);
+	}
+
+	private static String projectionModeLabel(ProjectionMode mode)
+	{
+		return localized(mode == ProjectionMode.ON ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF);
+	}
+
+	private static String permissionModeLabel(PortalPermissionMode mode)
+	{
+		return localized(mode == PortalPermissionMode.WHITELIST
+				? WormholesMessages.PORTAL_LABEL_WHITELIST : WormholesMessages.PORTAL_LABEL_BLACKLIST);
+	}
+
+	private static String permissionModeDescription(PortalPermissionMode mode)
+	{
+		return localized(mode == PortalPermissionMode.WHITELIST
+				? WormholesMessages.PORTAL_PERMISSION_DESCRIPTION_WHITELIST
+				: WormholesMessages.PORTAL_PERMISSION_DESCRIPTION_BLACKLIST);
 	}
 
 	private String currentModeLabel()
 	{
-		return isMirrorMode() ? "Mirror" : F.capitalize(getType().name().toLowerCase());
+		return isMirrorMode() ? localized(WormholesMessages.PORTAL_LABEL_MIRROR) : portalTypeLabel(getType());
 	}
 
 	private static Material modeIcon(PortalType type)
@@ -3242,30 +3386,65 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		};
 	}
 
-	private static String modeDescription(PortalType type)
+	private String modeDescription(PortalType type)
 	{
-		return switch(type)
+		TextKey key = switch(type)
 		{
-			case GATEWAY -> "Reserved for cross-network linking.";
-			case WORMHOLE -> "Linkable portal with viewport projection.";
-			case PORTAL -> "Basic linkable portal.";
-			case RTP -> "Local random teleport portal.";
+			case GATEWAY -> WormholesMessages.PORTAL_MODE_DESCRIPTION_GATEWAY;
+			case WORMHOLE -> WormholesMessages.PORTAL_MODE_DESCRIPTION_WORMHOLE;
+			case PORTAL -> WormholesMessages.PORTAL_MODE_DESCRIPTION_PORTAL;
+			case RTP -> WormholesMessages.PORTAL_MODE_DESCRIPTION_RTP;
 		};
+		return localized(key);
 	}
 
-	private static String rtpAllocationLabel(RtpAllocationMode mode)
+	private String rtpAllocationLabel(RtpAllocationMode mode)
 	{
-		return mode == RtpAllocationMode.SHARED ? "Shared" : "Per-player";
+		return localized(mode == RtpAllocationMode.SHARED
+				? WormholesMessages.PORTAL_LABEL_SHARED : WormholesMessages.PORTAL_LABEL_PER_PLAYER);
 	}
 
-	private static String rtpRotationLabel(RtpRotationMode mode)
+	private String rtpRotationLabel(RtpRotationMode mode)
 	{
-		return switch(mode)
+		TextKey key = switch(mode)
 		{
-			case STATIC -> "Static";
-			case TIMED -> "Timed";
-			case ON_TRAVERSAL -> "After every trip";
+			case STATIC -> WormholesMessages.RTP_ROTATION_STATIC;
+			case TIMED -> WormholesMessages.RTP_ROTATION_TIMED;
+			case ON_TRAVERSAL -> WormholesMessages.RTP_ROTATION_TRIP;
 		};
+		return localized(key);
+	}
+
+	private String rtpRotationSummary(RtpSettings settings)
+	{
+		RtpSettings requiredSettings = Objects.requireNonNull(settings, "settings");
+		if(requiredSettings.getAllocationMode() == RtpAllocationMode.PER_PLAYER)
+		{
+			return Wormholes.text().plain(WormholesMessages.PORTAL_RTP_ROTATION_PRIVATE,
+					arguments("duration", formatRtpDuration(requiredSettings.getCycleDurationMillis())));
+		}
+		return rtpRotationLabel(requiredSettings.getRotationMode());
+	}
+
+	private String formatRtpDuration(long durationMillis)
+	{
+		if(durationMillis % 3_600_000L == 0L)
+		{
+			return Wormholes.text().plain(WormholesMessages.RTP_DURATION_HOURS,
+					arguments("value", durationMillis / 3_600_000L));
+		}
+		if(durationMillis % 60_000L == 0L)
+		{
+			return Wormholes.text().plain(WormholesMessages.RTP_DURATION_MINUTES,
+					arguments("value", durationMillis / 60_000L));
+		}
+		if(durationMillis % 1_000L == 0L)
+		{
+			return Wormholes.text().plain(WormholesMessages.RTP_DURATION_SECONDS,
+					arguments("value", durationMillis / 1_000L));
+		}
+		return Wormholes.text().plain(WormholesMessages.RTP_DURATION_DECIMAL_SECONDS,
+				arguments("value", String.format(Locale.ROOT, "%.1f", Double.valueOf(durationMillis / 1_000.0D))));
 	}
 
 	@Override
@@ -3273,12 +3452,12 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	{
 		if(type == PortalType.RTP)
 		{
-			notifySetting(p, "Random teleport portals do not link to destinations.");
+			notifySetting(p, WormholesMessages.PORTAL_RTP_CANNOT_LINK);
 			return;
 		}
 		if(dimensionalPortalKind.isManagedPortal())
 		{
-			notifySetting(p, "This dimensional portal keeps its generated link.");
+			notifySetting(p, WormholesMessages.PORTAL_DIMENSIONAL_LINK_MANAGED);
 			return;
 		}
 		//@builder
@@ -3323,26 +3502,39 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 		for(ILocalPortal target : localTargets)
 		{
-			//@builder
-			window.setElement(window.getPosition(pos), window.getRow(pos), new UIElement("portal-" + pos)
-					.setMaterial(new MaterialBlock(Material.ENDER_PEARL))
-					.setEnchanted(isLinkedToLocal(target))
-					.setName(ChatColor.GOLD + "" + target.getName())
-					.addLore(ChatColor.GRAY + "at " + target.getStructure().getCenter().getBlockX() + ", " + target.getStructure().getCenter().getBlockY() + ", " + target.getStructure().getCenter().getBlockZ() + " in " + target.getStructure().getWorld().getName() + " Facing " + target.getDirection().toString())
-					.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () -> {
-						window.close();
+			Location targetCenter = target.getStructure().getCenter();
+			UIElement targetElement = localizedElement(
+					"portal-" + pos,
+					WormholesMessages.PORTAL_MENU_LOCAL_DESTINATION,
+					arguments(
+							"portal", target.getName(),
+							"x", targetCenter.getBlockX(),
+							"y", targetCenter.getBlockY(),
+							"z", targetCenter.getBlockZ(),
+							"world", target.getStructure().getWorld().getName(),
+							"direction", directionLabel(target.getDirection())),
+					Material.ENDER_PEARL);
+			targetElement.setEnchanted(isLinkedToLocal(target));
+			targetElement.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () -> {
+				window.close();
 
-						if(isLinkedToLocal(target))
-						{
-							unlink();
-							Wormholes.effectManager.playNotificationSuccess(ChatColor.YELLOW + getName() + " unlinked from " + target.getName() + ".", getStructure().getCenter());
-						}
-						else
-						{
-							setDestination(target);
-							Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " linked to " + target.getName() + ".", getStructure().getCenter());
-						}
-					})));
+				if(isLinkedToLocal(target))
+				{
+					unlink();
+					Wormholes.effectManager.playNotificationSuccess(Wormholes.text().legacy(
+							WormholesMessages.PORTAL_UNLINKED,
+							arguments("portal", getName(), "destination", target.getName())), getStructure().getCenter());
+				}
+				else
+				{
+					setDestination(target);
+					Wormholes.effectManager.playNotificationSuccess(Wormholes.text().legacy(
+							WormholesMessages.PORTAL_LINKED,
+							arguments("portal", getName(), "destination", target.getName())), getStructure().getCenter());
+				}
+			}));
+			//@builder
+			window.setElement(window.getPosition(pos), window.getRow(pos), targetElement);
 			//@done
 			pos++;
 		}
@@ -3368,28 +3560,43 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			for(RemotePortal target : remoteTargets)
 			{
 				boolean linked = isLinkedToRemote(target);
-				//@builder
-				window.setElement(window.getPosition(pos), window.getRow(pos), new UIElement("remote-portal-" + pos)
-						.setMaterial(new MaterialBlock(Material.END_CRYSTAL))
-						.setEnchanted(linked)
-						.setName(ChatColor.GOLD + "" + target.getName())
-						.addLore(ChatColor.GRAY + "on server " + ChatColor.WHITE + target.getServer().getName())
-						.addLore(ChatColor.GRAY + "at " + target.getOrigin().getBlockX() + ", " + target.getOrigin().getBlockY() + ", " + target.getOrigin().getBlockZ() + " in " + target.getServer().getWorld() + " Facing " + target.getDirection().toString())
-						.addLore(target.isOpen() ? ChatColor.GREEN + "Open" : ChatColor.RED + "Closed")
-						.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () -> {
-							window.close();
+				UIElement targetElement = localizedElement(
+						"remote-portal-" + pos,
+						WormholesMessages.PORTAL_MENU_REMOTE_DESTINATION,
+						arguments(
+								"portal", target.getName(),
+								"server", target.getServer().getName(),
+								"x", target.getOrigin().getBlockX(),
+								"y", target.getOrigin().getBlockY(),
+								"z", target.getOrigin().getBlockZ(),
+								"world", target.getServer().getWorld(),
+								"direction", directionLabel(target.getDirection()),
+								"state", localized(target.isOpen() ? WormholesMessages.LABEL_OPEN : WormholesMessages.LABEL_CLOSED)),
+						Material.END_CRYSTAL);
+				targetElement.setEnchanted(linked);
+				targetElement.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, p, () -> {
+					window.close();
 
-							if(isLinkedToRemote(target))
-							{
-								unlink();
-								Wormholes.effectManager.playNotificationSuccess(ChatColor.YELLOW + getName() + " unlinked from " + target.getName() + ".", getStructure().getCenter());
-							}
-							else
-							{
-								setDestination(target);
-								Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + " linked to " + target.getName() + " on " + target.getServer().getName() + ".", getStructure().getCenter());
-							}
-						})));
+					if(isLinkedToRemote(target))
+					{
+						unlink();
+						Wormholes.effectManager.playNotificationSuccess(Wormholes.text().legacy(
+								WormholesMessages.PORTAL_UNLINKED,
+								arguments("portal", getName(), "destination", target.getName())), getStructure().getCenter());
+					}
+					else
+					{
+						setDestination(target);
+						Wormholes.effectManager.playNotificationSuccess(Wormholes.text().legacy(
+								WormholesMessages.PORTAL_LINKED_REMOTE,
+								arguments(
+										"portal", getName(),
+										"destination", target.getName(),
+										"server", target.getServer().getName())), getStructure().getCenter());
+					}
+				}));
+				//@builder
+				window.setElement(window.getPosition(pos), window.getRow(pos), targetElement);
 				//@done
 				pos++;
 			}
@@ -3429,9 +3636,11 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	public void uiChangeName(Player p)
 	{
 		p.closeInventory();
-		p.sendMessage(ChatColor.AQUA + "Type the new portal name in chat (or 'cancel'):");
+		WormholesAudience.sendMessage(p, Wormholes.text().component(
+				WormholesMessages.PORTAL_PROMPT_NAME,
+				arguments("cancel", localized(WormholesMessages.PORTAL_INPUT_CANCEL))));
 		Wormholes.awaitChatInput(p, (text) -> {
-			if (text == null || text.equalsIgnoreCase("cancel")) {
+			if (text == null || isCancelInput(text)) {
 				uiOpenPortalMenu(p);
 				return;
 			}
@@ -3471,8 +3680,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public void uiChangeDirection(Player p)
 	{
-		p.sendMessage(Wormholes.tag + "Look in a direction then left click to apply.");
-		p.sendMessage(Wormholes.tag + "Shift-Left click to cancel.");
+		for(Component line : Wormholes.text().components(WormholesMessages.PORTAL_PROMPT_DIRECTION))
+		{
+			WormholesAudience.sendMessage(p, line);
+		}
 		chosenDirection = Direction.closest(p.getLocation().getDirection());
 		chosenLook = p.getLocation().getDirection();
 		directionChanger = p;
@@ -3497,7 +3708,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 					chosenDirection = Direction.closest(p.getLocation().getDirection());
 					chosenLook = p.getLocation().getDirection();
-					sendShortTitle(p, ChatColor.GRAY + "" + ChatColor.BOLD + chosenDirection.toString());
+					sendShortTitle(p, ChatColor.GRAY + "" + ChatColor.BOLD + directionLabel(chosenDirection));
 				});
 			}
 		};
@@ -3526,13 +3737,16 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 						chosenLook = e.getPlayer().getLocation().getDirection();
 					}
 					setFrame(PortalFrame.fromDirectionAndLook(chosenDirection, chosenLook));
-					Wormholes.effectManager.playNotificationSuccess(ChatColor.GREEN + getName() + "'s direction changed to " + getDirection().toString() + ".", getStructure().getCenter());
+					Wormholes.effectManager.playNotificationSuccess(Wormholes.text().legacy(
+							WormholesMessages.PORTAL_DIRECTION_CHANGED,
+							arguments("portal", getName(), "direction", directionLabel(getDirection()))), getStructure().getCenter());
 				}
 
 				directionChanger = null;
 				chosenDirection = null;
 				chosenLook = null;
-				e.getPlayer().sendMessage(Wormholes.tag + (cancelled ? "Cancelled" : "Direction set"));
+				WormholesAudience.sendMessage(e.getPlayer(), Wormholes.text().component(
+						cancelled ? WormholesMessages.PORTAL_DIRECTION_CANCELLED : WormholesMessages.PORTAL_DIRECTION_SET));
 			}
 		}
 	}
@@ -4062,7 +4276,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		{
 			return true;
 		}
-		WormholesAudience.sendActionBar(player, Component.text("Only the portal owner or an administrator can edit this portal.", NamedTextColor.RED));
+		WormholesAudience.sendActionBar(player, Wormholes.text().component(WormholesMessages.PORTAL_EDIT_DENIED));
 		player.closeInventory();
 		return false;
 	}

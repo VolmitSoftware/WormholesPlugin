@@ -57,6 +57,7 @@ public final class RtpSettingsTest
 		assertEquals(30_000L, settings.getLeaseIdleMillis());
 		assertEquals(15_000L, settings.getPrivateReleaseMillis());
 		assertTrue(settings.isRimEnabled());
+		assertTrue(settings.isSoundEnabled());
 		assertFalse(settings.toJson().has("targetWorldKey"));
 	}
 
@@ -71,6 +72,22 @@ public final class RtpSettingsTest
 
 		assertTrue(restored.isSourceWorldTarget());
 		assertFalse(restored.toJson().has("targetWorldKey"));
+	}
+
+	@Test
+	public void presentationChangesDoNotChangeRouteIdentity()
+	{
+		World source = world("overworld", -64, 320, 63);
+		RtpSettings original = RtpSettings.defaults(source);
+		RtpSettings presentationOnly = original.toBuilder()
+				.rimEnabled(false)
+				.soundEnabled(false)
+				.build();
+		RtpSettings routingChange = original.toBuilder().radii(128, 1024).build();
+
+		assertFalse(original.equals(presentationOnly));
+		assertTrue(original.hasSameRouteAs(presentationOnly));
+		assertFalse(original.hasSameRouteAs(routingChange));
 	}
 
 	@Test
@@ -118,6 +135,7 @@ public final class RtpSettingsTest
 				.leaseIdleMillis(45_000L)
 				.privateReleaseMillis(25_000L)
 				.rimEnabled(false)
+				.soundEnabled(false)
 				.build();
 		JSONObject json = settings.toJson();
 		json.put("playerId", UUID.randomUUID().toString());

@@ -157,6 +157,44 @@ public final class RtpSafetyValidatorTest
 	}
 
 	@Test
+	public void surfaceModeRejectsTreeSupportButAllowsClearGroundBeneathACanopy()
+	{
+		RtpValidationRequest.BlockSnapshot treeSupport = RtpValidationRequest.BlockSnapshot.of(
+				0,
+				63,
+				0,
+				"minecraft:oak_log",
+				false,
+				false,
+				true,
+				List.of(RtpValidationRequest.CollisionBox.fullBlock()));
+		List<RtpValidationRequest.RegionSnapshot> treeSnapshots = replaceBlock(
+				safeSnapshots(DESTINATION, BASELINE),
+				treeSupport);
+		RtpValidationRequest.BlockSnapshot highCanopy = RtpValidationRequest.BlockSnapshot.of(
+				0,
+				67,
+				0,
+				"minecraft:oak_leaves",
+				false,
+				false,
+				true,
+				List.of(RtpValidationRequest.CollisionBox.fullBlock()));
+		RtpSafetyResult treeResult = VALIDATOR.validate(requestBuilder(DESTINATION, BASELINE, treeSnapshots)
+				.surfaceMode(true)
+				.build()).join();
+		RtpSafetyResult groundResult = VALIDATOR.validate(requestBuilder(
+				DESTINATION,
+				BASELINE,
+				replaceBlock(safeSnapshots(DESTINATION, BASELINE), highCanopy))
+				.surfaceMode(true)
+				.build()).join();
+
+		assertEquals(RtpSafetyResult.Code.HAZARD, treeResult.code());
+		assertEquals(RtpSafetyResult.Code.SAFE, groundResult.code());
+	}
+
+	@Test
 	public void configuredHazardsAreRejectedWithoutBukkitMaterialAccess()
 	{
 		RtpValidationRequest.BlockSnapshot hazard = RtpValidationRequest.BlockSnapshot.air(0, 64, 0, "custom:unstable_crystal");

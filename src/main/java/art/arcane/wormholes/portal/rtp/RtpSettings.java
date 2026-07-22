@@ -41,6 +41,7 @@ public final class RtpSettings
 	private final long leaseIdleMillis;
 	private final long privateReleaseMillis;
 	private final boolean rimEnabled;
+	private final boolean soundEnabled;
 
 	private RtpSettings(Builder builder)
 	{
@@ -81,6 +82,7 @@ public final class RtpSettings
 		leaseIdleMillis = clamp(builder.leaseIdleMillis, MINIMUM_LEASE_IDLE_MILLIS, MAXIMUM_LEASE_IDLE_MILLIS);
 		privateReleaseMillis = clamp(builder.privateReleaseMillis, MINIMUM_PRIVATE_RELEASE_MILLIS, MAXIMUM_PRIVATE_RELEASE_MILLIS);
 		rimEnabled = builder.rimEnabled;
+		soundEnabled = builder.soundEnabled;
 	}
 
 	public static RtpSettings defaults(World world)
@@ -171,6 +173,7 @@ public final class RtpSettings
 		builder.leaseIdleMillis(requiredJson.optLong("leaseIdleMillis", DEFAULT_LEASE_IDLE_MILLIS));
 		builder.privateReleaseMillis(requiredJson.optLong("privateReleaseMillis", DEFAULT_PRIVATE_RELEASE_MILLIS));
 		builder.rimEnabled(requiredJson.optBoolean("rimEnabled", true));
+		builder.soundEnabled(requiredJson.optBoolean("soundEnabled", true));
 		return builder.build();
 	}
 
@@ -199,6 +202,7 @@ public final class RtpSettings
 		json.put("leaseIdleMillis", leaseIdleMillis);
 		json.put("privateReleaseMillis", privateReleaseMillis);
 		json.put("rimEnabled", rimEnabled);
+		json.put("soundEnabled", soundEnabled);
 		return json;
 	}
 
@@ -297,6 +301,32 @@ public final class RtpSettings
 		return rimEnabled;
 	}
 
+	public boolean isSoundEnabled()
+	{
+		return soundEnabled;
+	}
+
+	public boolean hasSameRouteAs(RtpSettings other)
+	{
+		RtpSettings requiredOther = Objects.requireNonNull(other, "other");
+		return minimumRadius == requiredOther.minimumRadius
+				&& maximumRadius == requiredOther.maximumRadius
+				&& lowerY == requiredOther.lowerY
+				&& upperY == requiredOther.upperY
+				&& preferredY == requiredOther.preferredY
+				&& cycleDurationMillis == requiredOther.cycleDurationMillis
+				&& leaseIdleMillis == requiredOther.leaseIdleMillis
+				&& privateReleaseMillis == requiredOther.privateReleaseMillis
+				&& sourceWorldKey.equals(requiredOther.sourceWorldKey)
+				&& Objects.equals(targetWorldOverrideKey, requiredOther.targetWorldOverrideKey)
+				&& centerMode == requiredOther.centerMode
+				&& Objects.equals(customCenterX, requiredOther.customCenterX)
+				&& Objects.equals(customCenterZ, requiredOther.customCenterZ)
+				&& verticalMode == requiredOther.verticalMode
+				&& allocationMode == requiredOther.allocationMode
+				&& rotationMode == requiredOther.rotationMode;
+	}
+
 	@Override
 	public boolean equals(Object object)
 	{
@@ -317,6 +347,7 @@ public final class RtpSettings
 				&& leaseIdleMillis == other.leaseIdleMillis
 				&& privateReleaseMillis == other.privateReleaseMillis
 				&& rimEnabled == other.rimEnabled
+				&& soundEnabled == other.soundEnabled
 				&& sourceWorldKey.equals(other.sourceWorldKey)
 				&& Objects.equals(targetWorldOverrideKey, other.targetWorldOverrideKey)
 				&& centerMode == other.centerMode
@@ -333,7 +364,8 @@ public final class RtpSettings
 		return Objects.hash(sourceWorldKey, targetWorldOverrideKey, centerMode, customCenterX, customCenterZ,
 				Integer.valueOf(minimumRadius), Integer.valueOf(maximumRadius), verticalMode, Integer.valueOf(lowerY),
 				Integer.valueOf(upperY), Integer.valueOf(preferredY), allocationMode, rotationMode,
-				Long.valueOf(cycleDurationMillis), Long.valueOf(leaseIdleMillis), Long.valueOf(privateReleaseMillis), Boolean.valueOf(rimEnabled));
+				Long.valueOf(cycleDurationMillis), Long.valueOf(leaseIdleMillis), Long.valueOf(privateReleaseMillis),
+				Boolean.valueOf(rimEnabled), Boolean.valueOf(soundEnabled));
 	}
 
 	private static void validateCustomCenter(RtpCenterMode centerMode, Double customCenterX, Double customCenterZ)
@@ -414,6 +446,7 @@ public final class RtpSettings
 		private long leaseIdleMillis;
 		private long privateReleaseMillis;
 		private boolean rimEnabled;
+		private boolean soundEnabled;
 
 		private Builder(World sourceWorld)
 		{
@@ -433,6 +466,7 @@ public final class RtpSettings
 			leaseIdleMillis = DEFAULT_LEASE_IDLE_MILLIS;
 			privateReleaseMillis = DEFAULT_PRIVATE_RELEASE_MILLIS;
 			rimEnabled = true;
+			soundEnabled = true;
 		}
 
 		private Builder(RtpSettings settings)
@@ -456,6 +490,7 @@ public final class RtpSettings
 			leaseIdleMillis = requiredSettings.leaseIdleMillis;
 			privateReleaseMillis = requiredSettings.privateReleaseMillis;
 			rimEnabled = requiredSettings.rimEnabled;
+			soundEnabled = requiredSettings.soundEnabled;
 		}
 
 		public Builder targetWorld(World world)
@@ -564,6 +599,12 @@ public final class RtpSettings
 		public Builder rimEnabled(boolean enabled)
 		{
 			rimEnabled = enabled;
+			return this;
+		}
+
+		public Builder soundEnabled(boolean enabled)
+		{
+			soundEnabled = enabled;
 			return this;
 		}
 

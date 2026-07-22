@@ -79,6 +79,23 @@ public final class RtpPortalRuntime
 		return new RtpPortalRuntime(generation, new Configuration(RtpAllocationMode.PER_PLAYER, RtpRotationMode.STATIC, 0L, reservationLeaveMillis));
 	}
 
+	public static RtpPortalRuntime perPlayer(long generation, long reservationLeaveMillis, long rotationDurationMillis)
+	{
+		if(reservationLeaveMillis <= 0L)
+		{
+			throw new IllegalArgumentException("Reservation leave duration must be positive");
+		}
+		if(rotationDurationMillis <= 0L)
+		{
+			throw new IllegalArgumentException("Rotation duration must be positive");
+		}
+		return new RtpPortalRuntime(generation, new Configuration(
+				RtpAllocationMode.PER_PLAYER,
+				RtpRotationMode.TIMED,
+				rotationDurationMillis,
+				reservationLeaveMillis));
+	}
+
 	public synchronized Optional<SearchTicket> beginSearch()
 	{
 		if (activeSearch != null)
@@ -227,6 +244,11 @@ public final class RtpPortalRuntime
 
 	public synchronized Optional<RtpDestination> reservePlayer(UUID playerId)
 	{
+		return reservePlayer(playerId, 0L);
+	}
+
+	public synchronized Optional<RtpDestination> reservePlayer(UUID playerId, long nowMillis)
+	{
 		requirePerPlayer();
 		Objects.requireNonNull(playerId);
 		Reservation existing = reservations.get(playerId);
@@ -239,8 +261,35 @@ public final class RtpPortalRuntime
 			return Optional.empty();
 		}
 		RtpDestination destination = removeFirstFreeDestination();
-		reservations.put(playerId, new Reservation(destination, NO_LEAVE_DEADLINE));
+		reservations.put(playerId, new Reservation(destination, NO_LEAVE_DEADLINE, nextPlayerRotationDeadline(nowMillis)));
 		return Optional.of(destination);
+	}
+
+	public synchronized int rotatePlayerReservations(long nowMillis)
+	{
+		requirePerPlayer();
+		if(rotationMode != RtpRotationMode.TIMED || freeDestinations.isEmpty())
+		{
+			return 0;
+		}
+		int rotated = 0;
+		for(Map.Entry<UUID, Reservation> entry : reservations.entrySet())
+		{
+			Reservation reservation = entry.getValue();
+			if(reservation.leaveDeadlineMillis() != NO_LEAVE_DEADLINE
+					|| !interestedPlayers.contains(entry.getKey())
+					|| reservation.rotationDeadlineMillis() == 0L
+					|| nowMillis < reservation.rotationDeadlineMillis()
+					|| freeDestinations.isEmpty())
+			{
+				continue;
+			}
+			RtpDestination replacement = removeFirstFreeDestination();
+			freeDestinations.add(reservation.destination());
+			entry.setValue(new Reservation(replacement, NO_LEAVE_DEADLINE, nextPlayerRotationDeadline(nowMillis)));
+			rotated++;
+		}
+		return rotated;
 	}
 
 	public synchronized Optional<RtpDestination> reservationFor(UUID playerId)
@@ -348,7 +397,7 @@ public final class RtpPortalRuntime
 				active,
 				standby,
 				routeRevision,
-				nextRotationAtMillis,
+				allocationMode == RtpAllocationMode.PER_PLAYER ? nextPlayerRotationAtMillis() : nextRotationAtMillis,
 				timedRotationPending,
 				rerolling,
 				activeSearch != null,
@@ -520,11 +569,17 @@ public final class RtpPortalRuntime
 		}
 		if (interestedPlayers.contains(claim.playerId()))
 		{
-			reservations.put(claim.playerId(), new Reservation(claim.destination(), NO_LEAVE_DEADLINE));
+			reservations.put(claim.playerId(), new Reservation(
+					claim.destination(),
+					NO_LEAVE_DEADLINE,
+					nextPlayerRotationDeadline(nowMillis)));
 		}
 		else
 		{
-			reservations.put(claim.playerId(), new Reservation(claim.destination(), deadline(nowMillis, reservationLeaveMillis)));
+			reservations.put(claim.playerId(), new Reservation(
+					claim.destination(),
+					deadline(nowMillis, reservationLeaveMillis),
+					nextPlayerRotationDeadline(nowMillis)));
 		}
 		return true;
 	}
@@ -610,6 +665,28 @@ public final class RtpPortalRuntime
 		RtpDestination destination = iterator.next();
 		iterator.remove();
 		return destination;
+	}
+
+	private long nextPlayerRotationDeadline(long nowMillis)
+	{
+		return rotationMode == RtpRotationMode.TIMED ? deadline(nowMillis, cycleDurationMillis) : 0L;
+	}
+
+	private long nextPlayerRotationAtMillis()
+	{
+		long next = 0L;
+		for(Map.Entry<UUID, Reservation> entry : reservations.entrySet())
+		{
+			Reservation reservation = entry.getValue();
+			if(reservation.leaveDeadlineMillis() != NO_LEAVE_DEADLINE
+					|| !interestedPlayers.contains(entry.getKey())
+					|| reservation.rotationDeadlineMillis() == 0L)
+			{
+				continue;
+			}
+			next = next == 0L ? reservation.rotationDeadlineMillis() : Math.min(next, reservation.rotationDeadlineMillis());
+		}
+		return next;
 	}
 
 	private void removeKnownDestination(RtpDestination destination)
@@ -728,7 +805,7 @@ public final class RtpPortalRuntime
 		}
 	}
 
-	private record Reservation(RtpDestination destination, long leaveDeadlineMillis)
+	private record Reservation(RtpDestination destination, long leaveDeadlineMillis, long rotationDeadlineMillis)
 	{
 		private Reservation
 		{
@@ -737,12 +814,12 @@ public final class RtpPortalRuntime
 
 		private Reservation active()
 		{
-			return new Reservation(destination, NO_LEAVE_DEADLINE);
+			return new Reservation(destination, NO_LEAVE_DEADLINE, rotationDeadlineMillis);
 		}
 
 		private Reservation releasing(long deadlineMillis)
 		{
-			return new Reservation(destination, deadlineMillis);
+			return new Reservation(destination, deadlineMillis, rotationDeadlineMillis);
 		}
 	}
 }

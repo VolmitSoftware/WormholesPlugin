@@ -522,7 +522,7 @@ public class EffectManager implements Listener
 
 		world.spawnParticle(Particle.PORTAL, center, 12, 0.65, 0.8, 0.65, 0.35);
 		world.playSound(center, Sound.BLOCK_RESPAWN_ANCHOR_CHARGE, SoundCategory.BLOCKS, 0.55f, 0.55f);
-		world.playSound(center, MSound.FRAME_SPAWN.bukkitSound(), SoundCategory.BLOCKS, 1.4f, 0.35f);
+		world.playSound(center, MSound.FRAME_SPAWN.bukkitSound(), SoundCategory.BLOCKS, openingSoundPlan().frameVolume(), 0.35f);
 
 		VortexKey markerKey = vortexKey(world, center);
 		VortexMarker marker = new VortexMarker(markerKey, world, center.getX(), center.getY(), center.getZ(),
@@ -596,7 +596,19 @@ public class EffectManager implements Listener
 
 	public void playPortalClose(World world, Location corner, double sx, double sy, double sz, BooleanSupplier active)
 	{
-		if(closing || world == null || corner == null || active == null || !active.getAsBoolean())
+		playPortalClose(world, corner, sx, sy, sz, active, () -> true);
+	}
+
+	public void playPortalClose(
+			World world,
+			Location corner,
+			double sx,
+			double sy,
+			double sz,
+			BooleanSupplier active,
+			BooleanSupplier audible)
+	{
+		if(closing || world == null || corner == null || active == null || audible == null || !active.getAsBoolean())
 		{
 			return;
 		}
@@ -610,10 +622,16 @@ public class EffectManager implements Listener
 		final double halfA = Math.max(0.3D, ext[planeA] / 2.0D);
 		final double halfB = Math.max(0.3D, ext[planeB] / 2.0D);
 		CloseEffectPlan effectPlan = closeEffectPlan(Settings.VISUAL_QUALITY_PROFILE);
-		world.playSound(center, MSound.ECHEST_CLOSE.bukkitSound(), SoundCategory.BLOCKS, 1.2f, 0.55f);
+		if(audible.getAsBoolean())
+		{
+			world.playSound(center, MSound.ECHEST_CLOSE.bukkitSound(), SoundCategory.BLOCKS, 1.2f, 0.55f);
+		}
 		if(!Settings.ENABLE_PARTICLES)
 		{
-			world.playSound(center, Sound.BLOCK_GLASS_BREAK, SoundCategory.BLOCKS, 1.0f, 0.9f);
+			if(audible.getAsBoolean())
+			{
+				world.playSound(center, Sound.BLOCK_GLASS_BREAK, SoundCategory.BLOCKS, 1.0f, 0.9f);
+			}
 			return;
 		}
 
@@ -688,9 +706,12 @@ public class EffectManager implements Listener
 				world.spawnParticle(Particle.REVERSE_PORTAL, center, effectPlan.shards(), 0.2, 0.3, 0.2, 0.65);
 				world.spawnParticle(Particle.SCULK_SOUL, center, 6, 0.25, 0.35, 0.25, 0.03);
 				world.spawnParticle(Particle.FLASH, center, 1, 0.0, 0.0, 0.0, 0.0, Color.fromRGB(220, 235, 255));
-				world.playSound(center, Sound.BLOCK_GLASS_BREAK, SoundCategory.BLOCKS, 1.8f, 0.8f);
-				world.playSound(center, Sound.BLOCK_GLASS_BREAK, SoundCategory.BLOCKS, 1.1f, 1.05f);
-				world.playSound(center, Sound.ENTITY_ITEM_BREAK, SoundCategory.BLOCKS, 1.2f, 0.8f);
+				if(audible.getAsBoolean())
+				{
+					world.playSound(center, Sound.BLOCK_GLASS_BREAK, SoundCategory.BLOCKS, 1.8f, 0.8f);
+					world.playSound(center, Sound.BLOCK_GLASS_BREAK, SoundCategory.BLOCKS, 1.1f, 1.05f);
+					world.playSound(center, Sound.ENTITY_ITEM_BREAK, SoundCategory.BLOCKS, 1.2f, 0.8f);
+				}
 				return;
 			}
 
@@ -731,11 +752,11 @@ public class EffectManager implements Listener
 					world.spawnParticle(Particle.DUST, point[0], point[1], point[2], 1, 0.0, 0.0, 0.0, 0.0, branchletDust);
 				}
 			}
-			if(t == 0)
+			if(t == 0 && audible.getAsBoolean())
 			{
 				world.playSound(center, Sound.BLOCK_GLASS_BREAK, SoundCategory.BLOCKS, 0.4f, 1.7f);
 			}
-			if(t % 3 == 1)
+			if(t % 3 == 1 && audible.getAsBoolean())
 			{
 				world.playSound(center, Sound.BLOCK_AMETHYST_BLOCK_HIT, SoundCategory.BLOCKS, 0.5f, 0.7f);
 			}
@@ -752,14 +773,29 @@ public class EffectManager implements Listener
 
 	public void playPortalOpen(World world, Location center, double sx, double sy, double sz, BooleanSupplier active)
 	{
-		if(closing || world == null || center == null || active == null || !active.getAsBoolean())
+		playPortalOpen(world, center, sx, sy, sz, active, () -> true);
+	}
+
+	public void playPortalOpen(
+			World world,
+			Location center,
+			double sx,
+			double sy,
+			double sz,
+			BooleanSupplier active,
+			BooleanSupplier audible)
+	{
+		if(closing || world == null || center == null || active == null || audible == null || !active.getAsBoolean())
 		{
 			return;
 		}
 		if(!Settings.ENABLE_PARTICLES)
 		{
-			world.playSound(center, MSound.FRAME_SPAWN.bukkitSound(), SoundCategory.BLOCKS, 1.4f, 0.35f);
-			playKawooshSounds(world, center, active);
+			if(audible.getAsBoolean())
+			{
+				world.playSound(center, MSound.FRAME_SPAWN.bukkitSound(), SoundCategory.BLOCKS, openingSoundPlan().frameVolume(), 0.35f);
+			}
+			playKawooshSounds(world, center, active, audible);
 			return;
 		}
 		VortexMarker marker = findVortexMarker(world, center);
@@ -770,11 +806,14 @@ public class EffectManager implements Listener
 				activeVortices.remove(marker.key, marker);
 				return;
 			}
-			marker.kawoosh = new KawooshRequest(center.clone(), sx, sy, sz, active);
+			marker.kawoosh = new KawooshRequest(center.clone(), sx, sy, sz, active, audible);
 			return;
 		}
-		world.playSound(center, MSound.FRAME_SPAWN.bukkitSound(), SoundCategory.BLOCKS, 1.4f, 0.35f);
-		playPortalOpenPrelude(world, center, sx, sy, sz, active);
+		if(audible.getAsBoolean())
+		{
+			world.playSound(center, MSound.FRAME_SPAWN.bukkitSound(), SoundCategory.BLOCKS, openingSoundPlan().frameVolume(), 0.35f);
+		}
+		playPortalOpenPrelude(world, center, sx, sy, sz, active, audible);
 	}
 
 	public void playPortalDeletion(World world, Location corner, double sx, double sy, double sz)
@@ -826,6 +865,11 @@ public class EffectManager implements Listener
 		};
 	}
 
+	static OpeningSoundPlan openingSoundPlan()
+	{
+		return new OpeningSoundPlan(0.65f, 0.75f, 0.65f, 0.25f);
+	}
+
 	static double ellipseRadius(double halfA, double halfB, double angle)
 	{
 		double cos = Math.cos(angle);
@@ -842,7 +886,14 @@ public class EffectManager implements Listener
 		return velocity;
 	}
 
-	private void playPortalOpenPrelude(World world, Location center, double sx, double sy, double sz, BooleanSupplier active)
+	private void playPortalOpenPrelude(
+			World world,
+			Location center,
+			double sx,
+			double sy,
+			double sz,
+			BooleanSupplier active,
+			BooleanSupplier audible)
 	{
 		double[] ext = new double[] { sx, sy, sz };
 		final int normalAxis = (ext[0] <= ext[1] && ext[0] <= ext[2]) ? 0 : (ext[1] <= ext[2] ? 1 : 2);
@@ -873,7 +924,7 @@ public class EffectManager implements Listener
 			int t = tick[0]++;
 			if(t >= OPEN_PRELUDE_TICKS)
 			{
-				playPortalKawoosh(world, center, sx, sy, sz, active);
+				playPortalKawoosh(world, center, sx, sy, sz, active, audible);
 				return;
 			}
 			double frac = (double) (t + 1) / (double) OPEN_PRELUDE_TICKS;
@@ -899,7 +950,14 @@ public class EffectManager implements Listener
 		FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
 	}
 
-	private void playPortalKawoosh(World world, Location center, double sx, double sy, double sz, BooleanSupplier active)
+	private void playPortalKawoosh(
+			World world,
+			Location center,
+			double sx,
+			double sy,
+			double sz,
+			BooleanSupplier active,
+			BooleanSupplier audible)
 	{
 		if(closing || world == null || center == null || active == null || !active.getAsBoolean())
 		{
@@ -916,7 +974,7 @@ public class EffectManager implements Listener
 		world.spawnParticle(Particle.FLASH, center, 1, 0.0, 0.0, 0.0, 0.0, Color.fromRGB(190, 130, 255));
 		world.spawnParticle(Particle.REVERSE_PORTAL, center, plan.impactReverse(), 0.25, 0.45, 0.25, 0.75);
 		world.spawnParticle(Particle.END_ROD, center, plan.impactEndRod(), 0.15, 0.15, 0.15, 0.3);
-		playKawooshSounds(world, center, active);
+		playKawooshSounds(world, center, active, audible);
 		final Particle.DustTransition armDust = new Particle.DustTransition(Color.fromRGB(185, 105, 255), Color.fromRGB(20, 5, 35), 0.9f);
 		int[] tick = new int[] { 0 };
 		Runnable[] holder = new Runnable[1];
@@ -980,15 +1038,19 @@ public class EffectManager implements Listener
 		FoliaScheduler.runRegion(Wormholes.instance, center, holder[0], 1L);
 	}
 
-	private void playKawooshSounds(World world, Location center, BooleanSupplier active)
+	private void playKawooshSounds(World world, Location center, BooleanSupplier active, BooleanSupplier audible)
 	{
-		world.playSound(center, Sound.BLOCK_END_PORTAL_SPAWN, SoundCategory.BLOCKS, 1.8f, 0.85f);
-		world.playSound(center, Sound.BLOCK_BEACON_ACTIVATE, SoundCategory.BLOCKS, 2.0f, 0.55f);
+		OpeningSoundPlan plan = openingSoundPlan();
+		if(audible.getAsBoolean())
+		{
+			world.playSound(center, Sound.BLOCK_END_PORTAL_SPAWN, SoundCategory.BLOCKS, plan.portalImpactVolume(), 0.85f);
+			world.playSound(center, Sound.BLOCK_BEACON_ACTIVATE, SoundCategory.BLOCKS, plan.beaconImpactVolume(), 0.55f);
+		}
 		FoliaScheduler.runRegion(Wormholes.instance, center, () ->
 		{
-			if(!closing && active.getAsBoolean())
+			if(!closing && active.getAsBoolean() && audible.getAsBoolean())
 			{
-				world.playSound(center, Sound.ENTITY_WARDEN_SONIC_BOOM, SoundCategory.BLOCKS, 1.0f, 0.8f);
+				world.playSound(center, Sound.ENTITY_WARDEN_SONIC_BOOM, SoundCategory.BLOCKS, plan.sonicBoomVolume(), 0.8f);
 			}
 		}, KAWOOSH_BOOM_DELAY_TICKS);
 	}
@@ -1003,10 +1065,10 @@ public class EffectManager implements Listener
 		KawooshRequest request = marker.kawoosh;
 		if(request != null && request.active().getAsBoolean())
 		{
-			playPortalKawoosh(world, request.center(), request.sx(), request.sy(), request.sz(), request.active());
+			playPortalKawoosh(world, request.center(), request.sx(), request.sy(), request.sz(), request.active(), request.audible());
 			return;
 		}
-		playPortalKawoosh(world, center, sx, sy, sz, () -> true);
+		playPortalKawoosh(world, center, sx, sy, sz, () -> true, () -> true);
 	}
 
 	private VortexMarker findVortexMarker(World world, Location center)
@@ -1153,7 +1215,17 @@ public class EffectManager implements Listener
 	{
 	}
 
-	private record KawooshRequest(Location center, double sx, double sy, double sz, BooleanSupplier active)
+	record OpeningSoundPlan(float frameVolume, float portalImpactVolume, float beaconImpactVolume, float sonicBoomVolume)
+	{
+	}
+
+	private record KawooshRequest(
+			Location center,
+			double sx,
+			double sy,
+			double sz,
+			BooleanSupplier active,
+			BooleanSupplier audible)
 	{
 	}
 

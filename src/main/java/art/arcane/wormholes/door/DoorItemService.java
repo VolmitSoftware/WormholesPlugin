@@ -1,5 +1,11 @@
 package art.arcane.wormholes.door;
 
+import art.arcane.volmlib.util.localization.LinesKey;
+import art.arcane.volmlib.util.localization.MessageArgs;
+import art.arcane.volmlib.util.localization.MessageArgument;
+import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.localization.WormholesLocalization;
+import art.arcane.wormholes.localization.WormholesMessages;
 import art.arcane.wormholes.platform.WormholesPlatform;
 
 import java.nio.charset.StandardCharsets;
@@ -8,8 +14,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 
-import org.bukkit.ChatColor;
 import org.bukkit.Keyed;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
@@ -36,7 +42,7 @@ public final class DoorItemService
 	public static final Material PERSONAL_DOOR_MATERIAL = Material.DARK_OAK_DOOR;
 	public static final Material PUBLIC_DOOR_MATERIAL = Material.PALE_OAK_DOOR;
 
-	private final ItemStack wormholeRune;
+	private final List<ItemStack> wormholeRunes;
 	private final DoorItemPdcCodec codec;
 	private final NamespacedKey pairKitRecipeKey;
 	private final NamespacedKey personalDoorRecipeKey;
@@ -52,8 +58,8 @@ public final class DoorItemService
 			throw new IllegalArgumentException("Wormhole Rune cannot be air");
 		}
 
-		wormholeRune = exactWormholeRune.clone();
-		wormholeRune.setAmount(1);
+		wormholeRunes = new CopyOnWriteArrayList<ItemStack>();
+		acceptWormholeRune(exactWormholeRune);
 		codec = new DoorItemPdcCodec(WormholesPlatform.pluginNamespace(plugin));
 		pairKitRecipeKey = new NamespacedKey(plugin, "dimensional_door_pair_kit");
 		personalDoorRecipeKey = new NamespacedKey(plugin, "personal_dimensional_door");
@@ -70,11 +76,8 @@ public final class DoorItemService
 	{
 		ItemStack item = styledItem(
 			PAIR_KIT_MATERIAL,
-			"Entangled Door Pair",
-			ChatColor.GOLD,
-			List.of(
-				"Contains two automatically linked Wormhole Doors.",
-				"Use it to unpack endpoints A and B."));
+			WormholesMessages.ITEM_ENTANGLED_PAIR,
+			MessageArgs.empty());
 		ItemMeta meta = item.getItemMeta();
 		codec.encodePairKit(meta.getPersistentDataContainer(), Objects.requireNonNull(kitId, "kitId"));
 		item.setItemMeta(meta);
@@ -113,32 +116,22 @@ public final class DoorItemService
 		{
 			case PAIR -> styledItem(
 				material,
-				"Wormhole Door " + identity.pairEndpoint().name(),
-				ChatColor.GOLD,
-				List.of(
-					"Automatically linked to endpoint " + identity.pairEndpoint().other().name() + ".",
-					"Open the door and physically cross its threshold."));
+				WormholesMessages.ITEM_PAIRED_DOOR,
+				WormholesLocalization.args(
+					MessageArgument.untrusted("endpoint", identity.pairEndpoint().name()),
+					MessageArgument.untrusted("other", identity.pairEndpoint().other().name())));
 			case PERSONAL -> styledItem(
 				material,
-				"Personal Dimension Door",
-				ChatColor.AQUA,
-				List.of(
-					"Each traveler enters their own persistent dimension.",
-					"The same traveler always reaches the same place."));
+				WormholesMessages.ITEM_PERSONAL_DOOR,
+				MessageArgs.empty());
 			case PUBLIC -> styledItem(
 				material,
-				"Public Dimension Door",
-				ChatColor.GOLD,
-				List.of(
-					"Every traveler enters this door's shared dimension.",
-					"Breaking and moving it preserves the shared destination."));
+				WormholesMessages.ITEM_PUBLIC_DOOR,
+				MessageArgs.empty());
 			case RETURN -> styledItem(
 				material,
-				"Dimensional Exit Door",
-				ChatColor.GREEN,
-				List.of(
-					"Returns travelers from this pocket dimension.",
-					"This door is bound to its pocket."));
+				WormholesMessages.ITEM_RETURN_DOOR,
+				MessageArgs.empty());
 		};
 
 		ItemMeta meta = item.getItemMeta();
@@ -216,6 +209,25 @@ public final class DoorItemService
 		return pairAdded && personalAdded && publicAdded && skinAdded;
 	}
 
+	public void acceptWormholeRune(ItemStack exactWormholeRune)
+	{
+		Objects.requireNonNull(exactWormholeRune, "exactWormholeRune");
+		if(exactWormholeRune.getType().isAir())
+		{
+			throw new IllegalArgumentException("Wormhole Rune cannot be air");
+		}
+		ItemStack normalized = exactWormholeRune.clone();
+		normalized.setAmount(1);
+		for(ItemStack accepted : wormholeRunes)
+		{
+			if(accepted.isSimilar(normalized))
+			{
+				return;
+			}
+		}
+		wormholeRunes.add(normalized);
+	}
+
 	public void unregisterRecipes()
 	{
 		WormholesPlatform.removeRecipe(pairKitRecipeKey, false);
@@ -231,14 +243,14 @@ public final class DoorItemService
 			.setIngredient('E', Material.ENDER_EYE)
 			.setIngredient('D', creationDoorIngredient())
 			.setIngredient('O', Material.OBSIDIAN)
-			.setIngredient('R', new RecipeChoice.ExactChoice(wormholeRune));
+			.setIngredient('R', wormholeRuneChoice());
 	}
 
 	public ShapedRecipe personalDoorRecipe()
 	{
 		return new ShapedRecipe(personalDoorRecipeKey, craftTemplate(DoorCraftProduct.PERSONAL_DOOR))
 			.shape(" R ", "CDE")
-			.setIngredient('R', new RecipeChoice.ExactChoice(wormholeRune))
+			.setIngredient('R', wormholeRuneChoice())
 			.setIngredient('C', Material.RECOVERY_COMPASS)
 			.setIngredient('D', creationDoorIngredient())
 			.setIngredient('E', Material.ENDER_CHEST);
@@ -248,7 +260,7 @@ public final class DoorItemService
 	{
 		return new ShapedRecipe(publicDoorRecipeKey, craftTemplate(DoorCraftProduct.PUBLIC_DOOR))
 			.shape("RDR", " E ", " L ")
-			.setIngredient('R', new RecipeChoice.ExactChoice(wormholeRune))
+			.setIngredient('R', wormholeRuneChoice())
 			.setIngredient('D', creationDoorIngredient())
 			.setIngredient('E', Material.ENDER_CHEST)
 			.setIngredient('L', Material.LODESTONE);
@@ -259,13 +271,17 @@ public final class DoorItemService
 		return new RecipeChoice.MaterialChoice(DoorSkin.doorMaterials());
 	}
 
+	private RecipeChoice.ExactChoice wormholeRuneChoice()
+	{
+		return new RecipeChoice.ExactChoice(List.copyOf(wormholeRunes));
+	}
+
 	public ShapelessRecipe doorSkinRecipe()
 	{
 		ItemStack template = styledItem(
 			PAIR_DOOR_MATERIAL,
-			"Dimensional Door Skin",
-			ChatColor.GOLD,
-			List.of("Combine a dimensional door with a player-operable door."));
+			WormholesMessages.ITEM_DOOR_SKIN,
+			MessageArgs.empty());
 		return new ShapelessRecipe(doorSkinRecipeKey, template)
 			.addIngredient(new RecipeChoice.MaterialChoice(DoorSkin.doorMaterials()))
 			.addIngredient(new RecipeChoice.MaterialChoice(DoorSkin.playerOperableMaterials()));
@@ -394,19 +410,16 @@ public final class DoorItemService
 		{
 			case PAIR_KIT -> styledItem(
 				PAIR_KIT_MATERIAL,
-				"Entangled Door Pair",
-				ChatColor.GOLD,
-				List.of("Contains two automatically linked Wormhole Doors."));
+				WormholesMessages.ITEM_ENTANGLED_PAIR_RECIPE,
+				MessageArgs.empty());
 			case PERSONAL_DOOR -> styledItem(
 				PERSONAL_DOOR_MATERIAL,
-				"Personal Dimension Door",
-				ChatColor.AQUA,
-				List.of("Each traveler enters their own persistent dimension."));
+				WormholesMessages.ITEM_PERSONAL_DOOR_RECIPE,
+				MessageArgs.empty());
 			case PUBLIC_DOOR -> styledItem(
 				PUBLIC_DOOR_MATERIAL,
-				"Public Dimension Door",
-				ChatColor.GOLD,
-				List.of("Every traveler enters this door's shared dimension."));
+				WormholesMessages.ITEM_PUBLIC_DOOR_RECIPE,
+				MessageArgs.empty());
 		};
 		ItemMeta meta = template.getItemMeta();
 		codec.encodeCraftProduct(meta.getPersistentDataContainer(), product);
@@ -416,16 +429,16 @@ public final class DoorItemService
 
 	private static ItemStack styledItem(
 		Material material,
-		String name,
-		ChatColor color,
-		List<String> loreLines)
+		LinesKey key,
+		MessageArgs arguments)
 	{
 		ItemStack item = WormholesPlatform.itemStack(material);
 		ItemMeta meta = item.getItemMeta();
 		// This project relocates Adventure; legacy string metadata keeps the
 		// server-owned ItemMeta ABI unrelocated while still rendering cleanly.
-		meta.setDisplayName(color + name + ChatColor.RESET);
-		meta.setLore(loreLines.stream().map(line -> ChatColor.GRAY + line).toList());
+		List<String> lines = Wormholes.text().legacyLines(key, arguments);
+		meta.setDisplayName(lines.getFirst());
+		meta.setLore(lines.subList(1, lines.size()));
 		meta.setMaxStackSize(1);
 		meta.setEnchantmentGlintOverride(true);
 		item.setItemMeta(meta);

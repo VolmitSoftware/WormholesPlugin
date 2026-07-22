@@ -16,6 +16,7 @@ public final class RtpValidationRequest
 	private final Dimension dimension;
 	private final int netherLogicalCeiling;
 	private final EntityEnvelope entityEnvelope;
+	private final boolean surfaceMode;
 	private final Set<String> configuredHazards;
 	private final List<RegionSnapshot> regionSnapshots;
 
@@ -37,6 +38,7 @@ public final class RtpValidationRequest
 		dimension = Objects.requireNonNull(builder.dimension, "dimension");
 		netherLogicalCeiling = builder.netherLogicalCeiling;
 		entityEnvelope = Objects.requireNonNull(builder.entityEnvelope, "entityEnvelope");
+		surfaceMode = builder.surfaceMode;
 		configuredHazards = normalizeHazards(builder.configuredHazards);
 		regionSnapshots = List.copyOf(builder.regionSnapshots);
 	}
@@ -84,6 +86,11 @@ public final class RtpValidationRequest
 	public EntityEnvelope entityEnvelope()
 	{
 		return entityEnvelope;
+	}
+
+	public boolean surfaceMode()
+	{
+		return surfaceMode;
 	}
 
 	public Set<String> configuredHazards()
@@ -199,7 +206,7 @@ public final class RtpValidationRequest
 		}
 	}
 
-	public record BlockSnapshot(int x, int y, int z, String materialKey, boolean liquid, boolean active,
+	public record BlockSnapshot(int x, int y, int z, String materialKey, boolean liquid, boolean active, boolean treePart,
 			List<CollisionBox> collisionBoxes)
 	{
 		public BlockSnapshot
@@ -215,18 +222,24 @@ public final class RtpValidationRequest
 
 		public static BlockSnapshot air(int x, int y, int z, String materialKey)
 		{
-			return new BlockSnapshot(x, y, z, materialKey, false, false, List.of());
+			return new BlockSnapshot(x, y, z, materialKey, false, false, false, List.of());
 		}
 
 		public static BlockSnapshot solid(int x, int y, int z, String materialKey)
 		{
-			return new BlockSnapshot(x, y, z, materialKey, false, false, List.of(CollisionBox.fullBlock()));
+			return new BlockSnapshot(x, y, z, materialKey, false, false, false, List.of(CollisionBox.fullBlock()));
 		}
 
 		public static BlockSnapshot of(int x, int y, int z, String materialKey, boolean liquid, boolean active,
 				List<CollisionBox> collisionBoxes)
 		{
-			return new BlockSnapshot(x, y, z, materialKey, liquid, active, collisionBoxes);
+			return new BlockSnapshot(x, y, z, materialKey, liquid, active, false, collisionBoxes);
+		}
+
+		public static BlockSnapshot of(int x, int y, int z, String materialKey, boolean liquid, boolean active,
+				boolean treePart, List<CollisionBox> collisionBoxes)
+		{
+			return new BlockSnapshot(x, y, z, materialKey, liquid, active, treePart, collisionBoxes);
 		}
 	}
 
@@ -253,6 +266,7 @@ public final class RtpValidationRequest
 		private Dimension dimension;
 		private int netherLogicalCeiling;
 		private EntityEnvelope entityEnvelope;
+		private boolean surfaceMode;
 		private Set<String> configuredHazards;
 		private List<RegionSnapshot> regionSnapshots;
 
@@ -266,6 +280,7 @@ public final class RtpValidationRequest
 			dimension = Dimension.OVERWORLD;
 			netherLogicalCeiling = Integer.MAX_VALUE;
 			entityEnvelope = EntityEnvelope.baseline();
+			surfaceMode = false;
 			configuredHazards = Set.of();
 			regionSnapshots = List.of();
 		}
@@ -304,6 +319,12 @@ public final class RtpValidationRequest
 		public Builder entityEnvelope(EntityEnvelope envelope)
 		{
 			entityEnvelope = Objects.requireNonNull(envelope, "envelope");
+			return this;
+		}
+
+		public Builder surfaceMode(boolean enabled)
+		{
+			surfaceMode = enabled;
 			return this;
 		}
 

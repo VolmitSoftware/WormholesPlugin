@@ -63,6 +63,21 @@ public final class EffectManagerPlanTest
 	}
 
 	@Test
+	public void openingImpactSoundsStayBelowFullVolume()
+	{
+		EffectManager.OpeningSoundPlan plan = EffectManager.openingSoundPlan();
+
+		assertEquals(0.65f, plan.frameVolume());
+		assertEquals(0.75f, plan.portalImpactVolume());
+		assertEquals(0.65f, plan.beaconImpactVolume());
+		assertEquals(0.25f, plan.sonicBoomVolume());
+		assertTrue(plan.frameVolume() < 1.0f);
+		assertTrue(plan.portalImpactVolume() < 1.0f);
+		assertTrue(plan.beaconImpactVolume() < 1.0f);
+		assertTrue(plan.sonicBoomVolume() < 1.0f);
+	}
+
+	@Test
 	public void crackRadiusStaysOnRectangularPaneEllipse()
 	{
 		assertEquals(1.0D, EffectManager.ellipseRadius(1.0D, 5.0D, 0.0D), 0.000001D);
