@@ -39,6 +39,10 @@ class PortalMenuPresetTest
 					quality.getUnsubscribeGraceSeconds()));
 		}
 		assertEquals(NetworkViewQuality.CUSTOM, NetworkViewQuality.from(73, 41, 7, 23));
+		assertEquals(NetworkViewQuality.PERFORMANCE, NetworkViewQuality.STANDARD.next());
+		assertEquals(NetworkViewQuality.BALANCED, NetworkViewQuality.PERFORMANCE.next());
+		assertEquals(NetworkViewQuality.CINEMATIC, NetworkViewQuality.BALANCED.next());
+		assertEquals(NetworkViewQuality.CUSTOM, NetworkViewQuality.CINEMATIC.next());
 		assertEquals(NetworkViewQuality.STANDARD, NetworkViewQuality.CUSTOM.next());
 	}
 }

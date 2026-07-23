@@ -93,7 +93,6 @@ public final class RtpPortalEditor
 				case EFFECTS -> populateEffects(requiredWindow, requiredViewerId, snapshot);
 				case NUMERIC -> populateNumeric(requiredWindow, requiredViewerId, snapshot);
 				case MANUAL_CONFIRM -> populateManualConfirmation(requiredWindow, requiredViewerId, snapshot);
-				case EXIT_CONFIRM -> populateExitConfirmation(requiredWindow, requiredViewerId, snapshot);
 			}
 		});
 	}
@@ -101,7 +100,6 @@ public final class RtpPortalEditor
 	private void populateOverview(Window window, UUID viewerId, EditorSnapshot snapshot)
 	{
 		window.setElement(0, 0, statusElement(snapshot));
-		window.setElement(0, 1, draftStateElement(snapshot));
 		window.setElement(-3, 2, pageElement(window, viewerId, "rtp-open-destination",
 				WormholesMessages.RTP_OVERVIEW_DESTINATION, Material.RECOVERY_COMPASS, Page.DESTINATION));
 		window.setElement(-1, 2, pageElement(window, viewerId, "rtp-open-landing",
@@ -110,21 +108,10 @@ public final class RtpPortalEditor
 				WormholesMessages.RTP_OVERVIEW_ROUTING, Material.CLOCK, Page.ROUTING));
 		window.setElement(3, 2, pageElement(window, viewerId, "rtp-open-effects",
 				WormholesMessages.RTP_OVERVIEW_EFFECTS, Material.GLOWSTONE_DUST, Page.EFFECTS));
-		if(snapshot.dirty())
-		{
-			window.setElement(-1, 4, actionElement("rtp-apply", WormholesMessages.RTP_APPLY,
-					MessageArgs.empty(), Material.LIME_DYE,
-					() -> host.apply(viewerId, snapshot.configurationRevision())));
-			window.setElement(1, 4, actionElement("rtp-discard", WormholesMessages.RTP_DISCARD,
-					MessageArgs.empty(), Material.RED_DYE,
-					() -> host.discard(viewerId)));
-		}
-		else
-		{
-			window.setElement(0, 4, infoElement("rtp-saved", WormholesMessages.RTP_ALL_APPLIED,
-					MessageArgs.empty(), Material.LIME_STAINED_GLASS_PANE, true));
-		}
-		window.setElement(0, 5, portalBackElement(window, viewerId, snapshot));
+		window.setElement(0, 4, actionElement("rtp-reset-defaults", WormholesMessages.RTP_RESET_DEFAULTS,
+				MessageArgs.empty(), Material.TNT_MINECART,
+				() -> host.reset(viewerId, snapshot.configurationRevision())));
+		window.setElement(0, 5, portalBackElement(window, viewerId));
 	}
 
 	private void populateDestination(Window window, UUID viewerId, EditorSnapshot snapshot)
@@ -273,19 +260,10 @@ public final class RtpPortalEditor
 		ManualAction action = settings.allocationMode() == RtpAllocationMode.SHARED ? ManualAction.REROLL : ManualAction.REBUILD_POOL;
 		LinesKey actionKey = action == ManualAction.REROLL ? WormholesMessages.RTP_MANUAL_REROLL : WormholesMessages.RTP_REBUILD_POOL;
 		String actionId = action == ManualAction.REROLL ? "rtp-manual-reroll" : "rtp-rebuild-pool";
-		if(snapshot.dirty())
-		{
-			window.setElement(0, 4, infoElement(actionId, actionKey,
-					WormholesLocalization.args(MessageArgument.untrusted("description", Wormholes.text().plain(WormholesMessages.RTP_ACTION_APPLY_FIRST))),
-					Material.GRAY_DYE, false));
-		}
-		else
-		{
-			window.setElement(0, 4, actionElement(actionId, actionKey,
-					WormholesLocalization.args(MessageArgument.untrusted("description", Wormholes.text().plain(WormholesMessages.RTP_ACTION_CONFIRM))),
-					Material.FIRE_CHARGE,
-					() -> openManualConfirmation(window, viewerId, action)));
-		}
+		window.setElement(0, 4, actionElement(actionId, actionKey,
+				WormholesLocalization.args(MessageArgument.untrusted("description", Wormholes.text().plain(WormholesMessages.RTP_ACTION_CONFIRM))),
+				Material.FIRE_CHARGE,
+				() -> openManualConfirmation(window, viewerId, action)));
 		window.setElement(0, 5, submenuBackElement(window, viewerId));
 	}
 
@@ -356,19 +334,6 @@ public final class RtpPortalEditor
 				MessageArgs.empty(), Material.RED_DYE, () -> navigate(window, viewerId, Page.ROUTING)));
 	}
 
-	private void populateExitConfirmation(Window window, UUID viewerId, EditorSnapshot snapshot)
-	{
-		window.setElement(0, 0, headerElement(WormholesMessages.RTP_UNAPPLIED, Material.WRITABLE_BOOK));
-		window.setElement(-2, 2, actionElement("rtp-exit-continue", WormholesMessages.RTP_KEEP_EDITING,
-				MessageArgs.empty(), Material.LIME_DYE, () -> navigate(window, viewerId, Page.OVERVIEW)));
-		window.setElement(2, 2, actionElement("rtp-exit-discard", WormholesMessages.RTP_DISCARD_EXIT,
-				MessageArgs.empty(), Material.RED_DYE, () ->
-				{
-					window.close();
-					host.back(viewerId);
-				}));
-	}
-
 	private Element statusElement(EditorSnapshot snapshot)
 	{
 		SettingsSnapshot settings = snapshot.settings();
@@ -415,15 +380,6 @@ public final class RtpPortalEditor
 			element.addLore(Wormholes.text().legacy(WormholesMessages.RTP_STATUS_ACCESS_FAILED));
 		}
 		return element;
-	}
-
-	private Element draftStateElement(EditorSnapshot snapshot)
-	{
-		return infoElement("rtp-draft-state",
-				snapshot.dirty() ? WormholesMessages.RTP_DRAFT_DIRTY : WormholesMessages.RTP_DRAFT_CLEAN,
-				MessageArgs.empty(),
-				snapshot.dirty() ? Material.WRITABLE_BOOK : Material.BOOK,
-				!snapshot.dirty());
 	}
 
 	private Element headerElement(LinesKey key, Material material)
@@ -511,15 +467,10 @@ public final class RtpPortalEditor
 				() -> navigate(window, viewerId, numericParent(numericField)));
 	}
 
-	private Element portalBackElement(Window window, UUID viewerId, EditorSnapshot snapshot)
+	private Element portalBackElement(Window window, UUID viewerId)
 	{
 		return actionElement("rtp-back", WormholesMessages.RTP_BACK_PORTAL, MessageArgs.empty(), Material.ARROW, () ->
 		{
-			if(snapshot.dirty())
-			{
-				navigate(window, viewerId, Page.EXIT_CONFIRM);
-				return;
-			}
 			window.close();
 			host.back(viewerId);
 		});
@@ -805,9 +756,7 @@ public final class RtpPortalEditor
 
 		void mutate(UUID viewerId, long expectedRevision, Mutation mutation);
 
-		void apply(UUID viewerId, long expectedRevision);
-
-		void discard(UUID viewerId);
+		void reset(UUID viewerId, long expectedRevision);
 
 		void manual(UUID viewerId, long expectedRevision, ManualAction action);
 
@@ -853,8 +802,7 @@ public final class RtpPortalEditor
 		ROUTING,
 		EFFECTS,
 		NUMERIC,
-		MANUAL_CONFIRM,
-		EXIT_CONFIRM
+		MANUAL_CONFIRM
 	}
 
 	private enum NumericField

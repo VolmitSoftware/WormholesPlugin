@@ -276,11 +276,23 @@ public final class BukkitRtpEnvironment implements BukkitRtpRuntime.Environment
 				structure.getRevision());
 		RtpProjectionView.Target target = new RtpProjectionView.Target(
 				destination.worldKey(),
-				point(destination.blockX() + 0.5D, destination.feetY(), destination.blockZ() + 0.5D),
+				point(
+						destination.blockX() + 0.5D,
+						destination.feetY() + previewAnchorLift(center, area),
+						destination.blockZ() + 0.5D),
 				vector(targetFrame.getRight()),
 				vector(targetFrame.getUp()),
 				vector(targetFrame.getNormal().reverse()));
 		return new RtpProjectionView.ReadyData(routeId(portalId, destination), routeRevision, source, target);
+	}
+
+	static double previewAnchorLift(Location center, AxisAlignedBB area)
+	{
+		if(center == null || area == null)
+		{
+			return 1.0D;
+		}
+		return Math.max(1.0D, center.getY() - area.getYa());
 	}
 
 	private RtpProjectionView.Point3 point(double x, double y, double z)

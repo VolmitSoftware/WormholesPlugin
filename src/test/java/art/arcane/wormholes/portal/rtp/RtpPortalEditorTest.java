@@ -43,7 +43,7 @@ public final class RtpPortalEditorTest
 	@Test
 	public void overviewRoutesToOneClickSubmenusWithoutReconfiguringTheWindow()
 	{
-		FakeHost host = new FakeHost(snapshot(settings(), status(), false));
+		FakeHost host = new FakeHost(snapshot(settings(), status()));
 		Rendered rendered = render(host);
 
 		assertEquals("RTP Editor", rendered.window().title);
@@ -65,7 +65,7 @@ public final class RtpPortalEditorTest
 	@Test
 	public void selectorsUseOnlyNormalLeftClicksAndRouteTypedMutations()
 	{
-		FakeHost host = new FakeHost(snapshot(settings(), status(), false));
+		FakeHost host = new FakeHost(snapshot(settings(), status()));
 		Rendered rendered = render(host);
 		click(rendered.window(), "rtp-open-effects", ElementEvent.LEFT);
 
@@ -95,7 +95,7 @@ public final class RtpPortalEditorTest
 	@Test
 	public void numericSubmenuUsesSeparateDecreaseAndIncreaseButtons()
 	{
-		FakeHost host = new FakeHost(snapshot(settings(), status(), false));
+		FakeHost host = new FakeHost(snapshot(settings(), status()));
 		Rendered rendered = render(host);
 		click(rendered.window(), "rtp-open-destination", ElementEvent.LEFT);
 		click(rendered.window(), "rtp-minimum-radius", ElementEvent.LEFT);
@@ -116,7 +116,7 @@ public final class RtpPortalEditorTest
 	public void perPlayerRoutingExposesRotationTimeAndNormalClickConfirmation()
 	{
 		SettingsSnapshot privateSettings = copy(settings(), RtpAllocationMode.PER_PLAYER, RtpRotationMode.ON_TRAVERSAL, true, true);
-		FakeHost host = new FakeHost(snapshot(privateSettings, status(), false));
+		FakeHost host = new FakeHost(snapshot(privateSettings, status()));
 		Rendered rendered = render(host);
 		click(rendered.window(), "rtp-open-routing", ElementEvent.LEFT);
 
@@ -135,22 +135,19 @@ public final class RtpPortalEditorTest
 	}
 
 	@Test
-	public void dirtyDraftHasExplicitApplyDiscardAndExitConfirmation()
+	public void overviewResetsToDefaultsAndBackClosesImmediately()
 	{
-		FakeHost host = new FakeHost(snapshot(settings(), status(), true));
+		FakeHost host = new FakeHost(snapshot(settings(), status()));
 		Rendered rendered = render(host);
 
-		assertTrue(rendered.window().hasId("rtp-apply"));
-		assertTrue(rendered.window().hasId("rtp-discard"));
-		click(rendered.window(), "rtp-apply", ElementEvent.LEFT);
-		assertEquals(41L, host.applyRevision);
-		click(rendered.window(), "rtp-discard", ElementEvent.LEFT);
-		assertEquals(VIEWER_ID, host.discardViewerId);
+		assertFalse(rendered.window().hasId("rtp-apply"));
+		assertFalse(rendered.window().hasId("rtp-discard"));
+		assertTrue(rendered.window().hasId("rtp-reset-defaults"));
+		click(rendered.window(), "rtp-reset-defaults", ElementEvent.LEFT);
+		assertEquals(41L, host.resetRevision);
+		assertEquals(VIEWER_ID, host.resetViewerId);
 
 		click(rendered.window(), "rtp-back", ElementEvent.LEFT);
-		assertFalse(rendered.window().closed);
-		assertTrue(rendered.window().hasId("rtp-exit-discard"));
-		click(rendered.window(), "rtp-exit-discard", ElementEvent.LEFT);
 		assertTrue(rendered.window().closed);
 		assertEquals(VIEWER_ID, host.backViewerId);
 	}
@@ -160,7 +157,7 @@ public final class RtpPortalEditorTest
 	{
 		StatusSnapshot backoff = new StatusSnapshot(RtpPortalEditorModel.StatusState.BACKOFF, true, true,
 				false, false, 0L, 45_000L, 0, 0, 0, 0);
-		FakeHost host = new FakeHost(snapshot(settings(), backoff, false));
+		FakeHost host = new FakeHost(snapshot(settings(), backoff));
 		Rendered rendered = render(host);
 		String lore = String.join("\n", rendered.window().element("rtp-status").getLore());
 
@@ -247,9 +244,9 @@ public final class RtpPortalEditorTest
 		element.call(event, element);
 	}
 
-	private static EditorSnapshot snapshot(SettingsSnapshot settings, StatusSnapshot status, boolean dirty)
+	private static EditorSnapshot snapshot(SettingsSnapshot settings, StatusSnapshot status)
 	{
-		return new EditorSnapshot(41L, "RTP Editor", settings, status, worlds(), 18.75D, -42.5D, dirty);
+		return new EditorSnapshot(41L, "RTP Editor", settings, status, worlds(), 18.75D, -42.5D);
 	}
 
 	private static SettingsSnapshot settings()
@@ -317,8 +314,8 @@ public final class RtpPortalEditorTest
 		private final List<CapturedMutation> mutations;
 		private ManualAction manualAction;
 		private long manualRevision;
-		private long applyRevision;
-		private UUID discardViewerId;
+		private long resetRevision;
+		private UUID resetViewerId;
 		private UUID backViewerId;
 
 		private FakeHost(EditorSnapshot snapshot)
@@ -347,16 +344,10 @@ public final class RtpPortalEditorTest
 		}
 
 		@Override
-		public void apply(UUID viewerId, long expectedRevision)
+		public void reset(UUID viewerId, long expectedRevision)
 		{
-			assertEquals(VIEWER_ID, viewerId);
-			applyRevision = expectedRevision;
-		}
-
-		@Override
-		public void discard(UUID viewerId)
-		{
-			discardViewerId = viewerId;
+			resetViewerId = viewerId;
+			resetRevision = expectedRevision;
 		}
 
 		@Override

@@ -496,14 +496,10 @@ public final class WormholesMessages {
     public static final TextKey PORTAL_RTP_EDITOR_TITLE = text("portal.rtp.editor_title", "RTP: {portal}");
     public static final TextKey PORTAL_DIMENSIONAL_LINK_MANAGED = text("portal.notice.dimensional_link_managed", "This dimensional portal keeps its generated link.");
     public static final TextKey PORTAL_NOT_RTP = text("portal.notice.not_rtp", "This portal is no longer in random teleport mode.");
-    public static final TextKey PORTAL_RTP_DRAFT_DISCARDED = text("portal.rtp.notice.draft_discarded", "Draft changes discarded.");
-    public static final TextKey PORTAL_RTP_DRAFT_REFRESHED = text("portal.rtp.notice.draft_refreshed", "Settings changed elsewhere; the draft was refreshed.");
-    public static final TextKey PORTAL_RTP_CHANGE_STAGED = text("portal.rtp.notice.change_staged", "Change staged. Apply the batch when ready.");
     public static final TextKey PORTAL_RTP_SETTING_REJECTED = text("portal.rtp.notice.setting_rejected", "Could not apply that setting: {reason}");
     public static final TextKey PORTAL_REGION_UNAVAILABLE = text("portal.notice.region_unavailable", "The portal region is unavailable; try again.");
-    public static final TextKey PORTAL_RTP_STALE_APPLY = text("portal.rtp.notice.stale_apply", "Settings changed elsewhere; nothing was overwritten.");
-    public static final TextKey PORTAL_RTP_NO_CHANGES = text("portal.rtp.notice.no_changes", "There are no draft changes to apply.");
     public static final TextKey PORTAL_RTP_APPLIED = text("portal.rtp.notice.applied", "Random destination settings applied.");
+    public static final TextKey PORTAL_RTP_RESET_DEFAULTS = text("portal.rtp.notice.reset_defaults", "Random teleport settings reset to defaults.");
     public static final TextKey PORTAL_RTP_EDITOR_REFRESHED = text("portal.rtp.notice.editor_refreshed", "Settings changed; the editor was refreshed.");
     public static final TextKey PORTAL_RTP_RUNTIME_UNAVAILABLE = text("portal.rtp.notice.runtime_unavailable", "Random teleport runtime is unavailable.");
     public static final TextKey PORTAL_RTP_REROLL_FAILED = text("portal.rtp.notice.reroll_failed", "Manual reroll failed; see the server log.");
@@ -606,11 +602,7 @@ public final class WormholesMessages {
     public static final LinesKey RTP_OVERVIEW_LANDING = lines("rtp.overview.landing", "<yellow><bold>Landing Rules</bold>", "<gray>Surface and height behavior.", "<yellow>Left click");
     public static final LinesKey RTP_OVERVIEW_ROUTING = lines("rtp.overview.routing", "<yellow><bold>Rotation & Pool</bold>", "<gray>Sharing, rotation, and leases.", "<yellow>Left click");
     public static final LinesKey RTP_OVERVIEW_EFFECTS = lines("rtp.overview.effects", "<yellow><bold>Effects</bold>", "<gray>Projection rim and portal sound.", "<yellow>Left click");
-    public static final LinesKey RTP_APPLY = lines("rtp.overview.apply", "<yellow><bold>Apply Changes</bold>", "<gray>Save this batch and rebuild only if routing changed.", "<yellow>Left click");
-    public static final LinesKey RTP_DISCARD = lines("rtp.overview.discard", "<yellow><bold>Discard Draft</bold>", "<gray>Restore the currently applied settings.", "<yellow>Left click");
-    public static final LinesKey RTP_ALL_APPLIED = lines("rtp.overview.all_applied", "<aqua><bold>All Changes Applied</bold>", "<gray>Choose a category to edit this portal.");
-    public static final LinesKey RTP_DRAFT_DIRTY = lines("rtp.overview.draft_dirty", "<aqua><bold>Draft Has Unapplied Changes</bold>", "<gray>Review categories, then apply the whole batch once.");
-    public static final LinesKey RTP_DRAFT_CLEAN = lines("rtp.overview.draft_clean", "<aqua><bold>Editing Applied Settings</bold>", "<gray>Selections are staged until you choose Apply Changes.");
+    public static final LinesKey RTP_RESET_DEFAULTS = lines("rtp.overview.reset_defaults", "<yellow><bold>Reset To Defaults</bold>", "<gray>Immediately restore this portal's random teleport settings to their defaults.", "<yellow>Left click");
     public static final LinesKey RTP_BACK_PORTAL = lines("rtp.navigation.back_portal", "<yellow><bold>Back to Portal</bold>", "<gray>Return to the portal menu.", "<yellow>Left click");
     public static final LinesKey RTP_BACK_OVERVIEW = lines("rtp.navigation.overview", "<yellow><bold>Overview</bold>", "<gray>Return to the RTP overview.", "<yellow>Left click");
     public static final LinesKey RTP_BACK_CATEGORY = lines("rtp.navigation.back_category", "<yellow><bold>Back</bold>", "<gray>Return to the previous category.", "<yellow>Left click");
@@ -644,7 +636,6 @@ public final class WormholesMessages {
     public static final LinesKey RTP_TRIP_AVAILABLE = lines("rtp.routing.trip_available", "<aqua><bold>After Every Trip</bold>", "<gray>Promote a prepared replacement after use.", "<yellow>Left click to select");
     public static final LinesKey RTP_MANUAL_REROLL = lines("rtp.routing.manual_reroll", "<yellow><bold>Manual Reroll</bold>", "<gray>{description}", "<yellow>Left click");
     public static final LinesKey RTP_REBUILD_POOL = lines("rtp.routing.rebuild_pool", "<yellow><bold>Rebuild Pool</bold>", "<gray>{description}", "<yellow>Left click");
-    public static final TextKey RTP_ACTION_APPLY_FIRST = text("rtp.routing.action_apply_first", "Apply or discard the draft before running this action.");
     public static final TextKey RTP_ACTION_CONFIRM = text("rtp.routing.action_confirm", "Open a separate confirmation screen.");
     public static final LinesKey RTP_EFFECTS_HEADER = lines("rtp.effects.header", "<aqua><bold>Effects</bold>", "<gray>Presentation changes do not regenerate destinations.");
     public static final LinesKey RTP_RIM_ON_SELECTED = lines("rtp.effects.rim_on_selected", "<green><bold>Readiness Rim On</bold>", "<gray>Show private readiness around the portal rim.", "<green>Selected");
@@ -663,9 +654,6 @@ public final class WormholesMessages {
     public static final LinesKey RTP_CONFIRM_REBUILD = lines("rtp.confirm.rebuild", "<aqua><bold>Rebuild Private Pool?</bold>", "<gray>Existing reservations stay intact while free candidates rebuild.");
     public static final LinesKey RTP_CONFIRM = lines("rtp.confirm.confirm", "<yellow><bold>Confirm</bold>", "<gray>Run the action now.", "<yellow>Left click");
     public static final LinesKey RTP_CANCEL = lines("rtp.confirm.cancel", "<yellow><bold>Cancel</bold>", "<gray>Return without changing runtime state.", "<yellow>Left click");
-    public static final LinesKey RTP_UNAPPLIED = lines("rtp.exit.unapplied", "<aqua><bold>Unapplied Changes</bold>", "<gray>Your draft has not been saved.");
-    public static final LinesKey RTP_KEEP_EDITING = lines("rtp.exit.keep_editing", "<yellow><bold>Keep Editing</bold>", "<gray>Return to the overview.", "<yellow>Left click");
-    public static final LinesKey RTP_DISCARD_EXIT = lines("rtp.exit.discard", "<yellow><bold>Discard & Exit</bold>", "<gray>Leave the portal menu without applying the draft.", "<yellow>Left click");
     public static final TextKey RTP_STATUS_READY = text("rtp.status.ready", "Ready");
     public static final TextKey RTP_STATUS_WARMING = text("rtp.status.warming", "Warming");
     public static final TextKey RTP_STATUS_REROLLING = text("rtp.status.rerolling", "Rerolling");

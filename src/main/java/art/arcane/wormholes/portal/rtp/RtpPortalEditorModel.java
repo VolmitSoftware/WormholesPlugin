@@ -113,8 +113,7 @@ public final class RtpPortalEditorModel
 			StatusSnapshot status,
 			List<WorldOption> loadedWorlds,
 			double sourceCenterX,
-			double sourceCenterZ,
-			boolean dirty)
+			double sourceCenterZ)
 	{
 		public EditorSnapshot
 		{

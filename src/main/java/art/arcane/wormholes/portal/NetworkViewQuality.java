@@ -63,7 +63,8 @@ public enum NetworkViewQuality
 			case STANDARD -> PERFORMANCE;
 			case PERFORMANCE -> BALANCED;
 			case BALANCED -> CINEMATIC;
-			case CINEMATIC, CUSTOM -> STANDARD;
+			case CINEMATIC -> CUSTOM;
+			case CUSTOM -> STANDARD;
 		};
 	}
 

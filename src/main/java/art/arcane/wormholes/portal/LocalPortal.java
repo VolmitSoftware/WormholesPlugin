@@ -88,6 +88,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 {
 	private static final long REENTRY_LATCH_TTL_MILLIS = 60_000L;
 	private static final double REENTRY_EXIT_MARGIN = 2.0D;
+	private static final long SHORT_TITLE_FRESH_LOOK_MILLIS = 400L;
+	private static final long SHORT_TITLE_FADE_IN_MILLIS = 250L;
+	private static final long SHORT_TITLE_STAY_MILLIS = 350L;
+	private static final long SHORT_TITLE_FADE_OUT_MILLIS = 250L;
 	private static final int DEFAULT_NETWORK_VIEW_DEPTH = 64;
 	private static final int DEFAULT_NETWORK_VIEW_LATERAL_PAD = 48;
 	private static final int DEFAULT_NETWORK_VIEW_HEARTBEAT_TICKS = 60;
@@ -126,12 +130,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private boolean outgoingTraversalsEnabled;
 	private boolean incomingTraversalsEnabled;
 	private int networkViewDepth;
+	private volatile boolean networkViewCustomSelected;
 	private int networkViewLateralPad;
 	private int networkViewHeartbeatTicks;
 	private int networkViewEntityIntervalTicks;
 	private int networkViewUnsubscribeGraceSeconds;
 	private String networkViewFallbackBlock;
 	private boolean settingsSyncEnabled;
+	private final ConcurrentHashMap<UUID, ShortTitleHold> shortTitleHolds = new ConcurrentHashMap<UUID, ShortTitleHold>();
 	private final Map<UUID, UIWindow> openMenus = new ConcurrentHashMap<UUID, UIWindow>();
 	private final Map<UUID, RtpEditorSession> rtpEditorSessions = new ConcurrentHashMap<UUID, RtpEditorSession>();
 	private final AtomicBoolean destructionStarted = new AtomicBoolean();
@@ -2113,8 +2119,6 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		private final UUID viewerId;
 		private final UIWindow window;
 		private final RtpPortalEditor editor;
-		private RtpSettings baseSettings;
-		private RtpSettings draftSettings;
 		private long baseRevision;
 
 		private RtpEditorSession(Player viewer)
@@ -2124,8 +2128,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			window.setResolution(WindowResolution.W9_H6);
 			window.onClosed(closed -> rtpEditorSessions.remove(viewerId, this));
 			editor = new RtpPortalEditor(this);
-			baseSettings = Objects.requireNonNull(rtpSettings, "RTP settings");
-			draftSettings = baseSettings;
+			Objects.requireNonNull(rtpSettings, "RTP settings");
 			baseRevision = rtpConfigurationRevision.get();
 		}
 
@@ -2151,13 +2154,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			{
 				throw new IllegalStateException("RTP editor session is stale");
 			}
-			if(rtpConfigurationRevision.get() != baseRevision && !draftDirty())
-			{
-				baseSettings = rtpSettings;
-				draftSettings = baseSettings;
-				baseRevision = rtpConfigurationRevision.get();
-			}
-			RtpSettings settings = draftSettings;
+			baseRevision = rtpConfigurationRevision.get();
+			RtpSettings settings = rtpSettings;
 			ArrayList<RtpPortalEditorModel.WorldOption> worlds = new ArrayList<RtpPortalEditorModel.WorldOption>();
 			for(World world : Bukkit.getWorlds())
 			{
@@ -2175,8 +2173,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					status,
 					worlds,
 					center.getX(),
-					center.getZ(),
-					draftDirty());
+					center.getZ());
 		}
 
 		@Override
@@ -2191,31 +2188,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 
 		@Override
-		public void apply(UUID requestedViewerId, long expectedRevision)
+		public void reset(UUID requestedViewerId, long expectedRevision)
 		{
 			Player viewer = Bukkit.getPlayer(requestedViewerId);
 			if(viewer == null || !viewerId.equals(requestedViewerId))
 			{
 				return;
 			}
-			FoliaScheduler.runEntity(Wormholes.instance, viewer, () -> applyForViewer(viewer, expectedRevision));
-		}
-
-		@Override
-		public void discard(UUID requestedViewerId)
-		{
-			Player viewer = Bukkit.getPlayer(requestedViewerId);
-			if(viewer == null || !viewerId.equals(requestedViewerId))
-			{
-				return;
-			}
-			FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
-			{
-				baseSettings = rtpSettings;
-				draftSettings = baseSettings;
-				baseRevision = rtpConfigurationRevision.get();
-				refresh(WormholesMessages.PORTAL_RTP_DRAFT_DISCARDED);
-			});
+			FoliaScheduler.runEntity(Wormholes.instance, viewer, () -> resetForViewer(viewer, expectedRevision));
 		}
 
 		@Override
@@ -2260,24 +2240,23 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				}
 				if(baseRevision != expectedRevision || rtpConfigurationRevision.get() != baseRevision)
 				{
-					baseSettings = rtpSettings;
-					draftSettings = baseSettings;
 					baseRevision = rtpConfigurationRevision.get();
-					refresh(WormholesMessages.PORTAL_RTP_DRAFT_REFRESHED);
+					refresh(WormholesMessages.PORTAL_RTP_EDITOR_REFRESHED);
 					return;
 				}
 				try
 				{
 					World sourceWorld = Objects.requireNonNull(structure.getWorld(), "portal source world");
-					draftSettings = RtpPortalEditorModel.applyMutation(
-							draftSettings,
+					applyRtpSettings(RtpPortalEditorModel.applyMutation(
+							rtpSettings,
 							mutation,
 							sourceWorld,
-							LocalPortal.this::resolveRtpWorld);
-					Wormholes.v("QA_EVT {\"event\":\"rtp_editor_stage\",\"status\":\"pass\",\"details\":\""
+							LocalPortal.this::resolveRtpWorld));
+					baseRevision = rtpConfigurationRevision.get();
+					Wormholes.v("QA_EVT {\"event\":\"rtp_editor_apply\",\"status\":\"pass\",\"details\":\""
 							+ mutation.getClass().getSimpleName() + "\",\"context\":{\"portal\":\"" + getId()
 							+ "\",\"revision\":" + baseRevision + "}}");
-					refresh(WormholesMessages.PORTAL_RTP_CHANGE_STAGED);
+					refresh(WormholesMessages.PORTAL_RTP_APPLIED);
 				}
 				catch(IllegalArgumentException | IllegalStateException exception)
 				{
@@ -2290,14 +2269,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			}
 		}
 
-		private void applyForViewer(Player viewer, long expectedRevision)
+		private void resetForViewer(Player viewer, long expectedRevision)
 		{
 			if(!ensureCanManagePortal(viewer))
 			{
 				close();
 				return;
 			}
-			Runnable applyTask = () ->
+			Runnable resetTask = () ->
 			{
 				if(type != PortalType.RTP || rtpSettings == null)
 				{
@@ -2306,34 +2285,26 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				}
 				if(baseRevision != expectedRevision || rtpConfigurationRevision.get() != baseRevision)
 				{
-					baseSettings = rtpSettings;
-					draftSettings = baseSettings;
 					baseRevision = rtpConfigurationRevision.get();
-					refresh(WormholesMessages.PORTAL_RTP_STALE_APPLY);
+					refresh(WormholesMessages.PORTAL_RTP_EDITOR_REFRESHED);
 					return;
 				}
-				if(!draftDirty())
+				RtpSettings defaults = defaultRtpSettings();
+				if(defaults == null)
 				{
-					refresh(WormholesMessages.PORTAL_RTP_NO_CHANGES);
+					refresh(WormholesMessages.PORTAL_REGION_UNAVAILABLE);
 					return;
 				}
-				applyRtpSettings(draftSettings);
-				baseSettings = rtpSettings;
-				draftSettings = baseSettings;
+				applyRtpSettings(defaults);
 				baseRevision = rtpConfigurationRevision.get();
-				Wormholes.v("QA_EVT {\"event\":\"rtp_editor_apply\",\"status\":\"pass\",\"details\":\"batch\",\"context\":{\"portal\":\""
+				Wormholes.v("QA_EVT {\"event\":\"rtp_editor_apply\",\"status\":\"pass\",\"details\":\"reset_defaults\",\"context\":{\"portal\":\""
 						+ getId() + "\",\"revision\":" + baseRevision + "}}");
-				refresh(WormholesMessages.PORTAL_RTP_APPLIED);
+				refresh(WormholesMessages.PORTAL_RTP_RESET_DEFAULTS);
 			};
-			if(!runRtpSourceTask(applyTask))
+			if(!runRtpSourceTask(resetTask))
 			{
 				refresh(WormholesMessages.PORTAL_REGION_UNAVAILABLE);
 			}
-		}
-
-		private boolean draftDirty()
-		{
-			return !draftSettings.equals(baseSettings);
 		}
 
 		private void manualForViewer(Player viewer, long expectedRevision, RtpPortalEditorModel.ManualAction action)
@@ -2344,7 +2315,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				return;
 			}
 			if(type != PortalType.RTP || rtpSettings == null || baseRevision != expectedRevision
-					|| rtpConfigurationRevision.get() != baseRevision || draftDirty())
+					|| rtpConfigurationRevision.get() != baseRevision)
 			{
 				refresh(WormholesMessages.PORTAL_RTP_EDITOR_REFRESHED);
 				return;
@@ -2433,7 +2404,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		UIWindow window = new UIWindow(Wormholes.instance, p);
 		window.setTitle(getRouter(true));
 		window.setResolution(WindowResolution.W9_H6);
-		window.setViewportHeight(3);
+		boolean custom = getNetworkViewQuality() == NetworkViewQuality.CUSTOM;
+		window.setViewportHeight(custom ? 5 : 3);
 		window.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
 
 		window.setElement(0, 0, settingsPlacardElement());
@@ -2443,7 +2415,28 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		window.setElement(1, 1, networkViewQualityElement(window, p));
 		window.setElement(3, 1, settingsSyncElement(window, p));
 
-		window.setElement(0, 2, backToPortalMenuElement(window, p));
+		if(custom)
+		{
+			window.setElement(-3, 2, networkViewNumberElement(window, p, "network-view-depth",
+					WormholesMessages.PORTAL_NETWORK_LABEL_CAPTURE_RADIUS,
+					WormholesMessages.PORTAL_NETWORK_DESCRIPTION_CAPTURE_RADIUS,
+					Material.SPYGLASS, this::getNetworkViewDepth, this::setNetworkViewDepth, 4, 16));
+			window.setElement(-1, 2, networkViewNumberElement(window, p, "network-view-heartbeat",
+					WormholesMessages.PORTAL_NETWORK_LABEL_FULL_REFRESH,
+					WormholesMessages.PORTAL_NETWORK_DESCRIPTION_FULL_REFRESH,
+					Material.CLOCK, this::getNetworkViewHeartbeatTicks, this::setNetworkViewHeartbeatTicks, 10, 60));
+			window.setElement(1, 2, networkViewNumberElement(window, p, "network-view-entities",
+					WormholesMessages.PORTAL_NETWORK_LABEL_ENTITY_UPDATE,
+					WormholesMessages.PORTAL_NETWORK_DESCRIPTION_ENTITY_UPDATE,
+					Material.ENDER_EYE, this::getNetworkViewEntityIntervalTicks, this::setNetworkViewEntityIntervalTicks, 2, 20));
+			window.setElement(3, 2, networkViewNumberElement(window, p, "network-view-grace",
+					WormholesMessages.PORTAL_NETWORK_LABEL_VIEW_GRACE,
+					WormholesMessages.PORTAL_NETWORK_DESCRIPTION_VIEW_GRACE,
+					Material.REDSTONE, this::getNetworkViewUnsubscribeGraceSeconds, this::setNetworkViewUnsubscribeGraceSeconds, 5, 30));
+			window.setElement(0, 3, networkViewFallbackElement(p, window));
+		}
+
+		window.setElement(0, custom ? 4 : 2, backToPortalMenuElement(window, p));
 
 		return window;
 	}
@@ -2596,12 +2589,22 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		UIElement element = new UIElement("network-view-quality");
 		element.onLeftClick((e) ->
 		{
-			NetworkViewQuality quality = getNetworkViewQuality().next();
+			NetworkViewQuality previous = getNetworkViewQuality();
+			NetworkViewQuality quality = previous.next();
 			setNetworkViewQuality(quality);
-			applyNetworkViewQualityElement(element);
-			window.updateInventory();
 			notifySetting(viewer, WormholesMessages.PORTAL_STREAM_QUALITY_CHANGED,
 					arguments("quality", networkViewQualityLabel(quality)));
+			if((previous == NetworkViewQuality.CUSTOM) != (quality == NetworkViewQuality.CUSTOM))
+			{
+				FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
+				{
+					window.close();
+					uiOpenSettingsMenu(viewer);
+				});
+				return;
+			}
+			applyNetworkViewQualityElement(element);
+			window.updateInventory();
 		});
 		element.onShiftLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
 		{
@@ -2614,6 +2617,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private NetworkViewQuality getNetworkViewQuality()
 	{
+		if(networkViewCustomSelected)
+		{
+			return NetworkViewQuality.CUSTOM;
+		}
 		return NetworkViewQuality.from(networkViewDepth, networkViewHeartbeatTicks, networkViewEntityIntervalTicks, networkViewUnsubscribeGraceSeconds);
 	}
 
@@ -2621,8 +2628,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	{
 		if(quality == NetworkViewQuality.CUSTOM)
 		{
+			networkViewCustomSelected = true;
 			return;
 		}
+		networkViewCustomSelected = false;
 		if(networkViewDepth == quality.getDepth()
 				&& networkViewHeartbeatTicks == quality.getHeartbeatTicks()
 				&& networkViewEntityIntervalTicks == quality.getEntityIntervalTicks()
@@ -4409,11 +4418,32 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 	}
 
-	private static void sendShortTitle(Player player, String legacy)
+	private void sendShortTitle(Player player, String legacy)
 	{
+		long now = System.currentTimeMillis();
+		UUID playerId = player.getUniqueId();
+		ShortTitleHold previous = shortTitleHolds.get(playerId);
+		boolean freshLook = previous == null || now - previous.lastSendMillis() > SHORT_TITLE_FRESH_LOOK_MILLIS;
+		long lookStart = freshLook ? now : previous.lookStartMillis();
+		shortTitleHolds.put(playerId, new ShortTitleHold(lookStart, now));
+		if(shortTitleHolds.size() > 64)
+		{
+			shortTitleHolds.entrySet().removeIf(entry -> now - entry.getValue().lastSendMillis() > 10_000L);
+		}
+		if(!freshLook && now - lookStart < SHORT_TITLE_FADE_IN_MILLIS)
+		{
+			return;
+		}
 		Component subtitle = LegacyComponentSerializer.legacySection().deserialize(legacy);
-		Title.Times times = Title.Times.times(Duration.ZERO, Duration.ofMillis(100), Duration.ofMillis(150));
+		Title.Times times = Title.Times.times(
+				freshLook ? Duration.ofMillis(SHORT_TITLE_FADE_IN_MILLIS) : Duration.ZERO,
+				Duration.ofMillis(SHORT_TITLE_STAY_MILLIS),
+				Duration.ofMillis(SHORT_TITLE_FADE_OUT_MILLIS));
 		Title title = Title.title(Component.empty(), subtitle, times);
 		WormholesAudience.showTitle(player, title);
+	}
+
+	private record ShortTitleHold(long lookStartMillis, long lastSendMillis)
+	{
 	}
 }
