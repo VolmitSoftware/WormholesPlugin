@@ -156,6 +156,20 @@ public interface ILocalPortal extends IPortal, IPersistant, Listener
 
 	public void setNetworkViewFallbackBlock(String blockState);
 
+	public boolean isBlackoutBackground();
+
+	public void setBlackoutBackground(boolean enabled);
+
+	public BlackoutColor getBlackoutColor();
+
+	public void setBlackoutColor(BlackoutColor color);
+
+	public int getActivationRange();
+
+	public void setActivationRange(int rangeBlocks);
+
+	public double getEffectiveActivationRange();
+
 	public AxisAlignedBB getView();
 
 	public World getWorld();

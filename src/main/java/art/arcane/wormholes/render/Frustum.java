@@ -30,7 +30,6 @@ public final class Frustum {
     private final double faceYb;
     private final double faceZa;
     private final double faceZb;
-    private final double rangeSquared;
 
     public Frustum(Location apex, PortalStructure structure, Direction cubeFace, double range, double aperturePadding) {
         this(apex, structure.getArea().getFace(cubeFace), cubeFace, range, aperturePadding);
@@ -49,44 +48,74 @@ public final class Frustum {
         this.faceYb = face.getYb();
         this.faceZa = face.getZa();
         this.faceZb = face.getZb();
-        this.rangeSquared = range * range;
+        this.planeDelta = planeCoordinate - axisValue(originX, originY, originZ, normalAxis);
 
-        Axis thinAxis = face.getThinAxis();
-        double minX = Double.POSITIVE_INFINITY;
-        double minY = Double.POSITIVE_INFINITY;
-        double minZ = Double.POSITIVE_INFINITY;
-        double maxX = Double.NEGATIVE_INFINITY;
-        double maxY = Double.NEGATIVE_INFINITY;
-        double maxZ = Double.NEGATIVE_INFINITY;
-        for (int corner = 0; corner < 4; corner++) {
-            boolean firstHigh = corner < 2;
-            boolean secondHigh = (corner & 1) == 0;
-            double nearX = switch (thinAxis) {
-                case X -> planeCoordinate;
-                case Y, Z -> firstHigh ? faceXb : faceXa;
-            };
-            double nearY = switch (thinAxis) {
-                case X -> firstHigh ? faceYb : faceYa;
-                case Y -> planeCoordinate;
-                case Z -> secondHigh ? faceYb : faceYa;
-            };
-            double nearZ = switch (thinAxis) {
-                case X, Y -> secondHigh ? faceZb : faceZa;
-                case Z -> planeCoordinate;
-            };
-            double dx = nearX - originX;
-            double dy = nearY - originY;
-            double dz = nearZ - originZ;
-            double len = Math.sqrt((dx * dx) + (dy * dy) + (dz * dz));
-            double farX = nearX + ((dx / len) * range);
-            double farY = nearY + ((dy / len) * range);
-            double farZ = nearZ + ((dz / len) * range);
-            minX = Math.min(minX, Math.min(nearX, farX));
-            minY = Math.min(minY, Math.min(nearY, farY));
-            minZ = Math.min(minZ, Math.min(nearZ, farZ));
-            maxX = Math.max(maxX, Math.max(nearX, farX));
-            maxY = Math.max(maxY, Math.max(nearY, farY));
-            maxZ = Math.max(maxZ, Math.max(nearZ, farZ));
+        double normalMin;
+        double normalMax;
+        if (Math.abs(planeDelta) <= EPSILON) {
+            normalMin = planeCoordinate - range;
+            normalMax = planeCoordinate + range;
+        } else if (planeDelta > 0.0D) {
+            normalMin = planeCoordinate;
+            normalMax = planeCoordinate + range;
+        } else {
+            normalMin = planeCoordinate - range;
+            normalMax = planeCoordinate;
+        }
+        double boxXa = normalAxis == Axis.X ? normalMin : faceXa - range;
+        double boxXb = normalAxis == Axis.X ? normalMax : faceXb + range;
+        double boxYa = normalAxis == Axis.Y ? normalMin : faceYa - range;
+        double boxYb = normalAxis == Axis.Y ? normalMax : faceYb + range;
+        double boxZa = normalAxis == Axis.Z ? normalMin : faceZa - range;
+        double boxZb = normalAxis == Axis.Z ? normalMax : faceZb + range;
+
+        double minX = boxXa;
+        double minY = boxYa;
+        double minZ = boxZa;
+        double maxX = boxXb;
+        double maxY = boxYb;
+        double maxZ = boxZb;
+        if (Math.abs(planeDelta) > EPSILON) {
+            Axis thinAxis = face.getThinAxis();
+            double scale = range / Math.abs(planeDelta);
+            minX = Double.POSITIVE_INFINITY;
+            minY = Double.POSITIVE_INFINITY;
+            minZ = Double.POSITIVE_INFINITY;
+            maxX = Double.NEGATIVE_INFINITY;
+            maxY = Double.NEGATIVE_INFINITY;
+            maxZ = Double.NEGATIVE_INFINITY;
+            for (int corner = 0; corner < 4; corner++) {
+                boolean firstHigh = corner < 2;
+                boolean secondHigh = (corner & 1) == 0;
+                double nearX = switch (thinAxis) {
+                    case X -> planeCoordinate;
+                    case Y, Z -> firstHigh ? faceXb : faceXa;
+                };
+                double nearY = switch (thinAxis) {
+                    case X -> firstHigh ? faceYb : faceYa;
+                    case Y -> planeCoordinate;
+                    case Z -> secondHigh ? faceYb : faceYa;
+                };
+                double nearZ = switch (thinAxis) {
+                    case X, Y -> secondHigh ? faceZb : faceZa;
+                    case Z -> planeCoordinate;
+                };
+                double farX = nearX + ((nearX - originX) * scale);
+                double farY = nearY + ((nearY - originY) * scale);
+                double farZ = nearZ + ((nearZ - originZ) * scale);
+                minX = Math.min(minX, Math.min(nearX, farX));
+                minY = Math.min(minY, Math.min(nearY, farY));
+                minZ = Math.min(minZ, Math.min(nearZ, farZ));
+                maxX = Math.max(maxX, Math.max(nearX, farX));
+                maxY = Math.max(maxY, Math.max(nearY, farY));
+                maxZ = Math.max(maxZ, Math.max(nearZ, farZ));
+            }
+            minX = Math.max(minX, boxXa);
+            minY = Math.max(minY, boxYa);
+            minZ = Math.max(minZ, boxZa);
+            maxX = Math.min(maxX, boxXb);
+            maxY = Math.min(maxY, boxYb);
+            maxZ = Math.min(maxZ, boxZb);
         }
 
         this.region = new AxisAlignedBB(minX, maxX, minY, maxY, minZ, maxZ);
@@ -96,7 +125,6 @@ public final class Frustum {
         this.regionYb = region.getYb();
         this.regionZa = region.getZa();
         this.regionZb = region.getZb();
-        this.planeDelta = planeCoordinate - axisValue(originX, originY, originZ, normalAxis);
     }
 
     public boolean contains(Location l) {
@@ -129,14 +157,7 @@ public final class Frustum {
         double hitX = originX + ((x - originX) * t);
         double hitY = originY + ((y - originY) * t);
         double hitZ = originZ + ((z - originZ) * t);
-        if (!containsFacePoint(hitX, hitY, hitZ)) {
-            return false;
-        }
-
-        double dx = x - hitX;
-        double dy = y - hitY;
-        double dz = z - hitZ;
-        return ((dx * dx) + (dy * dy) + (dz * dz)) <= rangeSquared + EPSILON;
+        return containsFacePoint(hitX, hitY, hitZ);
     }
 
     public AxisAlignedBB getRegion() {

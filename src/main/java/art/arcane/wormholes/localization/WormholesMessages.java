@@ -335,6 +335,34 @@ public final class WormholesMessages {
             "",
             "<dark_gray>Left: enter a block state.",
             "<dark_gray>Right: reset to air.");
+    public static final LinesKey PORTAL_MENU_BLACKOUT = lines("portal.menu.blackout",
+            "<aqua><bold>Blackout Background</bold>",
+            "<gray>Seal the projection's far plane with solid concrete so the local world never shows through.",
+            "",
+            "<gray>Currently: <white>{state} <dark_gray>({color})",
+            "",
+            "<dark_gray>Left: toggle on/off.",
+            "<dark_gray>Right: choose a color.");
+    public static final LinesKey PORTAL_MENU_BLACKOUT_COLOR_PLACARD = lines("portal.menu.blackout_color.placard",
+            "<gold><bold>Blackout Color</bold>",
+            "<gray>Concrete color used to seal the far plane.",
+            "",
+            "<gray>Currently: <white>{color}");
+    public static final LinesKey PORTAL_MENU_BLACKOUT_COLOR_OPTION = lines("portal.menu.blackout_color.option",
+            "<aqua><bold>{color}</bold>",
+            "",
+            "<dark_gray>Click to select.");
+    public static final LinesKey PORTAL_MENU_ACTIVATION_RANGE = lines("portal.menu.activation_range",
+            "<aqua><bold>Activation Range <white>{value}</bold>",
+            "<gray>Distance in blocks at which this portal starts projecting for nearby players.",
+            "",
+            "<gray>Currently: <aqua>{value}",
+            "",
+            "<dark_gray>Left click: +{step}",
+            "<dark_gray>Right click: -{step}",
+            "<dark_gray>Shift-left: +{large_step}",
+            "<dark_gray>Shift-right: -{large_step}",
+            "<dark_gray>Below 8 resets to Global.");
     public static final LinesKey PORTAL_MENU_PLACARD_RTP = lines("portal.menu.placard.rtp",
             "<gold><bold>{portal}</bold>",
             "<gray>Type: <yellow>{type}",
@@ -571,6 +599,10 @@ public final class WormholesMessages {
     public static final TextKey PORTAL_NETWORK_DESCRIPTION_ENTITY_UPDATE = text("portal.network.description.entity_update", "Ticks between entity updates.");
     public static final TextKey PORTAL_NETWORK_LABEL_VIEW_GRACE = text("portal.network.label.view_grace", "View Grace");
     public static final TextKey PORTAL_NETWORK_DESCRIPTION_VIEW_GRACE = text("portal.network.description.view_grace", "Seconds to keep a warm stream after looking away.");
+    public static final TextKey PORTAL_NETWORK_LABEL_BLACKOUT = text("portal.network.label.blackout", "Blackout Background");
+    public static final TextKey PORTAL_NETWORK_LABEL_BLACKOUT_COLOR = text("portal.network.label.blackout_color", "Blackout Color");
+    public static final TextKey PORTAL_NETWORK_LABEL_ACTIVATION_RANGE = text("portal.network.label.activation_range", "Activation Range");
+    public static final TextKey PORTAL_LABEL_ACTIVATION_GLOBAL = text("portal.label.activation_global", "Global ({range})");
     public static final LinesKey PORTAL_PROMPT_DIRECTION = lines("portal.prompt.direction",
             "<dark_gray>[<gold>Wormholes<dark_gray>] <gray>Look in a direction then left click to apply.",
             "<dark_gray>[<gold>Wormholes<dark_gray>] <gray>Shift-Left click to cancel.");

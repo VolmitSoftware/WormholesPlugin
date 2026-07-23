@@ -103,6 +103,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private static final int DEFAULT_NETWORK_VIEW_ENTITY_INTERVAL_TICKS = 10;
 	private static final int DEFAULT_NETWORK_VIEW_UNSUBSCRIBE_GRACE_SECONDS = 30;
 	private static final String DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK = "minecraft:air";
+	private static final boolean DEFAULT_BLACKOUT_BACKGROUND = true;
+	private static final BlackoutColor DEFAULT_BLACKOUT_COLOR = BlackoutColor.BLACK;
+	private static final int DEFAULT_ACTIVATION_RANGE = 0;
 	private static final ConcurrentHashMap<UUID, Long> TELEPORT_COOLDOWNS = new ConcurrentHashMap<UUID, Long>();
 	private static final ConcurrentHashMap<UUID, ReentryLatch> REENTRY_LATCHES = new ConcurrentHashMap<UUID, ReentryLatch>();
 	private static final Set<UUID> TELEPORT_IN_FLIGHT = ConcurrentHashMap.newKeySet();
@@ -141,6 +144,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private int networkViewEntityIntervalTicks;
 	private int networkViewUnsubscribeGraceSeconds;
 	private String networkViewFallbackBlock;
+	private boolean blackoutBackground;
+	private BlackoutColor blackoutColor;
+	private int activationRange;
 	private boolean settingsSyncEnabled;
 	private final ConcurrentHashMap<UUID, ShortTitleHold> shortTitleHolds = new ConcurrentHashMap<UUID, ShortTitleHold>();
 	private final Map<UUID, UIWindow> openMenus = new ConcurrentHashMap<UUID, UIWindow>();
@@ -180,6 +186,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			networkViewEntityIntervalTicks = DEFAULT_NETWORK_VIEW_ENTITY_INTERVAL_TICKS;
 			networkViewUnsubscribeGraceSeconds = DEFAULT_NETWORK_VIEW_UNSUBSCRIBE_GRACE_SECONDS;
 			networkViewFallbackBlock = DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK;
+			blackoutBackground = DEFAULT_BLACKOUT_BACKGROUND;
+			blackoutColor = DEFAULT_BLACKOUT_COLOR;
+			activationRange = DEFAULT_ACTIVATION_RANGE;
 			settingsSyncEnabled = true;
 			view = computeView();
 		}
@@ -207,6 +216,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		j.put("networkViewEntityIntervalTicks", networkViewEntityIntervalTicks);
 		j.put("networkViewUnsubscribeGraceSeconds", networkViewUnsubscribeGraceSeconds);
 		j.put("networkViewFallbackBlock", networkViewFallbackBlock);
+		j.put("blackoutBackground", blackoutBackground);
+		j.put("blackoutColor", blackoutColor.name());
+		j.put("activationRange", activationRange);
 		j.put("settingsSyncEnabled", settingsSyncEnabled);
 
 		if(tunnel != null)
@@ -250,6 +262,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			networkViewEntityIntervalTicks = readNetworkViewInt(j, "networkViewEntityIntervalTicks", DEFAULT_NETWORK_VIEW_ENTITY_INTERVAL_TICKS, 2, 600);
 			networkViewUnsubscribeGraceSeconds = readNetworkViewInt(j, "networkViewUnsubscribeGraceSeconds", DEFAULT_NETWORK_VIEW_UNSUBSCRIBE_GRACE_SECONDS, 5, 600);
 			networkViewFallbackBlock = normalizeNetworkViewFallbackBlock(j.optString("networkViewFallbackBlock", DEFAULT_NETWORK_VIEW_FALLBACK_BLOCK));
+			blackoutBackground = j.optBoolean("blackoutBackground", DEFAULT_BLACKOUT_BACKGROUND);
+			blackoutColor = BlackoutColor.fromName(j.optString("blackoutColor", ""), DEFAULT_BLACKOUT_COLOR);
+			activationRange = readActivationRange(j, "activationRange");
 			settingsSyncEnabled = !j.has("settingsSyncEnabled") || j.getBoolean("settingsSyncEnabled");
 			view = computeView();
 
@@ -2545,7 +2560,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		window.setTitle(getRouter(true));
 		window.setResolution(WindowResolution.W9_H6);
 		boolean custom = getNetworkViewQuality() == NetworkViewQuality.CUSTOM;
-		window.setViewportHeight(custom ? 5 : 3);
+		window.setViewportHeight(custom ? 5 : 4);
 		window.setDecorator(new UIPaneDecorator(Material.GRAY_STAINED_GLASS_PANE));
 
 		window.setElement(0, 0, settingsPlacardElement());
@@ -2573,10 +2588,17 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 					WormholesMessages.PORTAL_NETWORK_LABEL_VIEW_GRACE,
 					WormholesMessages.PORTAL_NETWORK_DESCRIPTION_VIEW_GRACE,
 					Material.REDSTONE, this::getNetworkViewUnsubscribeGraceSeconds, this::setNetworkViewUnsubscribeGraceSeconds, 5, 30));
+			window.setElement(-2, 3, blackoutElement(window, p));
 			window.setElement(0, 3, networkViewFallbackElement(p, window));
+			window.setElement(2, 3, activationRangeElement(window, p));
+		}
+		else
+		{
+			window.setElement(-1, 2, blackoutElement(window, p));
+			window.setElement(1, 2, activationRangeElement(window, p));
 		}
 
-		window.setElement(0, custom ? 4 : 2, backToPortalMenuElement(window, p));
+		window.setElement(0, custom ? 4 : 3, backToPortalMenuElement(window, p));
 
 		return window;
 	}
@@ -2586,7 +2608,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		UIWindow window = new UIWindow(Wormholes.instance, p);
 		window.setTitle(getRouter(true));
 		window.setResolution(WindowResolution.W9_H6);
-		window.setViewportHeight(4);
+		window.setViewportHeight(5);
 		window.setDecorator(new UIPaneDecorator(Material.BLACK_STAINED_GLASS_PANE));
 		window.setElement(0, 0, advancedSettingsPlacardElement());
 		window.setElement(-3, 1, networkViewNumberElement(window, p, "network-view-depth",
@@ -2606,7 +2628,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				WormholesMessages.PORTAL_NETWORK_DESCRIPTION_VIEW_GRACE,
 				Material.REDSTONE, this::getNetworkViewUnsubscribeGraceSeconds, this::setNetworkViewUnsubscribeGraceSeconds, 5, 30));
 		window.setElement(0, 2, networkViewFallbackElement(p, window));
-		window.setElement(0, 3, backToSettingsMenuElement(window, p));
+		window.setElement(-2, 3, blackoutElement(window, p));
+		window.setElement(2, 3, activationRangeElement(window, p));
+		window.setElement(0, 4, backToSettingsMenuElement(window, p));
 		window.setVisible(true);
 	}
 
@@ -3018,6 +3042,139 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_FALLBACK_BLOCK,
 				arguments("block", getNetworkViewFallbackBlock()));
 		element.setMaterial(new MaterialBlock(Material.GLASS));
+	}
+
+	private Element blackoutElement(Window window, Player viewer)
+	{
+		UIElement element = new UIElement("blackout-background");
+		element.onLeftClick((e) ->
+		{
+			setBlackoutBackground(!isBlackoutBackground());
+			applyBlackoutElement(element);
+			window.updateInventory();
+			notifySetting(viewer, WormholesMessages.PORTAL_NETWORK_VALUE_CHANGED,
+					arguments("label", localized(WormholesMessages.PORTAL_NETWORK_LABEL_BLACKOUT),
+							"value", localized(isBlackoutBackground() ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF)));
+		});
+		element.onRightClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
+		{
+			window.close();
+			uiOpenBlackoutColorMenu(viewer);
+		}));
+		applyBlackoutElement(element);
+		return element;
+	}
+
+	private void applyBlackoutElement(Element element)
+	{
+		Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_BLACKOUT,
+				arguments(
+						"state", localized(isBlackoutBackground() ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF),
+						"color", getBlackoutColor().displayName()));
+		element.setMaterial(new MaterialBlock(isBlackoutBackground() ? blackoutColorMaterial(getBlackoutColor()) : Material.GLASS));
+		element.setEnchanted(isBlackoutBackground());
+	}
+
+	private void uiOpenBlackoutColorMenu(Player viewer)
+	{
+		UIWindow window = new UIWindow(Wormholes.instance, viewer);
+		window.setTitle(getRouter(true));
+		window.setResolution(WindowResolution.W9_H6);
+		window.setViewportHeight(4);
+		window.setDecorator(new UIPaneDecorator(Material.BLACK_STAINED_GLASS_PANE));
+		refreshBlackoutColorOptions(window, viewer);
+		window.setElement(0, 3, backToSettingsMenuElement(window, viewer));
+		window.setVisible(true);
+	}
+
+	private void refreshBlackoutColorOptions(Window window, Player viewer)
+	{
+		window.setElement(0, 0, blackoutColorPlacardElement());
+		BlackoutColor[] colors = BlackoutColor.values();
+		for(int index = 0; index < colors.length; index++)
+		{
+			int row = 1 + (index / 8);
+			int column = -4 + (index % 8);
+			window.setElement(column, row, blackoutColorOptionElement(window, viewer, colors[index]));
+		}
+	}
+
+	private Element blackoutColorPlacardElement()
+	{
+		return localizedElement("blackout-color-placard", WormholesMessages.PORTAL_MENU_BLACKOUT_COLOR_PLACARD,
+				arguments("color", getBlackoutColor().displayName()), blackoutColorMaterial(getBlackoutColor()));
+	}
+
+	private Element blackoutColorOptionElement(Window window, Player viewer, BlackoutColor color)
+	{
+		UIElement element = localizedElement("blackout-color-" + color.name().toLowerCase(Locale.ROOT),
+				WormholesMessages.PORTAL_MENU_BLACKOUT_COLOR_OPTION,
+				arguments("color", color.displayName()), blackoutColorMaterial(color));
+		element.setEnchanted(color == getBlackoutColor());
+		element.onLeftClick((e) ->
+		{
+			setBlackoutColor(color);
+			refreshBlackoutColorOptions(window, viewer);
+			window.updateInventory();
+			notifySetting(viewer, WormholesMessages.PORTAL_NETWORK_VALUE_CHANGED,
+					arguments("label", localized(WormholesMessages.PORTAL_NETWORK_LABEL_BLACKOUT_COLOR),
+							"value", color.displayName()));
+		});
+		return element;
+	}
+
+	private static Material blackoutColorMaterial(BlackoutColor color)
+	{
+		return Material.valueOf(color.materialName());
+	}
+
+	private Element activationRangeElement(Window window, Player viewer)
+	{
+		UIElement element = new UIElement("activation-range");
+		element.onLeftClick((e) -> adjustActivationRange(element, window, viewer, 8));
+		element.onRightClick((e) -> adjustActivationRange(element, window, viewer, -8));
+		element.onShiftLeftClick((e) -> adjustActivationRange(element, window, viewer, 32));
+		element.onShiftRightClick((e) -> adjustActivationRange(element, window, viewer, -32));
+		applyActivationRangeElement(element);
+		return element;
+	}
+
+	private void adjustActivationRange(UIElement element, Window window, Player viewer, int delta)
+	{
+		int previous = getActivationRange();
+		int base = previous > 0 ? previous : (int) Math.round(Settings.PROJECTION_RANGE);
+		int target = base + delta;
+		if(target < 8)
+		{
+			target = 0;
+		}
+		setActivationRange(target);
+		int current = getActivationRange();
+		applyActivationRangeElement(element);
+		window.updateInventory();
+		if(current != previous)
+		{
+			notifySetting(viewer, WormholesMessages.PORTAL_NETWORK_VALUE_CHANGED,
+					arguments("label", localized(WormholesMessages.PORTAL_NETWORK_LABEL_ACTIVATION_RANGE), "value", activationRangeDisplay()));
+		}
+	}
+
+	private void applyActivationRangeElement(Element element)
+	{
+		Wormholes.text().apply(element, WormholesMessages.PORTAL_MENU_ACTIVATION_RANGE,
+				arguments("value", activationRangeDisplay(), "step", 8, "large_step", 32));
+		element.setMaterial(new MaterialBlock(Material.LODESTONE));
+		element.setEnchanted(getActivationRange() > 0);
+	}
+
+	private String activationRangeDisplay()
+	{
+		if(getActivationRange() > 0)
+		{
+			return Integer.toString(getActivationRange());
+		}
+		return Wormholes.text().plain(WormholesMessages.PORTAL_LABEL_ACTIVATION_GLOBAL,
+				arguments("range", (int) Math.round(Settings.PROJECTION_RANGE)));
 	}
 
 	@Override
@@ -4195,6 +4352,64 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			networkViewSettingsChanged();
 		}
 
+		@Override
+		public boolean isBlackoutBackground()
+		{
+			return blackoutBackground;
+		}
+
+		@Override
+		public void setBlackoutBackground(boolean enabled)
+		{
+			if(blackoutBackground == enabled)
+			{
+				return;
+			}
+			blackoutBackground = enabled;
+			networkViewSettingsChanged();
+		}
+
+		@Override
+		public BlackoutColor getBlackoutColor()
+		{
+			return blackoutColor;
+		}
+
+		@Override
+		public void setBlackoutColor(BlackoutColor color)
+		{
+			if(color == null || blackoutColor == color)
+			{
+				return;
+			}
+			blackoutColor = color;
+			networkViewSettingsChanged();
+		}
+
+		@Override
+		public int getActivationRange()
+		{
+			return activationRange;
+		}
+
+		@Override
+		public void setActivationRange(int rangeBlocks)
+		{
+			int normalized = normalizeActivationRange(rangeBlocks);
+			if(activationRange == normalized)
+			{
+				return;
+			}
+			activationRange = normalized;
+			networkViewSettingsChanged();
+		}
+
+		@Override
+		public double getEffectiveActivationRange()
+		{
+			return activationRange > 0 ? activationRange : Settings.PROJECTION_RANGE;
+		}
+
 		private void networkViewSettingsChanged()
 		{
 			save();
@@ -4290,6 +4505,16 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			return clampNetworkViewInt(value, min, max);
 		}
 
+		private static int readActivationRange(JSONObject j, String key)
+		{
+			return j.has(key) ? normalizeActivationRange(j.optInt(key, DEFAULT_ACTIVATION_RANGE)) : DEFAULT_ACTIVATION_RANGE;
+		}
+
+		private static int normalizeActivationRange(int value)
+		{
+			return value <= 0 ? 0 : clampNetworkViewInt(value, 8, 256);
+		}
+
 		private static int clampNetworkViewInt(int value, int min, int max)
 		{
 			return Math.max(min, Math.min(max, value));
@@ -4369,7 +4594,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	@Override
 	public AxisAlignedBB getView()
 	{
-		if(view == null || viewRange != Settings.PROJECTION_RANGE)
+		if(view == null || viewRange != getEffectiveActivationRange())
 		{
 			view = computeView();
 		}
@@ -4378,7 +4603,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private AxisAlignedBB computeView()
 	{
-		double range = Settings.PROJECTION_RANGE;
+		double range = getEffectiveActivationRange();
 		viewRange = range;
 		Vector pad = new Vector(-range, -range, -range);
 		Vector padPositive = new Vector(range, range, range);

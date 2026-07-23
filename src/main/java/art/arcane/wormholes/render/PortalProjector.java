@@ -24,6 +24,7 @@ import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.service.WormholesTelemetry;
 import art.arcane.wormholes.network.view.RemoteViewCache;
 import art.arcane.wormholes.network.view.ViewSubscriptionManager;
+import art.arcane.wormholes.portal.BlackoutColor;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.IPortal;
 import art.arcane.wormholes.portal.NetworkViewQuality;
@@ -44,6 +45,7 @@ public final class PortalProjector {
     private static final int RECURSIVE_BUCKET_SHIFT = 3;
     private static final int MAX_RECURSIVE_INDEXES_PER_PASS = 256;
     private static final int STABLE_RESAMPLE_BACKSTOP_TICKS = 40;
+    private static final double BLACKOUT_PERPENDICULAR_BAND_MARGIN = 1.0D;
 
     private final ILocalPortal portal;
     private final Player observer;
@@ -107,6 +109,8 @@ public final class PortalProjector {
     private int cachedMirrorRotationQuarterTurns;
     private BlockData remoteFallback;
     private String remoteFallbackState;
+    private BlockData blackoutData;
+    private BlackoutColor blackoutColorCache;
     private RemoteWorldView cachedRemoteWorldView;
     private RemoteViewCache.RemoteView cachedRemoteViewSource;
     private long lastRemoteRevision = -1L;
@@ -387,6 +391,14 @@ public final class PortalProjector {
         double portalDepth = portal.getNetworkViewDepth();
         double range = capProjectionDistance(observer, portalDepth);
         double depthBlocks = range;
+        boolean blackoutEnabled = portal.isBlackoutBackground();
+        if (blackoutEnabled) {
+            BlackoutColor blackoutColor = portal.getBlackoutColor();
+            if (blackoutData == null || blackoutColor != blackoutColorCache) {
+                blackoutData = parseBlackout(blackoutColor);
+                blackoutColorCache = blackoutColor;
+            }
+        }
         Frustum4D next;
         try {
             next = frustumFor(eye, portal.getStructure(), range);
@@ -527,6 +539,30 @@ public final class PortalProjector {
         double projectionFacingNormal = normalAxis == 0 ? projectionFacingX : (normalAxis == 1 ? projectionFacingY : projectionFacingZ);
         double[] slabWindowBounds = scratchSlabWindowBounds;
         int[] cellCoords = scratchCellCoords;
+        double blackoutEyeNormal = normalAxis == 0 ? eyeX : (normalAxis == 1 ? eyeY : eyeZ);
+        double blackoutFacePlane = axisOrigin[normalAxis];
+        double blackoutFarSign = 1.0D;
+        double blackoutDepthSealThreshold = depthBlocks - BLACKOUT_PERPENDICULAR_BAND_MARGIN;
+        double blackoutRightSealLow = Double.NEGATIVE_INFINITY;
+        double blackoutRightSealHigh = Double.POSITIVE_INFINITY;
+        double blackoutUpSealLow = Double.NEGATIVE_INFINITY;
+        double blackoutUpSealHigh = Double.POSITIVE_INFINITY;
+        if (blackoutEnabled) {
+            AxisAlignedBB blackoutArea = portal.getStructure().getArea();
+            double blackoutAreaMinNormal = normalAxis == 0 ? blackoutArea.getXa() : (normalAxis == 1 ? blackoutArea.getYa() : blackoutArea.getZa());
+            double blackoutAreaMaxNormal = normalAxis == 0 ? blackoutArea.getXb() : (normalAxis == 1 ? blackoutArea.getYb() : blackoutArea.getZb());
+            blackoutFacePlane = eyeSideFacePlane(blackoutEyeNormal, axisOrigin[normalAxis], blackoutAreaMinNormal, blackoutAreaMaxNormal);
+            blackoutFarSign = blackoutEyeNormal >= axisOrigin[normalAxis] ? -1.0D : 1.0D;
+            double blackoutLateralMargin = BLACKOUT_PERPENDICULAR_BAND_MARGIN + Settings.PROJECTION_APERTURE_PADDING_BLOCKS;
+            double blackoutAreaMinRight = rightAxis == 0 ? blackoutArea.getXa() : (rightAxis == 1 ? blackoutArea.getYa() : blackoutArea.getZa());
+            double blackoutAreaMaxRight = rightAxis == 0 ? blackoutArea.getXb() : (rightAxis == 1 ? blackoutArea.getYb() : blackoutArea.getZb());
+            double blackoutAreaMinUp = upAxis == 0 ? blackoutArea.getXa() : (upAxis == 1 ? blackoutArea.getYa() : blackoutArea.getZa());
+            double blackoutAreaMaxUp = upAxis == 0 ? blackoutArea.getXb() : (upAxis == 1 ? blackoutArea.getYb() : blackoutArea.getZb());
+            blackoutRightSealLow = blackoutAreaMinRight - depthBlocks + blackoutLateralMargin;
+            blackoutRightSealHigh = blackoutAreaMaxRight + depthBlocks - blackoutLateralMargin;
+            blackoutUpSealLow = blackoutAreaMinUp - depthBlocks + blackoutLateralMargin;
+            blackoutUpSealHigh = blackoutAreaMaxUp + depthBlocks - blackoutLateralMargin;
+        }
 
         for (int n = axisMin[normalAxis]; n <= axisMax[normalAxis]; n++) {
             double slabSignedDistance = projectionFacingNormal * ((n + 0.5D) - axisOrigin[normalAxis]);
@@ -605,6 +641,29 @@ public final class PortalProjector {
                         scratchRemoteEye[0], scratchRemoteEye[1], scratchRemoteEye[2],
                         dest,
                         Settings.PROJECTION_RECURSIVE_PORTAL_DEPTH);
+                    if (blackoutEnabled) {
+                        boolean blackoutOccluding = sample.kind == ProjectedSampleKind.BLOCK && sample.data.getMaterial().isOccluding();
+                        if (shouldBlackoutSample(sample.kind, blackoutOccluding)) {
+                            double blackoutCellNormal = normalAxis == 0 ? cx : (normalAxis == 1 ? cy : cz);
+                            double blackoutDepth = blackoutFarSign * (blackoutCellNormal - blackoutFacePlane);
+                            double blackoutCellRight = rightAxis == 0 ? cx : (rightAxis == 1 ? cy : cz);
+                            double blackoutCellUp = upAxis == 0 ? cx : (upAxis == 1 ? cy : cz);
+                            if (isFarPlaneCell(blackoutDepth, blackoutDepthSealThreshold,
+                                blackoutCellRight, blackoutRightSealLow, blackoutRightSealHigh,
+                                blackoutCellUp, blackoutUpSealLow, blackoutUpSealHigh)) {
+                                ProjectedBlockClaim blackoutClaim = (sample.kind == ProjectedSampleKind.REMOTE_AIR || sample.kind == ProjectedSampleKind.BLOCK)
+                                    ? sample.asClaim(blackoutData)
+                                    : new ProjectedBlockClaim(blackoutData, null, remoteKey, false);
+                                if (forceFullSend || !blackoutData.equals(previousData)) {
+                                    enterCount++;
+                                } else {
+                                    keptCount++;
+                                }
+                                nextProjected.put(key, blackoutClaim);
+                                continue;
+                            }
+                        }
+                    }
                     if (sample.kind == ProjectedSampleKind.NO_SAMPLE) {
                         if (!destView.isChunkReady(rx, rz) && previousCell != null && previousRemoteKey == remoteKey) {
                             nextProjected.put(key, previousCell);
@@ -979,6 +1038,35 @@ public final class PortalProjector {
 
     static boolean shouldProjectAirSample(ProjectedSampleKind kind, boolean localAir) {
         return kind == ProjectedSampleKind.MASK_AIR || (kind == ProjectedSampleKind.REMOTE_AIR && !localAir);
+    }
+
+    static boolean shouldBlackoutSample(ProjectedSampleKind kind, boolean occluding) {
+        return switch (kind) {
+            case NO_SAMPLE, MASK_AIR, REMOTE_AIR -> true;
+            case BLOCK -> !occluding;
+        };
+    }
+
+    static boolean isFarPlaneCell(double depthBeyondFacePlane, double depthSealThreshold,
+                                  double rightCoord, double rightSealLow, double rightSealHigh,
+                                  double upCoord, double upSealLow, double upSealHigh) {
+        if (depthBeyondFacePlane >= depthSealThreshold) {
+            return true;
+        }
+        return rightCoord <= rightSealLow || rightCoord >= rightSealHigh
+            || upCoord <= upSealLow || upCoord >= upSealHigh;
+    }
+
+    static double eyeSideFacePlane(double eyeNormal, double originNormal, double areaMinNormal, double areaMaxNormal) {
+        return eyeNormal >= originNormal ? areaMaxNormal : areaMinNormal;
+    }
+
+    private static BlockData parseBlackout(BlackoutColor color) {
+        try {
+            return Bukkit.createBlockData(color.blockState());
+        } catch (IllegalArgumentException e) {
+            return Material.AIR.createBlockData();
+        }
     }
 
     static boolean projectsBehindPortalPlane(double signedCellDistance, boolean eyeFrontSide, double portalPlaneClearance) {

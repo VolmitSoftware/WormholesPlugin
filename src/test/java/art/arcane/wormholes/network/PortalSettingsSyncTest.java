@@ -3,6 +3,7 @@ package art.arcane.wormholes.network;
 import art.arcane.wormholes.PortalManager;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.config.toml.NetworkConfig;
+import art.arcane.wormholes.portal.BlackoutColor;
 import art.arcane.wormholes.portal.LocalPortal;
 import art.arcane.wormholes.portal.MirrorRotation;
 import art.arcane.wormholes.portal.PortalPermissionMode;
@@ -159,6 +160,9 @@ class PortalSettingsSyncTest {
         settings.put(PortalSyncService.KEY_VIEW_ENTITY_INTERVAL, "8");
         settings.put(PortalSyncService.KEY_VIEW_UNSUBSCRIBE_GRACE, "45");
         settings.put(PortalSyncService.KEY_VIEW_FALLBACK_BLOCK, "minecraft:stone");
+        settings.put(PortalSyncService.KEY_BLACKOUT_BACKGROUND, "false");
+        settings.put(PortalSyncService.KEY_BLACKOUT_COLOR, "RED");
+        settings.put(PortalSyncService.KEY_ACTIVATION_RANGE, "96");
 
         PortalSyncService.applyToRemote(remote, settings);
 
@@ -174,6 +178,9 @@ class PortalSettingsSyncTest {
         assertEquals(8, remote.getMirroredNetworkViewEntityIntervalTicks());
         assertEquals(45, remote.getMirroredNetworkViewUnsubscribeGraceSeconds());
         assertEquals("minecraft:stone", remote.getMirroredNetworkViewFallbackBlock());
+        assertFalse(remote.isMirroredBlackoutBackground());
+        assertEquals(BlackoutColor.RED, remote.getMirroredBlackoutColor());
+        assertEquals(96, remote.getMirroredActivationRange());
     }
 
     @Test
@@ -191,6 +198,63 @@ class PortalSettingsSyncTest {
 
         assertEquals(originalMode, remote.getMirroredProjectionMode());
         assertEquals(originalDepth, remote.getMirroredNetworkViewDepth());
+    }
+
+    @Test
+    void collectSettingsIncludesBlackoutAndActivationRange() {
+        LocalPortal portal = localPortal();
+        portal.setBlackoutBackground(false);
+        portal.setBlackoutColor(BlackoutColor.RED);
+        portal.setActivationRange(96);
+
+        Map<String, String> settings = PortalSyncService.collectSettings(portal);
+
+        assertEquals("false", settings.get(PortalSyncService.KEY_BLACKOUT_BACKGROUND));
+        assertEquals("RED", settings.get(PortalSyncService.KEY_BLACKOUT_COLOR));
+        assertEquals("96", settings.get(PortalSyncService.KEY_ACTIVATION_RANGE));
+    }
+
+    @Test
+    void applyToLocalAppliesBlackoutAndActivationRangeWithSafeParsing() {
+        LocalPortal portal = localPortal();
+        Map<String, String> valid = new LinkedHashMap<>();
+        valid.put(PortalSyncService.KEY_BLACKOUT_BACKGROUND, "false");
+        valid.put(PortalSyncService.KEY_BLACKOUT_COLOR, "RED");
+        valid.put(PortalSyncService.KEY_ACTIVATION_RANGE, "96");
+
+        PortalSyncService.applyToLocal(portal, valid);
+
+        assertFalse(portal.isBlackoutBackground());
+        assertEquals(BlackoutColor.RED, portal.getBlackoutColor());
+        assertEquals(96, portal.getActivationRange());
+
+        Map<String, String> malformed = new LinkedHashMap<>();
+        malformed.put(PortalSyncService.KEY_BLACKOUT_COLOR, "NOT_A_COLOR");
+        malformed.put(PortalSyncService.KEY_ACTIVATION_RANGE, "abc");
+
+        PortalSyncService.applyToLocal(portal, malformed);
+
+        assertEquals(BlackoutColor.RED, portal.getBlackoutColor());
+        assertEquals(96, portal.getActivationRange());
+    }
+
+    @Test
+    void directoryRefreshCarriesMirroredBlackoutAndActivation() {
+        RemotePortalRegistry registry = new RemotePortalRegistry();
+        UUID portalId = UUID.randomUUID();
+        registry.applyUpsert("alpha", portalInfo(portalId, true));
+        RemotePortal remote = registry.get("alpha", portalId);
+        remote.setMirroredBlackoutBackground(false);
+        remote.setMirroredBlackoutColor(BlackoutColor.RED);
+        remote.setMirroredActivationRange(96);
+
+        registry.applyDirectory("alpha", List.of(portalInfo(portalId, true)));
+
+        RemotePortal refreshed = registry.get("alpha", portalId);
+        assertNotNull(refreshed);
+        assertFalse(refreshed.isMirroredBlackoutBackground());
+        assertEquals(BlackoutColor.RED, refreshed.getMirroredBlackoutColor());
+        assertEquals(96, refreshed.getMirroredActivationRange());
     }
 
     @Test

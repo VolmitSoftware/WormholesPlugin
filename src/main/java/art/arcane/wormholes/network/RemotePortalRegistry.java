@@ -71,6 +71,9 @@ public final class RemotePortalRegistry {
         refreshed.setMirroredNetworkViewEntityIntervalTicks(existing.getMirroredNetworkViewEntityIntervalTicks());
         refreshed.setMirroredNetworkViewUnsubscribeGraceSeconds(existing.getMirroredNetworkViewUnsubscribeGraceSeconds());
         refreshed.setMirroredNetworkViewFallbackBlock(existing.getMirroredNetworkViewFallbackBlock());
+        refreshed.setMirroredBlackoutBackground(existing.isMirroredBlackoutBackground());
+        refreshed.setMirroredBlackoutColor(existing.getMirroredBlackoutColor());
+        refreshed.setMirroredActivationRange(existing.getMirroredActivationRange());
         return refreshed;
     }
 }

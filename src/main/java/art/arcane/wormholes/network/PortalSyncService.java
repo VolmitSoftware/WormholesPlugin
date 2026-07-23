@@ -2,6 +2,7 @@ package art.arcane.wormholes.network;
 
 import art.arcane.volmlib.util.bukkit.WorldIdentity;
 import art.arcane.wormholes.Wormholes;
+import art.arcane.wormholes.portal.BlackoutColor;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.ITunnel;
 import art.arcane.wormholes.portal.LocalPortal;
@@ -35,6 +36,9 @@ public final class PortalSyncService {
     public static final String KEY_VIEW_ENTITY_INTERVAL = "networkViewEntityIntervalTicks";
     public static final String KEY_VIEW_UNSUBSCRIBE_GRACE = "networkViewUnsubscribeGraceSeconds";
     public static final String KEY_VIEW_FALLBACK_BLOCK = "networkViewFallbackBlock";
+    public static final String KEY_BLACKOUT_BACKGROUND = "blackoutBackground";
+    public static final String KEY_BLACKOUT_COLOR = "blackoutColor";
+    public static final String KEY_ACTIVATION_RANGE = "activationRange";
     public static final String KEY_SETTINGS_SYNC = "settingsSyncEnabled";
     static final String KEY_REMOTE_CACHE_ONLY = "remoteCacheOnly";
 
@@ -214,6 +218,9 @@ public final class PortalSyncService {
         settings.put(KEY_VIEW_ENTITY_INTERVAL, Integer.toString(portal.getNetworkViewEntityIntervalTicks()));
         settings.put(KEY_VIEW_UNSUBSCRIBE_GRACE, Integer.toString(portal.getNetworkViewUnsubscribeGraceSeconds()));
         settings.put(KEY_VIEW_FALLBACK_BLOCK, portal.getNetworkViewFallbackBlock());
+        settings.put(KEY_BLACKOUT_BACKGROUND, Boolean.toString(portal.isBlackoutBackground()));
+        settings.put(KEY_BLACKOUT_COLOR, portal.getBlackoutColor().name());
+        settings.put(KEY_ACTIVATION_RANGE, Integer.toString(portal.getActivationRange()));
         settings.put(KEY_SETTINGS_SYNC, Boolean.toString(portal.isSettingsSyncEnabled()));
         return settings;
     }
@@ -254,6 +261,9 @@ public final class PortalSyncService {
             case KEY_VIEW_ENTITY_INTERVAL -> portal.setNetworkViewEntityIntervalTicks(parseIntOr(value, portal.getNetworkViewEntityIntervalTicks()));
             case KEY_VIEW_UNSUBSCRIBE_GRACE -> portal.setNetworkViewUnsubscribeGraceSeconds(parseIntOr(value, portal.getNetworkViewUnsubscribeGraceSeconds()));
             case KEY_VIEW_FALLBACK_BLOCK -> portal.setNetworkViewFallbackBlock(value);
+            case KEY_BLACKOUT_BACKGROUND -> portal.setBlackoutBackground(Boolean.parseBoolean(value));
+            case KEY_BLACKOUT_COLOR -> portal.setBlackoutColor(BlackoutColor.fromName(value, portal.getBlackoutColor()));
+            case KEY_ACTIVATION_RANGE -> portal.setActivationRange(parseIntOr(value, portal.getActivationRange()));
             case KEY_SETTINGS_SYNC -> portal.setSettingsSyncEnabled(Boolean.parseBoolean(value));
             default -> {
             }
@@ -285,6 +295,9 @@ public final class PortalSyncService {
                 case KEY_VIEW_ENTITY_INTERVAL -> remote.setMirroredNetworkViewEntityIntervalTicks(parseIntOr(value, remote.getMirroredNetworkViewEntityIntervalTicks()));
                 case KEY_VIEW_UNSUBSCRIBE_GRACE -> remote.setMirroredNetworkViewUnsubscribeGraceSeconds(parseIntOr(value, remote.getMirroredNetworkViewUnsubscribeGraceSeconds()));
                 case KEY_VIEW_FALLBACK_BLOCK -> remote.setMirroredNetworkViewFallbackBlock(value);
+                case KEY_BLACKOUT_BACKGROUND -> remote.setMirroredBlackoutBackground(Boolean.parseBoolean(value));
+                case KEY_BLACKOUT_COLOR -> remote.setMirroredBlackoutColor(BlackoutColor.fromName(value, remote.getMirroredBlackoutColor()));
+                case KEY_ACTIVATION_RANGE -> remote.setMirroredActivationRange(parseIntOr(value, remote.getMirroredActivationRange()));
                 default -> {
                 }
             }

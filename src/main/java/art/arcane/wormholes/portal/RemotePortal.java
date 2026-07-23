@@ -28,6 +28,9 @@ public class RemotePortal extends Portal implements IRemotePortal {
     private volatile int mirroredNetworkViewEntityIntervalTicks;
     private volatile int mirroredNetworkViewUnsubscribeGraceSeconds;
     private volatile String mirroredNetworkViewFallbackBlock;
+    private volatile boolean mirroredBlackoutBackground;
+    private volatile BlackoutColor mirroredBlackoutColor;
+    private volatile int mirroredActivationRange;
 
     public RemotePortal(UUID id, RemoteWorld server, Vector origin, PortalType type, boolean open, AxisAlignedBB area) {
         super(id, origin);
@@ -47,6 +50,9 @@ public class RemotePortal extends Portal implements IRemotePortal {
         this.mirroredNetworkViewEntityIntervalTicks = 10;
         this.mirroredNetworkViewUnsubscribeGraceSeconds = 30;
         this.mirroredNetworkViewFallbackBlock = "minecraft:air";
+        this.mirroredBlackoutBackground = true;
+        this.mirroredBlackoutColor = BlackoutColor.BLACK;
+        this.mirroredActivationRange = 0;
     }
 
     public static RemotePortal fromInfo(String serverName, PortalInfo info) {
@@ -194,5 +200,29 @@ public class RemotePortal extends Portal implements IRemotePortal {
 
     public void setMirroredNetworkViewFallbackBlock(String blockState) {
         this.mirroredNetworkViewFallbackBlock = blockState == null ? "minecraft:air" : blockState;
+    }
+
+    public boolean isMirroredBlackoutBackground() {
+        return mirroredBlackoutBackground;
+    }
+
+    public void setMirroredBlackoutBackground(boolean enabled) {
+        this.mirroredBlackoutBackground = enabled;
+    }
+
+    public BlackoutColor getMirroredBlackoutColor() {
+        return mirroredBlackoutColor;
+    }
+
+    public void setMirroredBlackoutColor(BlackoutColor color) {
+        this.mirroredBlackoutColor = color == null ? BlackoutColor.BLACK : color;
+    }
+
+    public int getMirroredActivationRange() {
+        return mirroredActivationRange;
+    }
+
+    public void setMirroredActivationRange(int rangeBlocks) {
+        this.mirroredActivationRange = rangeBlocks;
     }
 }
