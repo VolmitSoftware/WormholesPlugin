@@ -4,6 +4,7 @@ import art.arcane.volmlib.util.bukkit.WorldIdentity;
 import art.arcane.volmlib.util.localization.MessageArgument;
 import art.arcane.volmlib.util.localization.TextKey;
 import art.arcane.volmlib.util.scheduling.FoliaScheduler;
+import art.arcane.wormholes.EffectManager;
 import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.localization.WormholesLocalization;
 import art.arcane.wormholes.localization.WormholesMessages;
@@ -69,6 +70,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -105,6 +107,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 	private final ConcurrentHashMap<UUID, Entity> travelersInTransit;
 	private final ConcurrentHashMap<UUID, Long> transitCooldowns;
 	private final ConcurrentHashMap<UUID, Player> pocketRescues;
+	private final Set<UUID> pocketEscapeGlitches;
 	private final PocketStructureService pocketStructures;
 	private final DoorPortalVisualService visuals;
 
@@ -126,6 +129,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		travelersInTransit = new ConcurrentHashMap<>();
 		transitCooldowns = new ConcurrentHashMap<>();
 		pocketRescues = new ConcurrentHashMap<>();
+		pocketEscapeGlitches = ConcurrentHashMap.newKeySet();
 		pocketStructures = new PocketStructureService();
 		visuals = new DoorPortalVisualService(plugin);
 	}
@@ -525,6 +529,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		travelersInTransit.remove(playerId, event.getPlayer());
 		transitCooldowns.remove(playerId);
 		pocketRescues.remove(playerId, event.getPlayer());
+		pocketEscapeGlitches.remove(playerId);
 	}
 
 	@EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -644,6 +649,54 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 				liveCrossing.get().direction(),
 				crossingSnapshot);
 			return;
+		}
+		maybeEjectEscapedTraveler(traveler, fromLocation, toLocation);
+	}
+
+	private void maybeEjectEscapedTraveler(Entity traveler, Location fromLocation, Location toLocation)
+	{
+		if(!(traveler instanceof Player player)
+			|| player.getGameMode() == GameMode.SPECTATOR
+			|| !pocketWorldService.isPocketWorld(toLocation.getWorld()))
+		{
+			return;
+		}
+		PocketSpace space = pocketSpacesByChunk.get(
+			chunkKey(toLocation.getBlockX() >> 4, toLocation.getBlockZ() >> 4));
+		if(space == null)
+		{
+			space = pocketSpacesByChunk.get(
+				chunkKey(fromLocation.getBlockX() >> 4, fromLocation.getBlockZ() >> 4));
+		}
+		if(space != null && !PocketEscapePolicy.isEscaped(
+			pocketStructures.layout(space),
+			toLocation.getBlockX(),
+			toLocation.getBlockY(),
+			toLocation.getBlockZ()))
+		{
+			return;
+		}
+		UUID playerId = player.getUniqueId();
+		if(travelersInTransit.putIfAbsent(playerId, player) != null)
+		{
+			return;
+		}
+		if(pocketRescues.putIfAbsent(playerId, player) != null)
+		{
+			travelersInTransit.remove(playerId, player);
+			return;
+		}
+		pocketEscapeGlitches.add(playerId);
+		playEscapeGlitch(player);
+		beginPocketRescue(player);
+	}
+
+	private void playEscapeGlitch(Player player)
+	{
+		EffectManager effects = plugin.getEffectManager();
+		if(effects != null)
+		{
+			effects.playGlitchOut(player.getLocation());
 		}
 	}
 
@@ -1077,6 +1130,10 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 				{
 					finishSuccessfulTeleport(player);
 					removeTicketQuietly(player.getUniqueId(), ticket);
+					if(pocketEscapeGlitches.remove(player.getUniqueId()))
+					{
+						playEscapeGlitch(player);
+					}
 				}
 				releasePocketRescue(player);
 				if(!moved)
@@ -1126,6 +1183,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		UUID playerId = player.getUniqueId();
 		pocketRescues.remove(playerId, player);
 		travelersInTransit.remove(playerId, player);
+		pocketEscapeGlitches.remove(playerId);
 	}
 
 	private boolean isActivePocketRescue(Player player)

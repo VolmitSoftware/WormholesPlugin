@@ -357,13 +357,10 @@ public final class WormholesMessages {
             "<gray>Linked to: <red>{none}",
             "",
             "<dark_gray>Operators bypass white/blacklist.");
-    public static final LinesKey PORTAL_MENU_SETTINGS_PLACARD = lines("portal.menu.settings_placard",
-            "<aqua><bold>Portal Settings</bold>",
-            "<gray>Access and transfer controls.");
     public static final LinesKey PORTAL_MENU_SETTINGS_PLACARD_GATEWAY = lines("portal.menu.settings_placard_gateway",
             "<aqua><bold>Portal Settings</bold>",
             "<gray>Access and transfer controls.",
-            "<gray>Plus cross-server view tuning.",
+            "<gray>Plus projection view tuning.",
             "",
             "<gray>Larger depth / shorter ticks =",
             "<gray>richer view, more bandwidth.");
@@ -431,18 +428,10 @@ public final class WormholesMessages {
             "<gray>Currently: <aqua>Projection Off</aqua>",
             "",
             "<dark_gray>Click to toggle On / Off.");
-    public static final LinesKey PORTAL_MENU_SETTINGS = lines("portal.menu.settings",
-            "<aqua><bold>Settings</bold>",
-            "<gray>Permissions and transfers.",
-            "",
-            "<gray>Access: <gold>{access}",
-            "<gray>Send <aqua>{send}<gray>  Receive <aqua>{receive}",
-            "",
-            "<dark_gray>Click to open settings.");
     public static final LinesKey PORTAL_MENU_SETTINGS_GATEWAY = lines("portal.menu.settings_gateway",
             "<aqua><bold>Settings</bold>",
             "<gray>Permissions, transfers,",
-            "<gray>and cross-server view tuning.",
+            "<gray>and projection view tuning.",
             "",
             "<gray>Access: <gold>{access}",
             "<gray>Send <aqua>{send}<gray>  Receive <aqua>{receive}",

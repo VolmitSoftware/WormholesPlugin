@@ -190,16 +190,13 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			j.put("permissionMode", permissionMode.name());
 			j.put("outgoingTraversalsEnabled", outgoingTraversalsEnabled);
 			j.put("incomingTraversalsEnabled", incomingTraversalsEnabled);
-		if(isGateway())
-		{
-			j.put("networkViewDepth", networkViewDepth);
-			j.put("networkViewLateralPad", networkViewLateralPad);
-			j.put("networkViewHeartbeatTicks", networkViewHeartbeatTicks);
-			j.put("networkViewEntityIntervalTicks", networkViewEntityIntervalTicks);
-			j.put("networkViewUnsubscribeGraceSeconds", networkViewUnsubscribeGraceSeconds);
-			j.put("networkViewFallbackBlock", networkViewFallbackBlock);
-			j.put("settingsSyncEnabled", settingsSyncEnabled);
-		}
+		j.put("networkViewDepth", networkViewDepth);
+		j.put("networkViewLateralPad", networkViewLateralPad);
+		j.put("networkViewHeartbeatTicks", networkViewHeartbeatTicks);
+		j.put("networkViewEntityIntervalTicks", networkViewEntityIntervalTicks);
+		j.put("networkViewUnsubscribeGraceSeconds", networkViewUnsubscribeGraceSeconds);
+		j.put("networkViewFallbackBlock", networkViewFallbackBlock);
+		j.put("settingsSyncEnabled", settingsSyncEnabled);
 
 		if(tunnel != null)
 		{
@@ -2441,18 +2438,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 		window.setElement(0, 0, settingsPlacardElement());
 
-		if(isGateway())
-		{
-			window.setElement(-3, 1, permissionElement(window, p));
-			window.setElement(-1, 1, travelDirectionElement(window, p));
-			window.setElement(1, 1, networkViewQualityElement(window, p));
-			window.setElement(3, 1, settingsSyncElement(window, p));
-		}
-		else
-		{
-			window.setElement(-1, 1, permissionElement(window, p));
-			window.setElement(1, 1, travelDirectionElement(window, p));
-		}
+		window.setElement(-3, 1, permissionElement(window, p));
+		window.setElement(-1, 1, travelDirectionElement(window, p));
+		window.setElement(1, 1, networkViewQualityElement(window, p));
+		window.setElement(3, 1, settingsSyncElement(window, p));
 
 		window.setElement(0, 2, backToPortalMenuElement(window, p));
 
@@ -2946,7 +2935,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private Element settingsPlacardElement()
 	{
 		return localizedElement("settings-placard",
-				isGateway() ? WormholesMessages.PORTAL_MENU_SETTINGS_PLACARD_GATEWAY : WormholesMessages.PORTAL_MENU_SETTINGS_PLACARD,
+				WormholesMessages.PORTAL_MENU_SETTINGS_PLACARD_GATEWAY,
 				MessageArgs.empty(), Material.LEVER);
 	}
 
@@ -3080,18 +3069,13 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 	private Element settingsOpenerElement(Window window, Player viewer)
 	{
-		LinesKey key = isGateway() ? WormholesMessages.PORTAL_MENU_SETTINGS_GATEWAY : WormholesMessages.PORTAL_MENU_SETTINGS;
-		MessageArgs arguments = isGateway()
-				? arguments(
-						"access", permissionModeLabel(getPermissionMode()),
-						"send", localized(isOutgoingTraversalsEnabled() ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF),
-						"receive", localized(isIncomingTraversalsEnabled() ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF),
-						"depth", networkViewDepth,
-						"entity", networkViewEntityIntervalTicks)
-				: arguments(
-						"access", permissionModeLabel(getPermissionMode()),
-						"send", localized(isOutgoingTraversalsEnabled() ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF),
-						"receive", localized(isIncomingTraversalsEnabled() ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF));
+		LinesKey key = WormholesMessages.PORTAL_MENU_SETTINGS_GATEWAY;
+		MessageArgs arguments = arguments(
+				"access", permissionModeLabel(getPermissionMode()),
+				"send", localized(isOutgoingTraversalsEnabled() ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF),
+				"receive", localized(isIncomingTraversalsEnabled() ? WormholesMessages.LABEL_ON : WormholesMessages.LABEL_OFF),
+				"depth", networkViewDepth,
+				"entity", networkViewEntityIntervalTicks);
 		UIElement element = localizedElement("portal-settings", key, arguments, Material.LEVER);
 		element.onLeftClick((e) -> FoliaScheduler.runEntity(Wormholes.instance, viewer, () ->
 		{

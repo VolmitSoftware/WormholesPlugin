@@ -420,6 +420,30 @@ public class EffectManager implements Listener
 		WormholesAudience.sendActionBar(p, component);
 	}
 
+	public void playGlitchOut(Location location)
+	{
+		if(location == null)
+		{
+			return;
+		}
+		World world = location.getWorld();
+		if(world == null)
+		{
+			return;
+		}
+		Location center = location.clone().add(0.0, 1.0, 0.0);
+		if(Settings.ENABLE_PARTICLES)
+		{
+			world.spawnParticle(Particle.FLASH, center, 1, 0.0, 0.0, 0.0, 0.0);
+			world.spawnParticle(Particle.REVERSE_PORTAL, center, 40, 0.35, 0.7, 0.35, 0.25);
+			world.spawnParticle(Particle.PORTAL, center, 24, 0.3, 0.6, 0.3, 0.5);
+			world.spawnParticle(Particle.ELECTRIC_SPARK, center, 18, 0.4, 0.8, 0.4, 0.15);
+		}
+		world.playSound(center, Sound.BLOCK_GLASS_BREAK, SoundCategory.PLAYERS, 0.6f, 0.5f + ((float) (Math.random() * 0.15)));
+		world.playSound(center, Sound.BLOCK_AMETHYST_BLOCK_HIT, SoundCategory.PLAYERS, 1.0f, 0.5f);
+		world.playSound(center, Sound.ENTITY_ENDERMAN_TELEPORT, SoundCategory.PLAYERS, 0.8f, 0.55f + ((float) (Math.random() * 0.2)));
+	}
+
 	public void playPortalBlockPlaced(Block block)
 	{
 		block.getWorld().playSound(block.getLocation().clone().add(0.5, 0.5, 0.5), MSound.FRAME_FILL.bukkitSound(), SoundCategory.BLOCKS, 0.65f, 1.1f + ((float) (Math.random() * 0.2)));

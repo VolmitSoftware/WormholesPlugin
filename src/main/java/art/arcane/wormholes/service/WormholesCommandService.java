@@ -19,7 +19,6 @@ import art.arcane.wormholes.Wormholes;
 import art.arcane.wormholes.commands.CommandWormholes;
 import art.arcane.wormholes.localization.WormholesMessages;
 import art.arcane.wormholes.util.common.cache.AtomicCache;
-import net.kyori.adventure.text.Component;
 import org.bukkit.SoundCategory;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -159,9 +158,12 @@ public final class WormholesCommandService implements CommandExecutor, TabComple
 			new CommandWormholes(plugin).info(sender);
 			return true;
 		}
-		for (Component line : Wormholes.text().components(WormholesMessages.COMMAND_PUBLIC_HELP)) {
-			WormholesAudience.sendMessage(sender, line);
-		}
+		DirectorMiniMenu.Theme helpTheme = DirectorMiniMenu.Theme.fromDirectorTheme(theme);
+		List<String> lines = new ArrayList<>();
+		lines.add(DirectorMiniMenu.banner("/" + ROOT_COMMAND, helpTheme));
+		lines.addAll(Wormholes.text().miniMessageLines(WormholesMessages.COMMAND_PUBLIC_HELP));
+		lines.add(DirectorMiniMenu.bar(helpTheme));
+		DirectorMiniMenu.deliver(sender, lines);
 		return true;
 	}
 

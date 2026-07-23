@@ -26,6 +26,7 @@ import art.arcane.wormholes.network.view.RemoteViewCache;
 import art.arcane.wormholes.network.view.ViewSubscriptionManager;
 import art.arcane.wormholes.portal.ILocalPortal;
 import art.arcane.wormholes.portal.IPortal;
+import art.arcane.wormholes.portal.NetworkViewQuality;
 import art.arcane.wormholes.portal.PortalFrame;
 import art.arcane.wormholes.portal.PortalStructure;
 import art.arcane.wormholes.portal.RemotePortal;
@@ -77,6 +78,7 @@ public final class PortalProjector {
     private volatile boolean closed;
     private volatile boolean discardRequested;
     private long projectCallCount;
+    private long entityPassCount;
     private long lastDiagLogCall;
     private long lastProjectNanos;
     private int lastPlaneRejected;
@@ -257,6 +259,10 @@ public final class PortalProjector {
         }
         if (closed) {
             return;
+        }
+        if (updateEntities) {
+            updateEntities = entityUpdateDue();
+            entityPassCount++;
         }
         if (!updateBlocks && !updateEntities) {
             return;
@@ -1118,14 +1124,14 @@ public final class PortalProjector {
         if (!firstProjectionDone) {
             return true;
         }
-        int cadence = stablePassInterval(Settings.PROJECTION_STABLE_CELL_RESAMPLE_INTERVAL_TICKS);
+        int cadence = stablePassInterval(stableResampleCadenceTicks());
         if (sourceView instanceof RemoteWorldView) {
             return (projectCallCount % cadence) == 0L;
         }
         if (sourceView.getRevision() != lastSourceViewRevision) {
             return true;
         }
-        int backstop = stablePassInterval(STABLE_RESAMPLE_BACKSTOP_TICKS);
+        int backstop = stablePassInterval(fullRefreshBackstopTicks());
         if ((projectCallCount % backstop) == 0L) {
             return true;
         }
@@ -1151,6 +1157,38 @@ public final class PortalProjector {
         int projectionInterval = Math.max(1, Settings.PROJECTION_REFRESH_INTERVAL_TICKS);
         int resampleInterval = Math.max(1, intervalTicks);
         return Math.max(1, (resampleInterval + projectionInterval - 1) / projectionInterval);
+    }
+
+    private boolean usesStandardViewQuality() {
+        return NetworkViewQuality.from(
+            portal.getNetworkViewDepth(),
+            portal.getNetworkViewHeartbeatTicks(),
+            portal.getNetworkViewEntityIntervalTicks(),
+            portal.getNetworkViewUnsubscribeGraceSeconds()) == NetworkViewQuality.STANDARD;
+    }
+
+    private int stableResampleCadenceTicks() {
+        if (usesStandardViewQuality()) {
+            return Settings.PROJECTION_STABLE_CELL_RESAMPLE_INTERVAL_TICKS;
+        }
+        return Math.max(1, portal.getNetworkViewHeartbeatTicks());
+    }
+
+    private int fullRefreshBackstopTicks() {
+        if (usesStandardViewQuality()) {
+            return STABLE_RESAMPLE_BACKSTOP_TICKS;
+        }
+        return Math.max(1, portal.getNetworkViewHeartbeatTicks());
+    }
+
+    private boolean entityUpdateDue() {
+        if (usesStandardViewQuality()) {
+            return true;
+        }
+        int intervalTicks = Math.max(1, portal.getNetworkViewEntityIntervalTicks());
+        int globalTicks = Math.max(1, Settings.ENTITY_UPDATE_INTERVAL_TICKS);
+        int passInterval = Math.max(1, (intervalTicks + globalTicks - 1) / globalTicks);
+        return (entityPassCount % passInterval) == 0L;
     }
 
     private void prepareTransformCache(PortalFrame fromFrame, PortalFrame toFrame,

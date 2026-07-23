@@ -109,6 +109,15 @@ public final class WormholesLocalization {
         return List.copyOf(components);
     }
 
+    public List<String> miniMessageLines(LinesKey key) {
+        ResolvedLines resolved = manager.snapshot().resolve(key, MessageArgs.empty());
+        List<String> lines = new ArrayList<>(resolved.lines().size());
+        for (String line : resolved.lines()) {
+            lines.add(substitute(line, resolved.arguments()));
+        }
+        return List.copyOf(lines);
+    }
+
     public List<String> legacyLines(LinesKey key) {
         return legacyLines(key, MessageArgs.empty());
     }

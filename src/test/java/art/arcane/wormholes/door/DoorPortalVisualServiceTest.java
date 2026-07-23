@@ -196,6 +196,7 @@ class DoorPortalVisualServiceTest
 			{
 				case "namespace" -> "test";
 				case "getServer" -> server;
+				case "isEnabled" -> false;
 				default -> throw new AssertionError("Unexpected plugin method " + method.getName());
 			});
 		DoorPortalVisualService service = new DoorPortalVisualService(plugin);
@@ -257,6 +258,7 @@ class DoorPortalVisualServiceTest
 			{
 				case "namespace" -> "test";
 				case "getServer" -> server;
+				case "isEnabled" -> false;
 				default -> throw new AssertionError("Unexpected plugin method " + method.getName());
 			});
 		DoorPortalVisualService service = new DoorPortalVisualService(plugin);
@@ -327,6 +329,7 @@ class DoorPortalVisualServiceTest
 			{
 				case "namespace" -> "test";
 				case "getServer" -> server;
+				case "isEnabled" -> false;
 				default -> throw new AssertionError("Unexpected plugin method " + method.getName());
 			});
 		DoorPortalVisualService service = new DoorPortalVisualService(plugin);
@@ -346,6 +349,175 @@ class DoorPortalVisualServiceTest
 
 		assertTrue(removed.get());
 		assertEquals(1, spawnCalls.get());
+	}
+
+	@Test
+	void animateFrameDrivesInterpolatedTransformAndSurfaceParticles()
+	{
+		boolean particlesEnabled = art.arcane.wormholes.Settings.ENABLE_PARTICLES;
+		art.arcane.wormholes.Settings.ENABLE_PARTICLES = true;
+		try
+		{
+			AtomicInteger particleSpawns = new AtomicInteger();
+			AtomicInteger interpolationDelay = new AtomicInteger(-1);
+			AtomicInteger interpolationDuration = new AtomicInteger(-1);
+			AtomicReference<org.bukkit.util.Transformation> applied = new AtomicReference<>();
+			BlockDisplay overlay = (BlockDisplay) Proxy.newProxyInstance(
+				BlockDisplay.class.getClassLoader(),
+				new Class<?>[] {BlockDisplay.class},
+				(proxy, method, arguments) -> switch(method.getName())
+				{
+					case "setInterpolationDelay" ->
+					{
+						interpolationDelay.set((Integer) arguments[0]);
+						yield null;
+					}
+					case "setInterpolationDuration" ->
+					{
+						interpolationDuration.set((Integer) arguments[0]);
+						yield null;
+					}
+					case "setTransformation" ->
+					{
+						applied.set((org.bukkit.util.Transformation) arguments[0]);
+						yield null;
+					}
+					default -> throw new AssertionError("Unexpected overlay method " + method.getName());
+				});
+			BlockDisplay backing = display(new AtomicBoolean());
+			World world = (World) Proxy.newProxyInstance(
+				World.class.getClassLoader(),
+				new Class<?>[] {World.class},
+				(proxy, method, arguments) -> switch(method.getName())
+				{
+					case "spawnParticle" ->
+					{
+						particleSpawns.incrementAndGet();
+						yield null;
+					}
+					case "playSound" -> null;
+					default -> throw new AssertionError("Unexpected world method " + method.getName());
+				});
+			Plugin plugin = (Plugin) Proxy.newProxyInstance(
+				Plugin.class.getClassLoader(),
+				new Class<?>[] {Plugin.class},
+				(proxy, method, arguments) ->
+				{
+					if(method.getName().equals("namespace"))
+					{
+						return "test";
+					}
+					throw new AssertionError("Unexpected plugin method " + method.getName());
+				});
+			DoorPortalVisualService service = new DoorPortalVisualService(plugin);
+			DoorPortalVisualService.Visual visual = new DoorPortalVisualService.Visual(
+				new DoorPosition(UUID.randomUUID(), "minecraft:overworld", 1, 2, 3),
+				backing,
+				overlay);
+			DoorPortalVisualService.PortalPlaneGeometry base =
+				DoorPortalVisualService.overlayGeometry(
+					DoorPortalVisualService.geometry(BlockFace.NORTH, Door.Hinge.LEFT), BlockFace.NORTH);
+			org.bukkit.Location anchor = new org.bukkit.Location(world, 1.5D, 2.0D, 3.5D);
+
+			service.animateFrame(visual, world, anchor, BlockFace.NORTH, base, 2);
+
+			assertEquals(0, interpolationDelay.get());
+			assertEquals(DoorPortalAnimation.FRAME_PERIOD_TICKS, interpolationDuration.get());
+			assertTrue(applied.get() != null);
+			assertEquals(2, particleSpawns.get());
+
+			particleSpawns.set(0);
+			service.animateFrame(visual, world, anchor, BlockFace.NORTH, base, 0);
+			assertEquals(3, particleSpawns.get());
+		}
+		finally
+		{
+			art.arcane.wormholes.Settings.ENABLE_PARTICLES = particlesEnabled;
+		}
+	}
+
+	@Test
+	void animateFrameSkipsParticlesWhenDisabled()
+	{
+		boolean particlesEnabled = art.arcane.wormholes.Settings.ENABLE_PARTICLES;
+		art.arcane.wormholes.Settings.ENABLE_PARTICLES = false;
+		try
+		{
+			AtomicInteger overlayCalls = new AtomicInteger();
+			BlockDisplay overlay = (BlockDisplay) Proxy.newProxyInstance(
+				BlockDisplay.class.getClassLoader(),
+				new Class<?>[] {BlockDisplay.class},
+				(proxy, method, arguments) -> switch(method.getName())
+				{
+					case "setInterpolationDelay", "setInterpolationDuration", "setTransformation" ->
+					{
+						overlayCalls.incrementAndGet();
+						yield null;
+					}
+					default -> throw new AssertionError("Unexpected overlay method " + method.getName());
+				});
+			World world = (World) Proxy.newProxyInstance(
+				World.class.getClassLoader(),
+				new Class<?>[] {World.class},
+				(proxy, method, arguments) ->
+				{
+					throw new AssertionError("Unexpected world method " + method.getName());
+				});
+			Plugin plugin = (Plugin) Proxy.newProxyInstance(
+				Plugin.class.getClassLoader(),
+				new Class<?>[] {Plugin.class},
+				(proxy, method, arguments) ->
+				{
+					if(method.getName().equals("namespace"))
+					{
+						return "test";
+					}
+					throw new AssertionError("Unexpected plugin method " + method.getName());
+				});
+			DoorPortalVisualService service = new DoorPortalVisualService(plugin);
+			DoorPortalVisualService.Visual visual = new DoorPortalVisualService.Visual(
+				new DoorPosition(UUID.randomUUID(), "minecraft:overworld", 1, 2, 3),
+				display(new AtomicBoolean()),
+				overlay);
+			DoorPortalVisualService.PortalPlaneGeometry base =
+				DoorPortalVisualService.overlayGeometry(
+					DoorPortalVisualService.geometry(BlockFace.EAST, Door.Hinge.RIGHT), BlockFace.EAST);
+
+			service.animateFrame(
+				visual, world, new org.bukkit.Location(world, 1.5D, 2.0D, 3.5D), BlockFace.EAST, base, 4);
+
+			assertEquals(3, overlayCalls.get());
+		}
+		finally
+		{
+			art.arcane.wormholes.Settings.ENABLE_PARTICLES = particlesEnabled;
+		}
+	}
+
+	@Test
+	void animationHaltsForUntrackedOrClosedVisuals()
+	{
+		Plugin plugin = (Plugin) Proxy.newProxyInstance(
+			Plugin.class.getClassLoader(),
+			new Class<?>[] {Plugin.class},
+			(proxy, method, arguments) ->
+			{
+				if(method.getName().equals("namespace"))
+				{
+					return "test";
+				}
+				throw new AssertionError("Unexpected plugin method " + method.getName());
+			});
+		DoorPortalVisualService service = new DoorPortalVisualService(plugin);
+		DoorPortalVisualService.Visual visual = new DoorPortalVisualService.Visual(
+			new DoorPosition(UUID.randomUUID(), "minecraft:overworld", 1, 2, 3),
+			display(new AtomicBoolean()),
+			display(new AtomicBoolean()));
+
+		assertTrue(!service.shouldContinueAnimating(UUID.randomUUID(), visual));
+
+		service.close();
+		assertTrue(!service.shouldContinueAnimating(UUID.randomUUID(), visual));
 	}
 
 	private static void assertLateralBounds(

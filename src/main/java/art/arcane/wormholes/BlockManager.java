@@ -158,8 +158,6 @@ public class BlockManager implements Listener
 		for(PortalBlock i : blocks.get(c))
 		{
 			i.getLocation().getBlock().setType(Material.AIR);
-			ItemStack is = get(i.getType(), 1);
-			i.getLocation().getWorld().dropItemNaturally(i.getLocation().clone().add(0.5, 0.5, 0.5), is);
 		}
 
 		blocks.remove(c);
