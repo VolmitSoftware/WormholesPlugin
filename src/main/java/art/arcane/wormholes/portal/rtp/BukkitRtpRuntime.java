@@ -34,6 +34,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 {
 	private static final double SOURCE_CAPTURE_MARGIN = 2.0D;
 	private static final double ARRIVAL_TOLERANCE = 0.001D;
+	private static final double MINIMUM_ENVELOPE_EXTENT = 0.05D;
 
 	private final RtpService service;
 	private final Environment environment;
@@ -292,7 +293,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 		}
 	}
 
-	public void traverse(LocalPortal portal, Entity entity, Traversive traversive)
+	public boolean traverse(LocalPortal portal, Entity entity, Traversive traversive)
 	{
 		LocalPortal requiredPortal = Objects.requireNonNull(portal, "portal");
 		Entity requiredEntity = Objects.requireNonNull(entity, "entity");
@@ -301,13 +302,13 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 				|| !sourceEligible(requiredPortal, requiredEntity)
 				|| !requiredPortal.beginRtpTraversal(requiredEntity, environment.nowMillis()))
 		{
-			return;
+			return false;
 		}
 		ActiveTraversal activeTraversal = new ActiveTraversal(requiredPortal, requiredEntity);
 		if(activeTraversals.putIfAbsent(requiredEntity.getUniqueId(), activeTraversal) != null)
 		{
 			requiredPortal.cancelRtpTraversal(requiredEntity);
-			return;
+			return false;
 		}
 		RtpService.TraversalActor actor = requiredEntity instanceof Player
 				? RtpService.TraversalActor.player(UUID.randomUUID(), requiredEntity.getUniqueId())
@@ -326,7 +327,8 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 			}
 			RtpService.TraversalPreparation admitted = preparation.get();
 			boolean scheduled = environment.scheduleEntity(requiredEntity,
-					() -> prepareTraversal(requiredPortal, requiredEntity, requiredTraversive, admitted),
+					() -> guardStage(requiredPortal, requiredEntity, admitted, null,
+							() -> prepareTraversal(requiredPortal, requiredEntity, requiredTraversive, admitted)),
 					() -> failTraversal(requiredPortal, requiredEntity, admitted, null));
 			if(!scheduled)
 			{
@@ -334,6 +336,12 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 						new IllegalStateException("Entity scheduler rejected RTP traversal preparation"));
 			}
 		});
+		return true;
+	}
+
+	public void abortTraversal(UUID entityId)
+	{
+		cancelEntityTraversal(Objects.requireNonNull(entityId, "entityId"));
 	}
 
 	private void cancelPortalTraversals(UUID portalId)
@@ -511,7 +519,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 			RtpValidationRequest.EntityEnvelope envelope,
 			RetainedTraversal retained)
 	{
-		boolean scheduled = environment.scheduleEntity(entity, () ->
+		boolean scheduled = environment.scheduleEntity(entity, () -> guardStage(portal, entity, preparation, retained, () ->
 		{
 			if(!sourceEligible(portal, entity) || !portal.canContinueRtpTraversal(entity))
 			{
@@ -558,7 +566,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 					confirmTraversal(portal, entity, traversive, preparation, targetFrame, target, retained);
 				});
 			});
-		}, () ->
+		}), () ->
 		{
 			retained.close();
 			failTraversal(portal, entity, preparation, null);
@@ -580,7 +588,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 			Location target,
 			RetainedTraversal retained)
 	{
-		boolean scheduled = environment.scheduleEntity(entity, () ->
+		boolean scheduled = environment.scheduleEntity(entity, () -> guardStage(portal, entity, preparation, retained, () ->
 		{
 			if(!arrivedAt(entity, target) || attached(entity))
 			{
@@ -603,7 +611,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 				}
 				environment.completeSuccess(portal, entity, traversive, targetFrame, target);
 			});
-		}, () ->
+		}), () ->
 		{
 			retained.close();
 			failTraversal(portal, entity, preparation, null);
@@ -613,6 +621,27 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 			retained.close();
 			failTraversal(portal, entity, preparation,
 					new IllegalStateException("Entity scheduler rejected RTP arrival confirmation"));
+		}
+	}
+
+	private void guardStage(
+			LocalPortal portal,
+			Entity entity,
+			RtpService.TraversalPreparation preparation,
+			RetainedTraversal retained,
+			Runnable stage)
+	{
+		try
+		{
+			stage.run();
+		}
+		catch(RuntimeException exception)
+		{
+			if(retained != null)
+			{
+				retained.close();
+			}
+			failTraversal(portal, entity, preparation, exception);
 		}
 	}
 
@@ -743,7 +772,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 
 	private boolean sourceEligible(LocalPortal portal, Entity entity)
 	{
-		if(entity == null || !entity.isValid() || attached(entity))
+		if(entity == null || !entity.isValid() || attached(entity) || !physicallyTraversable(entity))
 		{
 			return false;
 		}
@@ -773,13 +802,27 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 	{
 		Location location = entity.getLocation();
 		BoundingBox box = entity.getBoundingBox();
-		return new RtpValidationRequest.EntityEnvelope(
-				box.getMinX() - location.getX(),
-				box.getMaxX() - location.getX(),
-				box.getMinY() - location.getY(),
-				box.getMaxY() - location.getY(),
-				box.getMinZ() - location.getZ(),
-				box.getMaxZ() - location.getZ());
+		double[] x = normalizedEnvelopeAxis(box.getMinX() - location.getX(), box.getMaxX() - location.getX());
+		double[] y = normalizedEnvelopeAxis(box.getMinY() - location.getY(), box.getMaxY() - location.getY());
+		double[] z = normalizedEnvelopeAxis(box.getMinZ() - location.getZ(), box.getMaxZ() - location.getZ());
+		return new RtpValidationRequest.EntityEnvelope(x[0], x[1], y[0], y[1], z[0], z[1]);
+	}
+
+	public static boolean physicallyTraversable(Entity entity)
+	{
+		BoundingBox box = entity.getBoundingBox();
+		return box.getMaxX() > box.getMinX() && box.getMaxY() > box.getMinY() && box.getMaxZ() > box.getMinZ();
+	}
+
+	static double[] normalizedEnvelopeAxis(double minimum, double maximum)
+	{
+		if(maximum - minimum >= MINIMUM_ENVELOPE_EXTENT)
+		{
+			return new double[] {minimum, maximum};
+		}
+		double center = (minimum + maximum) / 2.0D;
+		double half = MINIMUM_ENVELOPE_EXTENT / 2.0D;
+		return new double[] {center - half, center + half};
 	}
 
 	static PortalFrame targetFrameFor(PortalFrame sourceFrame)

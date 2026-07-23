@@ -31,6 +31,7 @@ public final class PaperPluginMetadataTest {
         assertTrue(metadata.contains("bootstrapper: " + WormholesBootstrap.class.getName()));
         assertTrue(metadata.contains("folia-supported: true"));
         assertTrue(metadata.contains("PlaceholderAPI:"));
+        assertTrue(metadata.contains("Iris:"));
         assertTrue(metadata.contains("load: BEFORE"));
         assertTrue(metadata.contains("required: false"));
         assertTrue(metadata.contains("join-classpath: true"));
@@ -51,7 +52,7 @@ public final class PaperPluginMetadataTest {
         assertEquals(Wormholes.class.getName(), metadata.getMain());
         assertEquals("26.2", metadata.getAPIVersion());
         assertEquals(PluginLoadOrder.POSTWORLD, metadata.getLoad());
-        assertEquals(List.of("PlaceholderAPI"), metadata.getSoftDepend());
+        assertEquals(List.of("PlaceholderAPI", "Iris"), metadata.getSoftDepend());
         Map<String, Map<String, Object>> commands = metadata.getCommands();
         assertTrue(commands.containsKey("wormholes"));
         assertEquals(List.of("wh", "wormhole"), commands.get("wormholes").get("aliases"));

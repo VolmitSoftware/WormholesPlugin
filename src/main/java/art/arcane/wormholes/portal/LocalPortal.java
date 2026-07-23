@@ -46,13 +46,16 @@ import art.arcane.wormholes.localization.WormholesLocalization;
 import art.arcane.wormholes.localization.WormholesMessages;
 import art.arcane.wormholes.network.PortalSyncService;
 import art.arcane.wormholes.platform.WormholesPlatform;
+import art.arcane.wormholes.portal.rtp.BukkitRtpRuntime;
 import art.arcane.wormholes.portal.rtp.RtpAllocationMode;
 import art.arcane.wormholes.portal.rtp.RtpPortalEditor;
 import art.arcane.wormholes.portal.rtp.RtpPortalEditorModel;
 import art.arcane.wormholes.portal.rtp.RtpRotationMode;
 import art.arcane.wormholes.portal.rtp.RtpSettings;
+import art.arcane.wormholes.portal.rtp.RtpTraversalHoldPolicy;
 import art.arcane.wormholes.service.WormholesAudience;
 import art.arcane.wormholes.service.WormholesTelemetry;
+import art.arcane.wormholes.survival.doors.dimension.PocketWorldService;
 import art.arcane.volmlib.util.bukkit.WorldIdentity;
 import art.arcane.volmlib.util.localization.LinesKey;
 import art.arcane.volmlib.util.localization.MessageArgs;
@@ -88,6 +91,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 {
 	private static final long REENTRY_LATCH_TTL_MILLIS = 60_000L;
 	private static final double REENTRY_EXIT_MARGIN = 2.0D;
+	private static final long RTP_HOLD_NOTICE_DELAY_MILLIS = 500L;
+	private static final long RTP_HOLD_NOTICE_PERIOD_MILLIS = 1_000L;
 	private static final long SHORT_TITLE_FRESH_LOOK_MILLIS = 400L;
 	private static final long SHORT_TITLE_FADE_IN_MILLIS = 250L;
 	private static final long SHORT_TITLE_STAY_MILLIS = 350L;
@@ -527,9 +532,34 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 			if(rtp)
 			{
-				if(Wormholes.rtpRuntime != null)
+				if(Wormholes.rtpRuntime == null || TELEPORT_IN_FLIGHT.contains(entityId)
+						|| !BukkitRtpRuntime.physicallyTraversable(i))
 				{
-					Wormholes.rtpRuntime.traverse(this, i, traversive);
+					continue;
+				}
+				if(isTeleportCoolingDown(entityId, now))
+				{
+					rejectCooldownTraversal(i, traversive);
+					continue;
+				}
+				if(!canDepart(i))
+				{
+					rejectTraversal(i, traversive);
+					continue;
+				}
+				if(i.getVehicle() != null || !i.getPassengers().isEmpty())
+				{
+					bounceRejectedTraversal(i, traversive);
+					continue;
+				}
+				if(!Wormholes.rtpRuntime.isReady(getId()))
+				{
+					rejectUnreadyRtpTraversal(i, traversive);
+					continue;
+				}
+				if(Wormholes.rtpRuntime.traverse(this, i, traversive))
+				{
+					startRtpTraversalHold(i, traversive);
 				}
 				continue;
 			}
@@ -1324,6 +1354,111 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		}
 	}
 
+	private void rejectUnreadyRtpTraversal(Entity entity, Traversive traversive)
+	{
+		bounceRejectedTraversal(entity, traversive);
+		if(entity instanceof Player player)
+		{
+			WormholesAudience.sendActionBar(player, Wormholes.text().component(WormholesMessages.PORTAL_RTP_NOT_READY));
+		}
+	}
+
+	private void startRtpTraversalHold(Entity entity, Traversive traversive)
+	{
+		PortalStructure portalStructure = getStructure();
+		World sourceWorld = portalStructure == null ? null : portalStructure.getWorld();
+		UUID entityId = entity.getUniqueId();
+		if(sourceWorld == null || Wormholes.instance == null)
+		{
+			abortRtpTraversal(entityId);
+			return;
+		}
+		Location anchor = entity.getLocation().clone();
+		long startedAtMillis = System.currentTimeMillis();
+		long[] lastNoticeMillis = new long[] {0L};
+		Runnable[] step = new Runnable[1];
+		step[0] = () ->
+		{
+			if(!entity.isValid())
+			{
+				return;
+			}
+			long nowMillis = System.currentTimeMillis();
+			ReentryLatch latch = activeReentryLatch(entityId, nowMillis);
+			boolean completed = latch != null && getId().equals(latch.portalId());
+			boolean inFlight = TELEPORT_IN_FLIGHT.contains(entityId);
+			boolean sameWorld = sourceWorld.equals(entity.getWorld());
+			Location current = entity.getLocation();
+			double driftSquared = sameWorld ? current.distanceSquared(anchor) : Double.MAX_VALUE;
+			double sideDistance = sameWorld ? sourceSideDistance(traversive, current.toVector()) : 0.0D;
+			switch(RtpTraversalHoldPolicy.decide(completed, inFlight, sameWorld, sideDistance, driftSquared, nowMillis - startedAtMillis))
+			{
+				case STOP_ARRIVED ->
+				{
+				}
+				case CANCEL_RETREAT -> abortRtpTraversal(entityId);
+				case BOUNCE_FAILED -> bounceFailedRtpTraversal(entity, traversive);
+				case BOUNCE_TIMEOUT ->
+				{
+					abortRtpTraversal(entityId);
+					bounceFailedRtpTraversal(entity, traversive);
+				}
+				case HOLD_FREE ->
+				{
+					if(!FoliaScheduler.runEntity(Wormholes.instance, entity, step[0], 1L))
+					{
+						abortRtpTraversal(entityId);
+					}
+				}
+				case HOLD_PIN ->
+				{
+					if(nowMillis - startedAtMillis >= RTP_HOLD_NOTICE_DELAY_MILLIS
+							&& nowMillis - lastNoticeMillis[0] >= RTP_HOLD_NOTICE_PERIOD_MILLIS
+							&& entity instanceof Player player)
+					{
+						lastNoticeMillis[0] = nowMillis;
+						WormholesAudience.sendActionBar(player, Wormholes.text().component(WormholesMessages.PORTAL_RTP_NOT_READY));
+					}
+					entity.setVelocity(new Vector(0, 0, 0));
+					if(driftSquared > RtpTraversalHoldPolicy.LEASH_DRIFT_SQUARED)
+					{
+						Location snap = anchor.clone();
+						snap.setYaw(current.getYaw());
+						snap.setPitch(current.getPitch());
+						entity.teleport(snap, PlayerTeleportEvent.TeleportCause.PLUGIN);
+					}
+					if(!FoliaScheduler.runEntity(Wormholes.instance, entity, step[0], 1L))
+					{
+						abortRtpTraversal(entityId);
+					}
+				}
+			}
+		};
+		if(!FoliaScheduler.runEntity(Wormholes.instance, entity, step[0], 1L))
+		{
+			abortRtpTraversal(entityId);
+		}
+	}
+
+	private void abortRtpTraversal(UUID entityId)
+	{
+		if(Wormholes.rtpRuntime != null)
+		{
+			Wormholes.rtpRuntime.abortTraversal(entityId);
+			return;
+		}
+		TELEPORT_IN_FLIGHT.remove(entityId);
+	}
+
+	private void bounceFailedRtpTraversal(Entity entity, Traversive traversive)
+	{
+		rejectDeparture(entity, traversive);
+		if(entity instanceof Player player)
+		{
+			WormholesAudience.sendActionBar(player, Wormholes.text().component(WormholesMessages.PORTAL_RTP_TRAVERSAL_FAILED));
+		}
+	}
+
 	public void completeRtpTraversal(Entity entity, Traversive traversive, PortalFrame targetFrame, Location target)
 	{
 		Entity requiredEntity = Objects.requireNonNull(entity, "entity");
@@ -1954,7 +2089,8 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		{
 			return structure.getWorld();
 		}
-		return WorldIdentity.resolve(worldKey).orElse(null);
+		World resolved = WorldIdentity.resolve(worldKey).orElse(null);
+		return PocketWorldService.isPocketWorld(resolved) ? null : resolved;
 	}
 
 	private void applyRtpSettings(RtpSettings settings)
@@ -2159,6 +2295,10 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			ArrayList<RtpPortalEditorModel.WorldOption> worlds = new ArrayList<RtpPortalEditorModel.WorldOption>();
 			for(World world : Bukkit.getWorlds())
 			{
+				if(PocketWorldService.isPocketWorld(world))
+				{
+					continue;
+				}
 				worlds.add(RtpPortalEditorModel.WorldOption.from(world));
 			}
 			boolean targetWorldAvailable = resolveRtpWorld(settings.getTargetWorldKey()) != null;

@@ -507,6 +507,8 @@ public final class WormholesMessages {
     public static final TextKey PORTAL_RTP_REROLL_UNAVAILABLE = text("portal.rtp.notice.reroll_unavailable", "Reroll is unavailable while the route is preparing or in use.");
     public static final TextKey PORTAL_RTP_POOL_REBUILDING = text("portal.rtp.notice.pool_rebuilding", "Rebuilding the private destination pool.");
     public static final TextKey PORTAL_RTP_POOL_FAILED = text("portal.rtp.notice.pool_failed", "Pool rebuild failed; see the server log.");
+    public static final TextKey PORTAL_RTP_NOT_READY = text("portal.rtp.notice.not_ready", "<yellow>The portal is still stabilizing its destination.");
+    public static final TextKey PORTAL_RTP_TRAVERSAL_FAILED = text("portal.rtp.notice.traversal_failed", "<red>The portal could not stabilize; try again.");
     public static final TextKey PORTAL_TRAVEL_MANAGED = text("portal.notice.travel_managed", "Dimensional portal travel is managed automatically.");
     public static final TextKey PORTAL_TRAVEL_MIRROR_LOCKED = text("portal.notice.travel_mirror_locked", "Mirror mode never allows travel.");
     public static final TextKey PORTAL_TRAVEL_CHANGED = text("portal.notice.travel_changed", "Travel {mode}");

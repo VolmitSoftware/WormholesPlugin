@@ -11,6 +11,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.IntPredicate;
 
 import org.bukkit.HeightMap;
 import org.bukkit.Location;
@@ -52,6 +53,13 @@ public final class BukkitRtpCandidateLoader implements AutoCloseable
 		if(world == null)
 		{
 			return CompletableFuture.failedFuture(new IllegalStateException("RTP target world is unavailable"));
+		}
+		if(Boolean.TRUE.equals(IrisTerrainProbe.shared().isUnderwater(
+				world,
+				requiredRequest.destination().blockX(),
+				requiredRequest.destination().blockZ())))
+		{
+			return CompletableFuture.failedFuture(new IllegalStateException("RTP candidate is below the Iris fluid surface"));
 		}
 		return retain(world, requiredRequest.destination(), envelope).thenCompose(retention ->
 		{
@@ -250,10 +258,7 @@ public final class BukkitRtpCandidateLoader implements AutoCloseable
 		{
 			try
 			{
-				result.complete(Integer.valueOf(world.getHighestBlockAt(
-						destination.blockX(),
-						destination.blockZ(),
-						HeightMap.MOTION_BLOCKING_NO_LEAVES).getY() + 1));
+				result.complete(Integer.valueOf(resolveSurfaceFeetY(world, destination)));
 			}
 			catch(RuntimeException exception)
 			{
@@ -265,6 +270,50 @@ public final class BukkitRtpCandidateLoader implements AutoCloseable
 			result.completeExceptionally(new IllegalStateException("Owning region rejected RTP surface query"));
 		}
 		return result;
+	}
+
+	private int resolveSurfaceFeetY(World world, RtpDestination destination)
+	{
+		if(world.getEnvironment() != World.Environment.NETHER)
+		{
+			return world.getHighestBlockAt(
+					destination.blockX(),
+					destination.blockZ(),
+					HeightMap.MOTION_BLOCKING_NO_LEAVES).getY() + 1;
+		}
+		int logicalCeiling = Math.min(world.getMaxHeight(), 128);
+		int highestFeetY = logicalCeiling - RtpSafetyValidator.NETHER_ROOF_BAND_DEPTH - 2;
+		int lowestFeetY = world.getMinHeight() + 1;
+		IntPredicate support = y -> isSupport(world.getBlockAt(destination.blockX(), y, destination.blockZ()));
+		IntPredicate open = y -> isOpen(world.getBlockAt(destination.blockX(), y, destination.blockZ()));
+		Integer feetY = descendingSurfaceFeetY(highestFeetY, lowestFeetY, support, open);
+		if(feetY == null)
+		{
+			throw new IllegalStateException("RTP nether column has no sheltered surface");
+		}
+		return feetY.intValue();
+	}
+
+	static Integer descendingSurfaceFeetY(int highestFeetY, int lowestFeetY, IntPredicate support, IntPredicate open)
+	{
+		for(int feetY = highestFeetY; feetY >= lowestFeetY; feetY--)
+		{
+			if(support.test(feetY - 1) && open.test(feetY) && open.test(feetY + 1))
+			{
+				return Integer.valueOf(feetY);
+			}
+		}
+		return null;
+	}
+
+	private static boolean isSupport(Block block)
+	{
+		return !block.isPassable() && !block.isLiquid();
+	}
+
+	private static boolean isOpen(Block block)
+	{
+		return block.isPassable() && !block.isLiquid();
 	}
 
 	private CompletionStage<RtpValidationRequest> capture(

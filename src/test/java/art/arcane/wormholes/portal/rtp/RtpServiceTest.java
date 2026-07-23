@@ -19,6 +19,7 @@ import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntFunction;
 
@@ -462,6 +463,61 @@ public final class RtpServiceTest
 		assertEquals(0, harness.loader.openRetentions());
 		harness.executor.runAll();
 		assertEquals(0, harness.loader.openRetentions());
+	}
+
+	@Test
+	public void failedSearchCampaignsEscalateRetryBackoffUntilSuccessResets()
+	{
+		AtomicBoolean uniqueMode = new AtomicBoolean(false);
+		CountingSampler sampler = new CountingSampler(attempt ->
+		{
+			if(!uniqueMode.get())
+			{
+				throw new IllegalStateException("sampler forced to fail");
+			}
+			return destination(0L, attempt, attempt * 16, 64, attempt * -16);
+		});
+		TestHarness harness = new TestHarness(sampler);
+		UUID portalId = uuid("backoff-portal");
+		UUID viewerId = uuid("backoff-viewer");
+		harness.register(portalId, settings(RtpAllocationMode.SHARED, RtpRotationMode.ON_TRAVERSAL));
+		harness.service.touchViewer(portalId, viewerId).join();
+		harness.executor.runAll();
+		assertFalse(harness.service.snapshot(portalId).orElseThrow().runtime().ready());
+
+		harness.advance(999L);
+		assertEquals(0, harness.executor.size());
+		harness.advance(1L);
+		assertEquals(1, harness.executor.size());
+		harness.executor.runAll();
+
+		harness.advance(1_999L);
+		assertEquals(0, harness.executor.size());
+		harness.advance(1L);
+		assertEquals(1, harness.executor.size());
+		harness.executor.runAll();
+
+		harness.advance(3_999L);
+		assertEquals(0, harness.executor.size());
+		harness.advance(1L);
+		assertEquals(1, harness.executor.size());
+
+		uniqueMode.set(true);
+		harness.executor.runAll();
+		assertTrue(harness.service.snapshot(portalId).orElseThrow().runtime().ready());
+
+		uniqueMode.set(false);
+		RtpService.TraversalPreparation preparation = harness.service.claimTraversal(
+				portalId,
+				RtpService.TraversalActor.player(uuid("backoff-claim"), viewerId)).join().orElseThrow();
+		assertTrue(harness.service.markTraversalDispatched(preparation).join());
+		assertTrue(harness.service.completeTraversal(preparation, true).join());
+		harness.executor.runAll();
+
+		harness.advance(999L);
+		assertEquals(0, harness.executor.size());
+		harness.advance(1L);
+		assertEquals(1, harness.executor.size());
 	}
 
 	private static CountingSampler uniqueSampler()

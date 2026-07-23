@@ -111,6 +111,24 @@ public final class RtpLiveRuntimeTest
 	}
 
 	@Test
+	public void zeroExtentEntityIsNeverAdmittedToTraversal()
+	{
+		Harness harness = new Harness(RtpRotationMode.STATIC);
+		harness.prepareReady();
+		MutableEntity phantom = MutableEntity.entity(harness.world, harness.sourceLocation())
+				.withEnvelope(0.0D, 0.0D, 0.0D, 0.0D, 0.0D, 0.0D);
+		Location before = phantom.location.clone();
+
+		assertFalse(harness.runtime.traverse(harness.portal, phantom.entity(), harness.traversive(phantom.entity())));
+
+		assertLocation(before, phantom.location);
+		assertEquals(0, harness.environment.teleports.get());
+		assertEquals(0, harness.environment.successes.get());
+		assertTrue(harness.portal.beginRtpTraversal(phantom.entity(), harness.environment.nowMillis));
+		harness.portal.cancelRtpTraversal(phantom.entity());
+	}
+
+	@Test
 	public void travelerLeavingSourceBeforeDispatchIsRejectedUnchanged()
 	{
 		Harness harness = new Harness(RtpRotationMode.STATIC);

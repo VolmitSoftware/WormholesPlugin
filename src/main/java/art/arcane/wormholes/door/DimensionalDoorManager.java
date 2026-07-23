@@ -539,7 +539,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		{
 			return;
 		}
-		if(!pocketWorldService.isPocketWorld(player.getWorld()))
+		if(!PocketWorldService.isPocketWorld(player.getWorld()))
 		{
 			return;
 		}
@@ -657,7 +657,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 	{
 		if(!(traveler instanceof Player player)
 			|| player.getGameMode() == GameMode.SPECTATOR
-			|| !pocketWorldService.isPocketWorld(toLocation.getWorld()))
+			|| !PocketWorldService.isPocketWorld(toLocation.getWorld()))
 		{
 			return;
 		}
@@ -811,7 +811,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		World sourceWorld,
 		DoorTransit transit)
 	{
-		if(pocketWorldService.isPocketWorld(sourceWorld))
+		if(PocketWorldService.isPocketWorld(sourceWorld))
 		{
 			abortTransit(traveler, source, WormholesMessages.DOOR_NESTED_POCKET, TicketContext.NONE);
 			return;
@@ -1006,7 +1006,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		{
 			world = WorldIdentity.resolve(ticket.sourceWorldKey()).orElse(null);
 		}
-		if(world == null || pocketWorldService.isPocketWorld(world))
+		if(world == null || PocketWorldService.isPocketWorld(world))
 		{
 			loadPocketRescueFallback(player, ticket, WormholesMessages.DOOR_RESCUE_RETURN_WORLD_UNAVAILABLE);
 			return;
@@ -1060,7 +1060,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		World firstAvailable = null;
 		for(World candidate : plugin.getServer().getWorlds())
 		{
-			if(pocketWorldService.isPocketWorld(candidate))
+			if(PocketWorldService.isPocketWorld(candidate))
 			{
 				continue;
 			}
@@ -1095,7 +1095,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 		{
 			return;
 		}
-		if(!pocketWorldService.isPocketWorld(player.getWorld()))
+		if(!PocketWorldService.isPocketWorld(player.getWorld()))
 		{
 			releasePocketRescue(player);
 			return;
@@ -1831,7 +1831,7 @@ public final class DimensionalDoorManager implements Listener, AutoCloseable
 
 	private boolean isPocketCoreBlock(Block block)
 	{
-		if(!pocketWorldService.isPocketWorld(block.getWorld()))
+		if(!PocketWorldService.isPocketWorld(block.getWorld()))
 		{
 			return false;
 		}

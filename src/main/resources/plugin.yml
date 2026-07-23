@@ -5,7 +5,7 @@ api-version: ${apiVersion}
 load: POSTWORLD
 description: Through-portal projection. See what is on the other side without crossing.
 authors: [ VolmitSoftware ]
-softdepend: [ PlaceholderAPI ]
+softdepend: [ PlaceholderAPI, Iris ]
 commands:
   wormholes:
     description: Wormholes base command.

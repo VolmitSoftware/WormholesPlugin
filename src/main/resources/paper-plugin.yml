@@ -13,6 +13,10 @@ dependencies:
       load: BEFORE
       required: false
       join-classpath: true
+    Iris:
+      load: BEFORE
+      required: false
+      join-classpath: true
 permissions:
   wormholes.*:
     description: Gives access to all Wormholes permissions.

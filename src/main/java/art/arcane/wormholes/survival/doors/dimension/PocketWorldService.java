@@ -55,7 +55,7 @@ public final class PocketWorldService implements Listener, AutoCloseable {
         return ready;
     }
 
-    public boolean isPocketWorld(World candidate) {
+    public static boolean isPocketWorld(World candidate) {
         return candidate != null && WORLD_KEY.equals(candidate.getKey());
     }
 

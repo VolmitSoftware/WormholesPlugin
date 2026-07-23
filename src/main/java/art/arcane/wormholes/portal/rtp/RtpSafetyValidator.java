@@ -17,7 +17,7 @@ public final class RtpSafetyValidator
 	private static final double MAXIMUM_ENVELOPE_SIZE = 8.0D;
 	private static final int MAXIMUM_CHUNKS = 4;
 	private static final int MAXIMUM_REGIONS = 4;
-	private static final int NETHER_ROOF_BAND_DEPTH = 5;
+	static final int NETHER_ROOF_BAND_DEPTH = 5;
 	private static final Set<String> LIQUID_MATERIALS = Set.of(
 			"minecraft:water",
 			"minecraft:lava",

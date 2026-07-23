@@ -22,6 +22,7 @@ public final class RtpService
 	private static final int MAXIMUM_SEARCH_ATTEMPTS = 32;
 	private static final long SEARCH_DEADLINE_MILLIS = 5_000L;
 	private static final long SEARCH_RETRY_MILLIS = 1_000L;
+	private static final long MAXIMUM_SEARCH_RETRY_MILLIS = 30_000L;
 	private static final long TRAVERSAL_PREPARATION_DEADLINE_MILLIS = 5_000L;
 	private static final long TRAVERSAL_DISPATCH_DEADLINE_MILLIS = 10_000L;
 
@@ -307,6 +308,7 @@ public final class RtpService
 			return false;
 		}
 		entry.nextSearchAllowedAtMillis = 0L;
+		entry.consecutiveSearchFailures = 0;
 		markChanged(entry);
 		maintain(entry);
 		return true;
@@ -325,6 +327,7 @@ public final class RtpService
 			closeRetention(entry, destination);
 		}
 		entry.nextSearchAllowedAtMillis = 0L;
+		entry.consecutiveSearchFailures = 0;
 		markChanged(entry);
 		maintain(entry);
 		return invalidated;
@@ -921,6 +924,7 @@ public final class RtpService
 			entry.retentions.put(result.destination(), retention);
 			entry.searchCampaign = null;
 			entry.nextSearchAllowedAtMillis = 0L;
+			entry.consecutiveSearchFailures = 0;
 			pruneSharedRetentions(entry, entry.runtime.snapshot());
 			markChanged(entry);
 			maintain(entry);
@@ -968,7 +972,11 @@ public final class RtpService
 		}
 		entry.runtime.failSearch(campaign.ticket, dependencies.timeSource().nowMillis());
 		entry.searchCampaign = null;
-		entry.nextSearchAllowedAtMillis = deadline(dependencies.timeSource().nowMillis(), SEARCH_RETRY_MILLIS);
+		entry.consecutiveSearchFailures = Math.min(entry.consecutiveSearchFailures + 1, 16);
+		long retryMillis = Math.min(
+				SEARCH_RETRY_MILLIS << entry.consecutiveSearchFailures - 1,
+				MAXIMUM_SEARCH_RETRY_MILLIS);
+		entry.nextSearchAllowedAtMillis = deadline(dependencies.timeSource().nowMillis(), retryMillis);
 		pruneSharedRetentions(entry, entry.runtime.snapshot());
 		markChanged(entry);
 	}
@@ -1609,6 +1617,7 @@ public final class RtpService
 		private SearchCampaign searchCampaign;
 		private long nextSearchAllowedAtMillis;
 		private long searchWakeScheduledAtMillis;
+		private int consecutiveSearchFailures;
 		private long revision;
 		private int nextAttemptOrdinal;
 		private boolean accessIntegrationFailed;
