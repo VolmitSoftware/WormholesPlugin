@@ -13,7 +13,6 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Objects;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -69,8 +68,7 @@ public final class TomlCodec {
         }
 
         try {
-            Object defaults = newInstance(type);
-            writeObjectContents(out, instance, defaults, "");
+            writeObjectContents(out, instance, "");
         } catch (IllegalAccessException e) {
             throw new IllegalStateException("Cannot read config field", e);
         }
@@ -89,15 +87,13 @@ public final class TomlCodec {
         }
     }
 
-    private static void writeObjectContents(StringBuilder out, Object instance, Object defaults, String sectionPath) throws IllegalAccessException {
+    private static void writeObjectContents(StringBuilder out, Object instance, String sectionPath) throws IllegalAccessException {
         for (Field field : instance.getClass().getDeclaredFields()) {
             if (!isSerializableField(field) || isSection(field.getType()) || isSectionList(field)) {
                 continue;
             }
             field.setAccessible(true);
-            Object value = field.get(instance);
-            Object defaultValue = defaults == null ? null : field.get(defaults);
-            if (shouldWriteField(field, value, defaultValue)) {
+            if (field.get(instance) != null) {
                 writeField(out, field, instance, "");
             }
         }
@@ -108,8 +104,7 @@ public final class TomlCodec {
             }
             field.setAccessible(true);
             Object section = field.get(instance);
-            Object defaultSection = defaults == null ? null : field.get(defaults);
-            if (!hasWritableContent(section, defaultSection)) {
+            if (!hasWritableContent(section)) {
                 continue;
             }
             String name = toTomlKey(field.getName());
@@ -117,7 +112,7 @@ public final class TomlCodec {
             out.append('\n');
             appendDoc(out, section.getClass().getAnnotation(ConfigDoc.class));
             out.append('[').append(nestedPath).append("]\n");
-            writeObjectContents(out, section, defaultSection, nestedPath);
+            writeObjectContents(out, section, nestedPath);
         }
 
         for (Field field : instance.getClass().getDeclaredFields()) {
@@ -138,12 +133,12 @@ public final class TomlCodec {
                 out.append('\n');
                 appendDescription(out, field.getAnnotation(ConfigDescription.class));
                 out.append("[[").append(nestedPath).append("]]\n");
-                writeObjectContents(out, entry, newInstance(entry.getClass()), nestedPath);
+                writeObjectContents(out, entry, nestedPath);
             }
         }
     }
 
-    private static boolean hasWritableContent(Object instance, Object defaults) throws IllegalAccessException {
+    private static boolean hasWritableContent(Object instance) throws IllegalAccessException {
         if (instance == null) {
             return false;
         }
@@ -153,7 +148,6 @@ public final class TomlCodec {
             }
             field.setAccessible(true);
             Object value = field.get(instance);
-            Object defaultValue = defaults == null ? null : field.get(defaults);
             if (isSectionList(field)) {
                 if (value instanceof List<?> entries && !entries.isEmpty()) {
                     return true;
@@ -161,23 +155,16 @@ public final class TomlCodec {
                 continue;
             }
             if (isSection(field.getType())) {
-                if (hasWritableContent(value, defaultValue)) {
+                if (hasWritableContent(value)) {
                     return true;
                 }
                 continue;
             }
-            if (shouldWriteField(field, value, defaultValue)) {
+            if (value != null) {
                 return true;
             }
         }
         return false;
-    }
-
-    private static boolean shouldWriteField(Field field, Object value, Object defaultValue) {
-        if (value == null) {
-            return false;
-        }
-        return !field.isAnnotationPresent(ConfigAdvanced.class) || !Objects.deepEquals(value, defaultValue);
     }
 
     private static boolean isSerializableField(Field field) {

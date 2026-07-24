@@ -424,6 +424,57 @@ public final class RtpPortalRuntimeTest
 		assertTrue(replacementRuntime.snapshot().ready());
 	}
 
+	@Test
+	public void invalidateDestinationEmptiesSharedSlotAndReopensSearch()
+	{
+		RtpPortalRuntime runtime = RtpPortalRuntime.shared(60L, RtpRotationMode.ON_TRAVERSAL, 1_000L);
+		RtpDestination active = destination("invalidate-active");
+		RtpDestination standby = destination("invalidate-standby");
+		fillShared(runtime, active, standby, 0L);
+
+		assertTrue(runtime.invalidateDestination(standby));
+		RtpRuntimeSnapshot snapshot = runtime.snapshot();
+		assertNull(snapshot.standby());
+		assertFalse(snapshot.ready());
+		assertEquals(1, snapshot.candidateCount());
+
+		RtpPortalRuntime.SearchTicket replacement = runtime.beginSearch().orElseThrow();
+		assertEquals(RtpPortalRuntime.SearchPurpose.SHARED_STANDBY, replacement.purpose());
+		assertEquals(RtpPortalRuntime.SearchCompletion.ADDED, runtime.completeSearch(replacement, destination("invalidate-standby-two"), 10L));
+		assertTrue(runtime.snapshot().ready());
+	}
+
+	@Test
+	public void invalidateDestinationRefusesClaimedAndUnknownDestinations()
+	{
+		RtpPortalRuntime runtime = RtpPortalRuntime.shared(61L, RtpRotationMode.STATIC, 1_000L);
+		RtpDestination active = destination("refuse-active");
+		RtpDestination standby = destination("refuse-standby");
+		fillShared(runtime, active, standby, 0L);
+
+		RtpPortalRuntime.TraversalClaim claim = runtime.claimShared(uuid("refuse-claim")).orElseThrow();
+		assertFalse(runtime.invalidateDestination(active));
+		assertFalse(runtime.invalidateDestination(destination("refuse-unknown")));
+		assertTrue(runtime.completeTraversal(claim, false, 5L));
+
+		assertTrue(runtime.invalidateDestination(active));
+		assertNull(runtime.snapshot().active());
+	}
+
+	@Test
+	public void invalidateDestinationReleasesPerPlayerReservation()
+	{
+		RtpPortalRuntime runtime = RtpPortalRuntime.perPlayer(62L, 1_000L);
+		UUID player = uuid("invalidate-player");
+		runtime.touchPlayer(player);
+		fillPerPlayer(runtime, 3, "invalidate-pool");
+		RtpDestination reserved = runtime.reservePlayer(player, 0L).orElseThrow();
+
+		assertTrue(runtime.invalidateDestination(reserved));
+		assertTrue(runtime.reservationFor(player).isEmpty());
+		assertEquals(2, runtime.snapshot().candidateCount());
+	}
+
 	private void fillShared(RtpPortalRuntime runtime, RtpDestination active, RtpDestination standby, long nowMillis)
 	{
 		RtpPortalRuntime.SearchTicket activeTicket = runtime.beginSearch().orElseThrow();

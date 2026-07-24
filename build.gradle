@@ -75,9 +75,7 @@ tasks.named('build').configure {
 shadowJarTask.configure {
     archiveClassifier.set('')
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-    minimize {
-        exclude(dependency('com.github.luben:zstd-jni:.*'))
-    }
+    minimize()
     relocate('io.github.slimjar', "${lib}.slimjar")
     relocate('org.bstats', "${lib}.bstats")
     relocate('com.github.retrooper.packetevents', "${lib}.packetevents.api")
@@ -193,12 +191,13 @@ repositories {
 
 dependencies {
     implementation('de.crazydev22.slimjar.helper:spigot:2.1.9')
-    implementation('com.github.luben:zstd-jni:1.5.7-11')
+    compileOnly('com.github.luben:zstd-jni:1.5.7-11')
     compileOnly(libs.paper)
     compileOnly(libs.fastutil)
     spigotCompatibility("org.spigotmc:spigot-api:${spigotApiVersion}")
     testImplementation(libs.paper)
     testImplementation(libs.fastutil)
+    testImplementation('com.github.luben:zstd-jni:1.5.7-11')
     testImplementation(libs.junitJupiter)
     testRuntimeOnly(libs.junitPlatformLauncher)
     implementation(volmLibCoordinate) {

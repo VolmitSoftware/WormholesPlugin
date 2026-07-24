@@ -19,7 +19,7 @@ class TomlCodecNetworkTest {
     Path tempDir;
 
     @Test
-    void operatorSettingsRoundTripAndDeterminedSettingsAreNotWritten() throws Exception {
+    void operatorSettingsRoundTripAndEveryKnobIsWritten() throws Exception {
         NetworkConfig original = new NetworkConfig();
         original.enabled = true;
         original.listenEnabled = true;
@@ -33,10 +33,10 @@ class TomlCodecNetworkTest {
 
         String written = Files.readString(file.toPath(), StandardCharsets.UTF_8);
         assertFalse(written.contains("[[peers]]"), "network config should not expose static peers:\n" + written);
-        assertTrue(written.contains("advertise-host-override"), "advertise-host-override is the kept escape hatch and must be written");
-        assertFalse(written.contains("transfer-mode"), "auto transfer mode must not be written");
-        assertFalse(written.contains("server-name"), "auto-derived server name must not be written");
-        assertFalse(written.contains("compression-enabled"), "fixed transport tuning must not be written");
+        assertTrue(written.contains("advertise-host-override"), "advertise-host-override must be written");
+        assertTrue(written.contains("transfer-mode"), "transfer mode must be visible and configurable");
+        assertTrue(written.contains("server-name"), "server name must be visible and configurable");
+        assertTrue(written.contains("compression-enabled"), "transport tuning must be visible and configurable");
 
         NetworkConfig loaded = TomlCodec.loadOrCreate(file, NetworkConfig.class);
         assertEquals(true, loaded.enabled);

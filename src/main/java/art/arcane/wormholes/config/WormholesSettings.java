@@ -48,6 +48,7 @@ public final class WormholesSettings {
                 }
                 file = loadRequired(consolidated.toFile(), WormholesConfigFile.class);
                 VisualQualityProfile profile = validateAndNormalize(file);
+                TomlCodec.writeCanonical(consolidated.toFile(), file);
                 return fromFile(file, profile);
             }
 

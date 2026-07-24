@@ -455,7 +455,7 @@ public final class RtpService
 		if(failure != null || loaded == null)
 		{
 			entry.preparationAttempts.remove(preparation.destination);
-			entry.preparationFailures.add(preparation.destination);
+			discardUnpreparableDestination(entry, preparation.destination);
 			markChanged(entry);
 			maintain(entry);
 			return;
@@ -500,7 +500,7 @@ public final class RtpService
 		if(failure != null || result == null || !result.safe() || !preparation.destination.equals(result.destination()))
 		{
 			retention.close();
-			entry.preparationFailures.add(preparation.destination);
+			discardUnpreparableDestination(entry, preparation.destination);
 		}
 		else
 		{
@@ -509,6 +509,16 @@ public final class RtpService
 		}
 		markChanged(entry);
 		maintain(entry);
+	}
+
+	private void discardUnpreparableDestination(PortalEntry entry, RtpDestination destination)
+	{
+		if(entry.runtime.invalidateDestination(destination))
+		{
+			entry.preparationFailures.remove(destination);
+			return;
+		}
+		entry.preparationFailures.add(destination);
 	}
 
 	private boolean isCurrentPreparation(PortalEntry entry, ExistingPreparation preparation)

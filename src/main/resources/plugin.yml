@@ -6,6 +6,8 @@ load: POSTWORLD
 description: Through-portal projection. See what is on the other side without crossing.
 authors: [ VolmitSoftware ]
 softdepend: [ PlaceholderAPI, Iris ]
+libraries:
+  - com.github.luben:zstd-jni:1.5.7-11
 commands:
   wormholes:
     description: Wormholes base command.

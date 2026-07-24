@@ -9,6 +9,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -24,27 +26,31 @@ class WormholesConfigFileTest {
     Path tempDir;
 
     @Test
-    void freshInstallEmitsOnlyConciseOperatorKeys() throws IOException {
+    void freshInstallEmitsEveryConfigKey() throws IOException {
         WormholesSettings settings = WormholesSettings.loadAll(tempDir);
         Path file = tempDir.resolve("config").resolve(WormholesSettings.CONFIG_FILE_NAME);
 
         assertEquals(VisualQualityProfile.AUTO, settings.getVisualQualityProfile());
         assertTrue(settings.getMain().dimensionalDoorsEnabled);
-        assertEquals(List.of(
-            "schema = 2",
-            "quality = \"auto\"",
-            "[main]",
-            "language = \"en_US\"",
-            "replace-nether-and-end-portals = true",
-            "dimensional-doors-enabled = true",
-            "[network]",
-            "enabled = false",
-            "listen-port = 8901"
-        ), emittedSettings(file));
+        List<String> emitted = emittedSettings(file);
+        assertEquals("schema = 2", emitted.get(0));
+        assertEquals("quality = \"auto\"", emitted.get(1));
+        assertTrue(emitted.contains("[main]"));
+        assertTrue(emitted.contains("[network]"));
+        assertTrue(emitted.contains("[network.transport]"));
+        assertTrue(emitted.contains("[network.view]"));
+        assertTrue(emitted.contains("[network.stats]"));
+        assertTrue(emitted.contains("[network.replication]"));
+        assertTrue(emitted.contains("[projection]"));
+        assertTrue(emitted.contains("[render]"));
+        assertTrue(emitted.contains("aperture-padding-blocks = 0.75"));
+
+        String content = String.join("\n", emitted);
+        assertEveryKeyEmitted(content, WormholesConfigFile.class);
     }
 
     @Test
-    void advancedCompatibilityValuesRoundTripOnlyWhenChanged() throws IOException {
+    void allValuesRoundTripThroughCanonicalWrite() throws IOException {
         File file = tempDir.resolve("wormholes.toml").toFile();
         WormholesConfigFile created = new WormholesConfigFile();
         created.network.enabled = true;
@@ -60,8 +66,8 @@ class WormholesConfigFileTest {
         assertTrue(written.contains("enable-particles = false"));
         assertTrue(written.contains("[network.transport]"));
         assertTrue(written.contains("compression-level = 7"));
+        assertTrue(written.contains("compression-enabled = true"));
         assertTrue(written.contains("[projection]"));
-        assertFalse(written.contains("compression-enabled"));
 
         TomlCodec.LoadResult<WormholesConfigFile> result = TomlCodec.readExisting(file, WormholesConfigFile.class);
         assertTrue(result.isSuccess());
@@ -71,6 +77,25 @@ class WormholesConfigFileTest {
         assertFalse(result.value().main.enableParticles);
         assertEquals(72.0D, result.value().projection.range);
         assertFalse(result.value().render.entitySpoofing);
+    }
+
+    @Test
+    void existingConfigGainsNewlyVisibleKeysOnLoadWithoutLosingValues() throws IOException {
+        Path config = tempDir.resolve("config").resolve(WormholesSettings.CONFIG_FILE_NAME);
+        Files.createDirectories(config.getParent());
+        Files.writeString(config, "schema = 2\n[main]\nlanguage = \"de_DE\"\n[projection]\nrange = 72.0\n", StandardCharsets.UTF_8);
+
+        WormholesSettings settings = WormholesSettings.loadAll(tempDir);
+
+        assertEquals("de_DE", settings.getMain().language);
+        assertEquals(72.0D, settings.getProjection().range);
+        List<String> emitted = emittedSettings(config);
+        assertTrue(emitted.contains("language = \"de_DE\""));
+        assertTrue(emitted.contains("range = 72.0"));
+        assertTrue(emitted.contains("aperture-padding-blocks = 0.75"));
+        assertTrue(emitted.contains("[network.transport]"));
+        String content = String.join("\n", emitted);
+        assertEveryKeyEmitted(content, WormholesConfigFile.class);
     }
 
     @Test
@@ -211,5 +236,39 @@ class WormholesConfigFileTest {
             .map(String::trim)
             .filter(line -> !line.isEmpty() && !line.startsWith("#"))
             .toList();
+    }
+
+    private static void assertEveryKeyEmitted(String content, Class<?> type) {
+        for (Field field : type.getDeclaredFields()) {
+            int modifiers = field.getModifiers();
+            if (Modifier.isStatic(modifiers) || Modifier.isTransient(modifiers)) {
+                continue;
+            }
+            if (List.class.isAssignableFrom(field.getType())) {
+                continue;
+            }
+            if (field.getType().getName().startsWith("art.arcane.wormholes.config.toml")) {
+                assertEveryKeyEmitted(content, field.getType());
+                continue;
+            }
+            String key = kebabKey(field.getName());
+            assertTrue(content.contains(key + " = "), "missing config key: " + key);
+        }
+    }
+
+    private static String kebabKey(String fieldName) {
+        StringBuilder out = new StringBuilder(fieldName.length() + 4);
+        for (int index = 0; index < fieldName.length(); index++) {
+            char character = fieldName.charAt(index);
+            if (Character.isUpperCase(character)) {
+                if (index > 0) {
+                    out.append('-');
+                }
+                out.append(Character.toLowerCase(character));
+            } else {
+                out.append(character);
+            }
+        }
+        return out.toString();
     }
 }

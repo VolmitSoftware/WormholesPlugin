@@ -2127,6 +2127,7 @@ public final class PortalProjector {
         private final double rightMax;
         private final double upMin;
         private final double upMax;
+        private final double cellTolerance;
 
         private PortalPlaneWindow(PortalStructure structure,
                                   boolean perCell,
@@ -2145,7 +2146,8 @@ public final class PortalProjector {
                                   double rightMin,
                                   double rightMax,
                                   double upMin,
-                                  double upMax) {
+                                  double upMax,
+                                  double cellTolerance) {
             this.structure = structure;
             this.perCell = perCell;
             this.normalAxis = normalAxis;
@@ -2164,6 +2166,7 @@ public final class PortalProjector {
             this.rightMax = rightMax;
             this.upMin = upMin;
             this.upMax = upMax;
+            this.cellTolerance = cellTolerance;
         }
 
         static PortalPlaneWindow create(PortalStructure structure,
@@ -2208,7 +2211,8 @@ public final class PortalProjector {
                 originX, originY, originZ,
                 frame.getRight().x(), frame.getRight().y(), frame.getRight().z(),
                 frame.getUp().x(), frame.getUp().y(), frame.getUp().z(),
-                eyeSignedDistance, rightMin - padding, rightMax + padding, upMin - padding, upMax + padding);
+                eyeSignedDistance, rightMin - padding, rightMax + padding, upMin - padding, upMax + padding,
+                Math.min(padding, 1.0D - EPSILON));
         }
 
         boolean slabWindow(double eyeX, double eyeY, double eyeZ, double cellSignedDistance, double[] out4) {
@@ -2299,7 +2303,50 @@ public final class PortalProjector {
             } else {
                 bz = planeCoord;
             }
-            return structure.containsBlock(bx, by, bz);
+            if (structure.containsBlock(bx, by, bz)) {
+                return true;
+            }
+            if (cellTolerance <= 0.0D) {
+                return false;
+            }
+            double firstLateral = normalAxis == 0 ? hitY : hitX;
+            double secondLateral = normalAxis == 2 ? hitY : hitZ;
+            int firstLow = lateralLowOffset(firstLateral, cellTolerance);
+            int firstHigh = lateralHighOffset(firstLateral, cellTolerance);
+            int secondLow = lateralLowOffset(secondLateral, cellTolerance);
+            int secondHigh = lateralHighOffset(secondLateral, cellTolerance);
+            for (int first = firstLow; first <= firstHigh; first++) {
+                for (int second = secondLow; second <= secondHigh; second++) {
+                    if (first == 0 && second == 0) {
+                        continue;
+                    }
+                    int nx = bx;
+                    int ny = by;
+                    int nz = bz;
+                    if (normalAxis == 0) {
+                        ny = by + first;
+                        nz = bz + second;
+                    } else if (normalAxis == 1) {
+                        nx = bx + first;
+                        nz = bz + second;
+                    } else {
+                        nx = bx + first;
+                        ny = by + second;
+                    }
+                    if (structure.containsBlock(nx, ny, nz)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static int lateralLowOffset(double coordinate, double tolerance) {
+            return coordinate - Math.floor(coordinate) < tolerance ? -1 : 0;
+        }
+
+        private static int lateralHighOffset(double coordinate, double tolerance) {
+            return coordinate - Math.floor(coordinate) > 1.0D - tolerance ? 1 : 0;
         }
 
         private static double dot(double x, double y, double z, Direction direction) {

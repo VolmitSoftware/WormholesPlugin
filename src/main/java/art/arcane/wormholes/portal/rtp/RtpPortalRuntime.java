@@ -379,6 +379,60 @@ public final class RtpPortalRuntime
 		return invalidated;
 	}
 
+	public synchronized boolean invalidateDestination(RtpDestination destination)
+	{
+		Objects.requireNonNull(destination);
+		if (!knownDestinations.contains(destination) || rerolling || timedRotationPending || destinationClaimed(destination))
+		{
+			return false;
+		}
+		if (destination.equals(active))
+		{
+			active = null;
+		}
+		if (destination.equals(standby))
+		{
+			standby = null;
+		}
+		freeDestinations.remove(destination);
+		Iterator<Map.Entry<UUID, Reservation>> iterator = reservations.entrySet().iterator();
+		while (iterator.hasNext())
+		{
+			if (destination.equals(iterator.next().getValue().destination()))
+			{
+				iterator.remove();
+			}
+		}
+		removeKnownDestination(destination);
+		return true;
+	}
+
+	private boolean destinationClaimed(RtpDestination destination)
+	{
+		for (TraversalClaim claim : sharedClaims.values())
+		{
+			if (destination.equals(claim.destination()))
+			{
+				return true;
+			}
+		}
+		for (TraversalClaim claim : playerClaims.values())
+		{
+			if (destination.equals(claim.destination()))
+			{
+				return true;
+			}
+		}
+		for (TraversalClaim claim : anonymousClaims.values())
+		{
+			if (destination.equals(claim.destination()))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	public synchronized RtpRuntimeSnapshot snapshot()
 	{
 		int releasingPlayers = 0;

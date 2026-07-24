@@ -35,6 +35,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 	private static final double SOURCE_CAPTURE_MARGIN = 2.0D;
 	private static final double ARRIVAL_TOLERANCE = 0.001D;
 	private static final double MINIMUM_ENVELOPE_EXTENT = 0.05D;
+	private static final long FAILURE_RELOG_MILLIS = 60_000L;
 
 	private final RtpService service;
 	private final Environment environment;
@@ -42,7 +43,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 	private final Map<UUID, PortalRegistration> registrations;
 	private final Map<AttendanceKey, Attendance> attendance;
 	private final Map<UUID, ActiveTraversal> activeTraversals;
-	private final Set<String> reportedFailures;
+	private final Map<String, Long> reportedFailures;
 	private final AtomicBoolean closed;
 
 	public BukkitRtpRuntime(RtpService service, Environment environment, long attendanceIdleMillis)
@@ -57,7 +58,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 		registrations = new ConcurrentHashMap<UUID, PortalRegistration>();
 		attendance = new ConcurrentHashMap<AttendanceKey, Attendance>();
 		activeTraversals = new ConcurrentHashMap<UUID, ActiveTraversal>();
-		reportedFailures = ConcurrentHashMap.newKeySet();
+		reportedFailures = new ConcurrentHashMap<String, Long>();
 		closed = new AtomicBoolean(false);
 	}
 
@@ -326,14 +327,21 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 				return;
 			}
 			RtpService.TraversalPreparation admitted = preparation.get();
-			boolean scheduled = environment.scheduleEntity(requiredEntity,
-					() -> guardStage(requiredPortal, requiredEntity, admitted, null,
-							() -> prepareTraversal(requiredPortal, requiredEntity, requiredTraversive, admitted)),
-					() -> failTraversal(requiredPortal, requiredEntity, admitted, null));
-			if(!scheduled)
+			try
 			{
-				failTraversal(requiredPortal, requiredEntity, admitted,
-						new IllegalStateException("Entity scheduler rejected RTP traversal preparation"));
+				boolean scheduled = environment.scheduleEntity(requiredEntity,
+						() -> guardStage(requiredPortal, requiredEntity, admitted, null,
+								() -> prepareTraversal(requiredPortal, requiredEntity, requiredTraversive, admitted)),
+						() -> failTraversal(requiredPortal, requiredEntity, admitted, null));
+				if(!scheduled)
+				{
+					failTraversal(requiredPortal, requiredEntity, admitted,
+							new IllegalStateException("Entity scheduler rejected RTP traversal preparation"));
+				}
+			}
+			catch(RuntimeException exception)
+			{
+				failTraversal(requiredPortal, requiredEntity, admitted, exception);
 			}
 		});
 		return true;
@@ -428,7 +436,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 			failTraversal(portal, entity, preparation, exception);
 			return;
 		}
-		loadStage.whenComplete((loaded, loadFailure) ->
+		loadStage.whenComplete((loaded, loadFailure) -> guardStage(portal, entity, preparation, null, () ->
 		{
 			if(loadFailure != null || loaded == null)
 			{
@@ -437,7 +445,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 			}
 			RetainedTraversal retained = new RetainedTraversal(loaded.retention());
 			validateTraversal(portal, entity, traversive, preparation, loaded.validationRequest(), retained);
-		});
+		}));
 	}
 
 	private void validateTraversal(
@@ -459,7 +467,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 			failTraversal(portal, entity, preparation, exception);
 			return;
 		}
-		validationStage.whenComplete((safety, validationFailure) ->
+		validationStage.whenComplete((safety, validationFailure) -> guardStage(portal, entity, preparation, retained, () ->
 		{
 			if(validationFailure != null || safety == null || !safety.safe()
 					|| !preparation.claim().destination().equals(safety.destination()))
@@ -469,7 +477,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 				return;
 			}
 			checkTraversalAccess(portal, entity, traversive, preparation, validationRequest.entityEnvelope(), retained);
-		});
+		}));
 	}
 
 	private void checkTraversalAccess(
@@ -498,7 +506,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 			failTraversal(portal, entity, preparation, exception);
 			return;
 		}
-		accessStage.whenComplete((access, accessFailure) ->
+		accessStage.whenComplete((access, accessFailure) -> guardStage(portal, entity, preparation, retained, () ->
 		{
 			if(accessFailure != null || access == null || !access.allowed())
 			{
@@ -508,7 +516,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 				return;
 			}
 			dispatchTraversal(portal, entity, traversive, preparation, envelope, retained);
-		});
+		}));
 	}
 
 	private void dispatchTraversal(
@@ -536,7 +544,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 			}
 			PortalFrame targetFrame = targetFrameFor(portal.getFrame());
 			Location target = targetLocation(targetWorld, preparation.claim().destination(), traversive, targetFrame, envelope);
-			service.markTraversalDispatched(preparation).whenComplete((marked, markFailure) ->
+			service.markTraversalDispatched(preparation).whenComplete((marked, markFailure) -> guardStage(portal, entity, preparation, retained, () ->
 			{
 				if(markFailure != null || !Boolean.TRUE.equals(marked))
 				{
@@ -555,7 +563,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 					failTraversal(portal, entity, preparation, exception);
 					return;
 				}
-				teleportStage.whenComplete((teleported, teleportFailure) ->
+				teleportStage.whenComplete((teleported, teleportFailure) -> guardStage(portal, entity, preparation, retained, () ->
 				{
 					if(teleportFailure != null || !Boolean.TRUE.equals(teleported))
 					{
@@ -564,8 +572,8 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 						return;
 					}
 					confirmTraversal(portal, entity, traversive, preparation, targetFrame, target, retained);
-				});
-			});
+				}));
+			}));
 		}), () ->
 		{
 			retained.close();
@@ -596,7 +604,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 				failTraversal(portal, entity, preparation, null);
 				return;
 			}
-			service.completeTraversal(preparation, true).whenComplete((completed, completionFailure) ->
+			service.completeTraversal(preparation, true).whenComplete((completed, completionFailure) -> guardStage(portal, entity, preparation, retained, () ->
 			{
 				retained.close();
 				activeTraversals.remove(entity.getUniqueId());
@@ -610,7 +618,7 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 					return;
 				}
 				environment.completeSuccess(portal, entity, traversive, targetFrame, target);
-			});
+			}));
 		}), () ->
 		{
 			retained.close();
@@ -871,9 +879,19 @@ public final class BukkitRtpRuntime implements ProjectionManager.RtpProjectionPr
 	private void reportFailure(String context, Throwable failure)
 	{
 		Throwable requiredFailure = Objects.requireNonNull(failure, "failure");
-		if(reportedFailures.add(context))
+		long nowMillis = System.currentTimeMillis();
+		Long previous = reportedFailures.get(context);
+		if(previous != null && nowMillis - previous.longValue() < FAILURE_RELOG_MILLIS)
+		{
+			return;
+		}
+		reportedFailures.put(context, Long.valueOf(nowMillis));
+		try
 		{
 			environment.reportFailure(context, requiredFailure);
+		}
+		catch(RuntimeException ignored)
+		{
 		}
 	}
 

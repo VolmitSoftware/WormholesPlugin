@@ -90,9 +90,13 @@ import net.md_5.bungee.api.ChatColor;
 public class LocalPortal extends Portal implements ILocalPortal, IProgressivePortal, IFXPortal, IOwnablePortal, Listener
 {
 	private static final long REENTRY_LATCH_TTL_MILLIS = 60_000L;
+	private static final long REJECTED_REENTRY_LATCH_TTL_MILLIS = 2_500L;
+	private static final long REENTRY_WAITING_EXIT_GRACE_MILLIS = 2_000L;
+	private static final long TELEPORT_IN_FLIGHT_TTL_MILLIS = 30_000L;
 	private static final double REENTRY_EXIT_MARGIN = 2.0D;
 	private static final long RTP_HOLD_NOTICE_DELAY_MILLIS = 500L;
 	private static final long RTP_HOLD_NOTICE_PERIOD_MILLIS = 1_000L;
+	private static final long RTP_UNREADY_NOTICE_PERIOD_MILLIS = 1_500L;
 	private static final long SHORT_TITLE_FRESH_LOOK_MILLIS = 400L;
 	private static final long SHORT_TITLE_FADE_IN_MILLIS = 250L;
 	private static final long SHORT_TITLE_STAY_MILLIS = 350L;
@@ -108,8 +112,9 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	private static final int DEFAULT_ACTIVATION_RANGE = 0;
 	private static final ConcurrentHashMap<UUID, Long> TELEPORT_COOLDOWNS = new ConcurrentHashMap<UUID, Long>();
 	private static final ConcurrentHashMap<UUID, ReentryLatch> REENTRY_LATCHES = new ConcurrentHashMap<UUID, ReentryLatch>();
-	private static final Set<UUID> TELEPORT_IN_FLIGHT = ConcurrentHashMap.newKeySet();
+	private static final ConcurrentHashMap<UUID, Long> TELEPORT_IN_FLIGHT = new ConcurrentHashMap<UUID, Long>();
 
+	private final ConcurrentHashMap<UUID, Long> rtpUnreadyNoticeMillis = new ConcurrentHashMap<UUID, Long>();
 	private PhantomSpinner spinner;
 	private PortalStructure structure;
 	private volatile PortalType type;
@@ -481,10 +486,46 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			{
 				open();
 			}
+			else
+			{
+				notifyUnreadyRtpCrossings();
+			}
 		}
 		if(Settings.DEBUG_RENDERING)
 		{
 			playEffect(PortalEffect.AMBIENT_DEBUG);
+		}
+	}
+
+	private void notifyUnreadyRtpCrossings()
+	{
+		if(!isAmbientAttended() || getRtpSettings() == null)
+		{
+			return;
+		}
+		PortalStructure portalStructure = getStructure();
+		if(portalStructure == null || portalStructure.getWorld() == null)
+		{
+			return;
+		}
+		long now = System.currentTimeMillis();
+		for(Entity i : portalStructure.getCaptureZone().getEntities(portalStructure.getWorld()))
+		{
+			if(!(i instanceof Player player) || !portalStructure.contains(player.getLocation()))
+			{
+				continue;
+			}
+			Long last = rtpUnreadyNoticeMillis.get(player.getUniqueId());
+			if(last != null && now - last.longValue() < RTP_UNREADY_NOTICE_PERIOD_MILLIS)
+			{
+				continue;
+			}
+			if(rtpUnreadyNoticeMillis.size() > 64)
+			{
+				rtpUnreadyNoticeMillis.entrySet().removeIf(entry -> now - entry.getValue().longValue() >= RTP_UNREADY_NOTICE_PERIOD_MILLIS);
+			}
+			rtpUnreadyNoticeMillis.put(player.getUniqueId(), Long.valueOf(now));
+			WormholesAudience.sendActionBar(player, Wormholes.text().component(WormholesMessages.PORTAL_RTP_NOT_READY));
 		}
 	}
 
@@ -531,7 +572,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 						Wormholes.v("[latch] " + i.getName() + " inside portal " + getId() + " - reentry latch ARMED (no teleport until they fully leave)");
 					}
 				}
-				else if(latch.armed)
+				else if(shouldReleaseReentryLatchOutsidePortal(latch.armed, latch.stampMillis(), now))
 				{
 					clearReentryLatch(entityId);
 					Wormholes.v("[latch] " + i.getName() + " left portal " + getId() + " - reentry latch CLEARED (eligible again)");
@@ -547,7 +588,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 			if(rtp)
 			{
-				if(Wormholes.rtpRuntime == null || TELEPORT_IN_FLIGHT.contains(entityId)
+				if(Wormholes.rtpRuntime == null || isTeleportInFlight(entityId, now)
 						|| !BukkitRtpRuntime.physicallyTraversable(i))
 				{
 					continue;
@@ -1106,7 +1147,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			boolean reloadExpected = target.getWorld() != null && !target.getWorld().equals(p.getWorld());
 
 			UUID entityId = p.getUniqueId();
-			if(!TELEPORT_IN_FLIGHT.add(entityId))
+			if(!markTeleportInFlight(entityId, System.currentTimeMillis()))
 			{
 				return;
 			}
@@ -1120,7 +1161,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 
 			WormholesPlatform.teleport(Wormholes.instance, p, target, PlayerTeleportEvent.TeleportCause.PLUGIN).whenComplete((success, error) ->
 			{
-				TELEPORT_IN_FLIGHT.remove(entityId);
+				clearTeleportInFlight(entityId);
 				if(error != null || !Boolean.TRUE.equals(success))
 				{
 					return;
@@ -1347,7 +1388,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		{
 			return false;
 		}
-		return TELEPORT_IN_FLIGHT.add(entity.getUniqueId());
+		return markTeleportInFlight(entity.getUniqueId(), nowMillis);
 	}
 
 	public boolean canContinueRtpTraversal(Entity entity)
@@ -1358,14 +1399,14 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 				&& canDepart(entity)
 				&& entity.getVehicle() == null
 				&& entity.getPassengers().isEmpty()
-				&& TELEPORT_IN_FLIGHT.contains(entity.getUniqueId());
+				&& TELEPORT_IN_FLIGHT.containsKey(entity.getUniqueId());
 	}
 
 	public void cancelRtpTraversal(Entity entity)
 	{
 		if(entity != null)
 		{
-			TELEPORT_IN_FLIGHT.remove(entity.getUniqueId());
+			clearTeleportInFlight(entity.getUniqueId());
 		}
 	}
 
@@ -1396,12 +1437,13 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		{
 			if(!entity.isValid())
 			{
+				abortRtpTraversal(entityId);
 				return;
 			}
 			long nowMillis = System.currentTimeMillis();
 			ReentryLatch latch = activeReentryLatch(entityId, nowMillis);
 			boolean completed = latch != null && getId().equals(latch.portalId());
-			boolean inFlight = TELEPORT_IN_FLIGHT.contains(entityId);
+			boolean inFlight = isTeleportInFlight(entityId, nowMillis);
 			boolean sameWorld = sourceWorld.equals(entity.getWorld());
 			Location current = entity.getLocation();
 			double driftSquared = sameWorld ? current.distanceSquared(anchor) : Double.MAX_VALUE;
@@ -1462,7 +1504,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 			Wormholes.rtpRuntime.abortTraversal(entityId);
 			return;
 		}
-		TELEPORT_IN_FLIGHT.remove(entityId);
+		clearTeleportInFlight(entityId);
 	}
 
 	private void bounceFailedRtpTraversal(Entity entity, Traversive traversive)
@@ -1480,7 +1522,7 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		Traversive requiredTraversive = Objects.requireNonNull(traversive, "traversive");
 		PortalFrame requiredTargetFrame = Objects.requireNonNull(targetFrame, "targetFrame");
 		Location requiredTarget = Objects.requireNonNull(target, "target");
-		if(!TELEPORT_IN_FLIGHT.remove(requiredEntity.getUniqueId()))
+		if(!clearTeleportInFlight(requiredEntity.getUniqueId()))
 		{
 			return;
 		}
@@ -1552,6 +1594,41 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		TELEPORT_COOLDOWNS.put(entityId, Long.valueOf(now + cooldown));
 	}
 
+	static boolean markTeleportInFlight(UUID entityId, long now)
+	{
+		boolean[] acquired = new boolean[1];
+		TELEPORT_IN_FLIGHT.compute(entityId, (id, stamped) ->
+		{
+			if(stamped != null && now - stamped.longValue() < TELEPORT_IN_FLIGHT_TTL_MILLIS)
+			{
+				return stamped;
+			}
+			acquired[0] = true;
+			return Long.valueOf(now);
+		});
+		return acquired[0];
+	}
+
+	static boolean isTeleportInFlight(UUID entityId, long now)
+	{
+		Long stamped = TELEPORT_IN_FLIGHT.get(entityId);
+		if(stamped == null)
+		{
+			return false;
+		}
+		if(now - stamped.longValue() >= TELEPORT_IN_FLIGHT_TTL_MILLIS)
+		{
+			TELEPORT_IN_FLIGHT.remove(entityId, stamped);
+			return false;
+		}
+		return true;
+	}
+
+	public static boolean clearTeleportInFlight(UUID entityId)
+	{
+		return TELEPORT_IN_FLIGHT.remove(entityId) != null;
+	}
+
 	public static void latchReentry(UUID entityId, UUID portalId)
 	{
 		REENTRY_LATCHES.put(entityId, ReentryLatch.waiting(portalId, System.currentTimeMillis()));
@@ -1579,12 +1656,23 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		{
 			return null;
 		}
-		if(latch.stampMillis() + REENTRY_LATCH_TTL_MILLIS <= now)
+		if(reentryLatchExpired(latch.rejected, latch.stampMillis(), now))
 		{
 			REENTRY_LATCHES.remove(entityId, latch);
 			return null;
 		}
 		return latch;
+	}
+
+	static boolean reentryLatchExpired(boolean rejected, long stampMillis, long now)
+	{
+		long ttl = rejected ? REJECTED_REENTRY_LATCH_TTL_MILLIS : REENTRY_LATCH_TTL_MILLIS;
+		return stampMillis + ttl <= now;
+	}
+
+	static boolean shouldReleaseReentryLatchOutsidePortal(boolean armed, long stampMillis, long now)
+	{
+		return armed || now - stampMillis >= REENTRY_WAITING_EXIT_GRACE_MILLIS;
 	}
 
 	public static void latchReentryIfInsidePortal(Entity entity)
@@ -1627,9 +1715,18 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 		while(latchIterator.hasNext())
 		{
 			Map.Entry<UUID, ReentryLatch> entry = latchIterator.next();
-			if(entry.getValue().stampMillis() + REENTRY_LATCH_TTL_MILLIS <= now)
+			if(reentryLatchExpired(entry.getValue().rejected, entry.getValue().stampMillis(), now))
 			{
 				REENTRY_LATCHES.remove(entry.getKey(), entry.getValue());
+			}
+		}
+		Iterator<Map.Entry<UUID, Long>> inFlightIterator = TELEPORT_IN_FLIGHT.entrySet().iterator();
+		while(inFlightIterator.hasNext())
+		{
+			Map.Entry<UUID, Long> entry = inFlightIterator.next();
+			if(now - entry.getValue().longValue() >= TELEPORT_IN_FLIGHT_TTL_MILLIS)
+			{
+				TELEPORT_IN_FLIGHT.remove(entry.getKey(), entry.getValue());
 			}
 		}
 	}
@@ -1638,25 +1735,25 @@ public class LocalPortal extends Portal implements ILocalPortal, IProgressivePor
 	{
 		private final UUID portalId;
 		private final long stampMillis;
+		private final boolean rejected;
 		private volatile boolean armed;
 
-		private ReentryLatch(UUID portalId, long stampMillis)
+		private ReentryLatch(UUID portalId, long stampMillis, boolean rejected)
 		{
 			this.portalId = portalId;
 			this.stampMillis = stampMillis;
-			this.armed = false;
+			this.rejected = rejected;
+			this.armed = rejected;
 		}
 
 		private static ReentryLatch waiting(UUID portalId, long stampMillis)
 		{
-			return new ReentryLatch(portalId, stampMillis);
+			return new ReentryLatch(portalId, stampMillis, false);
 		}
 
 		private static ReentryLatch armed(UUID portalId, long stampMillis)
 		{
-			ReentryLatch latch = new ReentryLatch(portalId, stampMillis);
-			latch.armed = true;
-			return latch;
+			return new ReentryLatch(portalId, stampMillis, true);
 		}
 
 		private UUID portalId()
